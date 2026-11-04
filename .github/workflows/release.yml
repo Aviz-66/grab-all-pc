@@ -9,119 +9,71 @@ permissions:
   contents: write
 
 jobs:
-  test:
-    name: Test before release
+  release:
+    name: Test, Build (Cached) & Publish Release
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.23'
-      - run: go test -v -race ./daemon/...
-
-  build-and-package:
-    name: Build (${{ matrix.suffix }})
-    needs: test
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-            suffix: linux-amd64
-            binary: graball
-          - goos: linux
-            goarch: arm64
-            suffix: linux-arm64
-            binary: graball
-          - goos: windows
-            goarch: amd64
-            suffix: windows-amd64
-            binary: graball.exe
-          - goos: darwin
-            goarch: amd64
-            suffix: darwin-amd64
-            binary: graball
-          - goos: darwin
-            goarch: arm64
-            suffix: darwin-arm64
-            binary: graball
-
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23'
+          cache: false
 
-      - name: Build
+      - name: Cache Go build cache (GOCACHE)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: ${{ runner.os }}-gobuild-${{ hashFiles('daemon/**/*.go', 'go.mod') }}
+          restore-keys: |
+            ${{ runner.os }}-gobuild-
+
+      - name: Run unit & race tests
+        run: go test -v -race ./daemon/...
+
+      - name: Cross-compile & package all platforms
         env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: '0'
         run: |
-          LDFLAGS="-s -w"
-          if [ "${{ matrix.goos }}" = "windows" ]; then
-            LDFLAGS="-s -w -H=windowsgui"
-          fi
-          go build -ldflags="$LDFLAGS" -o ${{ matrix.binary }} ./daemon
-
-      - name: Package archive
-        run: |
-          mkdir -p release dist
-          cp ${{ matrix.binary }} release/
-          cp -r extension release/extension
-          cp -r scripts release/scripts
-          cp README.md release/
-          cd release
-          if [ "${{ matrix.goos }}" = "windows" ]; then
-            zip -r ../dist/graball-${{ matrix.suffix }}.zip .
-          else
-            tar czf ../dist/graball-${{ matrix.suffix }}.tar.gz .
-          fi
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-${{ matrix.suffix }}
-          path: dist/graball-${{ matrix.suffix }}.*
-
-  package-extension:
-    name: Package Extension
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Zip extension
-        run: |
+          set -e
           mkdir -p dist
-          cd extension
-          zip -r ../dist/graball-extension.zip .
 
-      - name: Upload extension artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-extension
-          path: dist/graball-extension.zip
+          package_target() {
+            local goos="$1"
+            local goarch="$2"
+            local suffix="$3"
+            local bin="$4"
+            local ldflags="-s -w"
+            if [ "$goos" = "windows" ]; then
+              ldflags="-s -w -H=windowsgui"
+            fi
 
-  publish-release:
-    name: Publish GitHub Release
-    needs: [build-and-package, package-extension]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+            rm -rf stage && mkdir -p stage
+            GOOS="$goos" GOARCH="$goarch" go build -ldflags="$ldflags" -o "stage/$bin" ./daemon
+            cp -r extension stage/extension
+            cp -r scripts stage/scripts
+            cp README.md stage/
 
-      - name: Download all release assets
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
+            (
+              cd stage
+              if [ "$goos" = "windows" ]; then
+                zip -rq "../dist/graball-${suffix}.zip" .
+              else
+                tar czf "../dist/graball-${suffix}.tar.gz" .
+              fi
+            )
+          }
 
-      - name: List assets
-        run: ls -lh dist/
+          package_target linux   amd64 linux-amd64   graball
+          package_target linux   arm64 linux-arm64   graball
+          package_target windows amd64 windows-amd64 graball.exe
+          package_target darwin  amd64 darwin-amd64  graball
+          package_target darwin  arm64 darwin-arm64  graball
 
-      - name: Create or update GitHub Release (with retry)
+          (cd extension && zip -rq ../dist/graball-extension.zip .)
+          ls -lh dist/
+
+      - name: Publish GitHub Release (with retry)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}

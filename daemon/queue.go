@@ -70,9 +70,12 @@ type QueueManager struct {
 	config          *Config
 	tasks           []*DownloadTask
 	tasksMu         sync.RWMutex
+	saveMu          sync.Mutex
 	dataFile        string
 	notifyChan      chan struct{}
 	stopChan        chan struct{}
+	stopOnce        sync.Once
+	wg              sync.WaitGroup
 	broker          *SSEBroker
 	hooksMu         sync.RWMutex
 	onUpdate        func()
@@ -99,6 +102,7 @@ func NewQueueManager(cfg *Config, dataFile string, broker *SSEBroker) *QueueMana
 	}
 
 	qm.load()
+	qm.wg.Add(1)
 	go qm.processLoop()
 	return qm
 }
@@ -161,6 +165,9 @@ func snapshotTask(t *DownloadTask, includeCookies bool) *DownloadTask {
 }
 
 func (qm *QueueManager) save() {
+	qm.saveMu.Lock()
+	defer qm.saveMu.Unlock()
+
 	qm.tasksMu.RLock()
 	snapshots := make([]*DownloadTask, len(qm.tasks))
 	for i, t := range qm.tasks {
@@ -627,6 +634,7 @@ func (qm *QueueManager) getNextQueued() *DownloadTask {
 }
 
 func (qm *QueueManager) processLoop() {
+	defer qm.wg.Done()
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
@@ -667,11 +675,13 @@ func (qm *QueueManager) scheduleTasks() {
 		qm.save()
 		qm.BroadcastUpdate()
 
+		qm.wg.Add(1)
 		go qm.runDownload(ctx, task)
 	}
 }
 
 func (qm *QueueManager) runDownload(ctx context.Context, task *DownloadTask) {
+	defer qm.wg.Done()
 	var err error
 	if task.Engine == EngineYtDlp {
 		err = runYtDlpDownload(ctx, qm, task)
@@ -707,5 +717,18 @@ func (qm *QueueManager) runDownload(ctx context.Context, task *DownloadTask) {
 }
 
 func (qm *QueueManager) Stop() {
-	close(qm.stopChan)
+	qm.stopOnce.Do(func() {
+		close(qm.stopChan)
+		qm.tasksMu.RLock()
+		for _, t := range qm.tasks {
+			t.mu.Lock()
+			if t.cancelFunc != nil {
+				t.cancelFunc()
+				t.cancelFunc = nil
+			}
+			t.mu.Unlock()
+		}
+		qm.tasksMu.RUnlock()
+	})
+	qm.wg.Wait()
 }

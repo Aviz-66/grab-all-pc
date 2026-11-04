@@ -1,3 +1,3 @@
 module grab-all-pc
 
-go 1.27.3
+go 1.23

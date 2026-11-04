@@ -60,29 +60,29 @@ func TestQueueManagerBasicOps(t *testing.T) {
 
 	// Verify get
 	got := qm.GetByID(task.ID)
-	if got == nil || got.URL != task.URL {
+	if got == nil || snapshotTask(got, false).URL != task.URL {
 		t.Fatalf("GetByID failed: got %v", got)
 	}
 
 	// Pause
 	qm.PauseTask(task.ID)
-	got = qm.GetByID(task.ID)
-	if got.Status != StatusPaused {
-		t.Errorf("Expected status paused, got %s", got.Status)
+	gotSnap := snapshotTask(qm.GetByID(task.ID), false)
+	if gotSnap.Status != StatusPaused {
+		t.Errorf("Expected status paused, got %s", gotSnap.Status)
 	}
 
 	// Resume
 	qm.ResumeTask(task.ID)
-	got = qm.GetByID(task.ID)
-	if got.Status != StatusQueued && got.Status != StatusDownloading {
-		t.Errorf("Expected status queued/downloading after resume, got %s", got.Status)
+	gotSnap = snapshotTask(qm.GetByID(task.ID), false)
+	if gotSnap.Status != StatusQueued && gotSnap.Status != StatusDownloading {
+		t.Errorf("Expected status queued/downloading after resume, got %s", gotSnap.Status)
 	}
 
 	// Cancel
 	qm.CancelTask(task.ID)
-	got = qm.GetByID(task.ID)
-	if got.Status != StatusCanceled {
-		t.Errorf("Expected status canceled, got %s", got.Status)
+	gotSnap = snapshotTask(qm.GetByID(task.ID), false)
+	if gotSnap.Status != StatusCanceled {
+		t.Errorf("Expected status canceled, got %s", gotSnap.Status)
 	}
 
 	// Clear completed
