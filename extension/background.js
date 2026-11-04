@@ -10,16 +10,19 @@ const DEFAULT_CONFIG = {
 // In-memory cache of sniffed media per tab: tabId -> Array<{ url, type, time }>
 const tabMedia = new Map();
 
-// Initialize configuration
+// Initialize configuration & auto-sync cookies to GrabAll
 chrome.runtime.onInstalled.addListener(async () => {
   const existing = await chrome.storage.local.get(null);
   const updated = { ...DEFAULT_CONFIG, ...existing };
   await chrome.storage.local.set(updated);
   setupContextMenus();
+  await autoPairToken(updated.daemonUrl || 'http://127.0.0.1:17890');
 });
 
-chrome.runtime.onStartup.addListener(() => {
+chrome.runtime.onStartup.addListener(async () => {
   setupContextMenus();
+  const cfg = await chrome.storage.local.get(DEFAULT_CONFIG);
+  await autoPairToken(cfg.daemonUrl || 'http://127.0.0.1:17890');
 });
 
 // Setup Context Menus
@@ -209,6 +212,7 @@ async function autoPairToken(daemonUrl) {
       const data = await res.json();
       if (data && data.token) {
         await chrome.storage.local.set({ authToken: data.token });
+        syncYouTubeCookies(daemonUrl, data.token);
         return data.token;
       }
     }
@@ -218,8 +222,70 @@ async function autoPairToken(daemonUrl) {
   return '';
 }
 
+function isYouTubeLikeUrl(u) {
+  if (!u) return false;
+  const lower = u.toLowerCase();
+  return lower.includes('youtube.com') || lower.includes('youtu.be') || lower.includes('googlevideo.com');
+}
+
+async function collectBrowserCookies(url, pageUrl, storeId) {
+  const seen = new Set();
+  const cookies = [];
+  const addUnique = (list) => {
+    for (const c of list || []) {
+      const key = `${c.domain}|${c.path}|${c.name}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        cookies.push(c);
+      }
+    }
+  };
+
+  const baseFilter = storeId ? { storeId } : {};
+
+  try {
+    if (url) {
+      addUnique(await chrome.cookies.getAll({ ...baseFilter, url }));
+    }
+    if (pageUrl && pageUrl !== url) {
+      addUnique(await chrome.cookies.getAll({ ...baseFilter, url: pageUrl }));
+    }
+    // For YouTube / youtu.be links, always include full .youtube.com + .google.com login cookies
+    if (isYouTubeLikeUrl(url) || isYouTubeLikeUrl(pageUrl)) {
+      addUnique(await chrome.cookies.getAll({ ...baseFilter, domain: 'youtube.com' }));
+      addUnique(await chrome.cookies.getAll({ ...baseFilter, domain: 'google.com' }));
+      if (storeId && cookies.length === 0) {
+        addUnique(await chrome.cookies.getAll({ domain: 'youtube.com' }));
+        addUnique(await chrome.cookies.getAll({ domain: 'google.com' }));
+      }
+    }
+  } catch (err) {
+    console.warn('Could not read cookies for URL:', url, err);
+  }
+  return cookies;
+}
+
+// Keep fresh YouTube/Google cookies synced to GrabAll RAM so even "+ Add URL" inside graball.exe works on YouTube!
+async function syncYouTubeCookies(daemonUrl, token) {
+  try {
+    const cookies = await collectBrowserCookies('https://www.youtube.com/', '', null);
+    if (!cookies.length) return;
+    await fetch(`${daemonUrl}/api/sync-cookies`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Daemon-Token': token || '',
+        'X-GrabAll-Ext': chrome.runtime.id || 'graball-mv3',
+      },
+      body: JSON.stringify({ cookies }),
+    });
+  } catch (e) {
+    // Ignore when GrabAll is closed
+  }
+}
+
 // Send request to local Go daemon
-async function sendToDaemon({ url, pageUrl, referer, title, fileName, engine = 'auto', quality = 'best', playlist = false }) {
+async function sendToDaemon({ url, pageUrl, referer, title, fileName, engine = 'auto', quality = 'best', playlist = false, storeId = null }) {
   const config = await chrome.storage.local.get(DEFAULT_CONFIG);
   const daemonUrl = config.daemonUrl || 'http://127.0.0.1:17890';
   let token = config.authToken || '';
@@ -227,23 +293,8 @@ async function sendToDaemon({ url, pageUrl, referer, title, fileName, engine = '
     token = await autoPairToken(daemonUrl);
   }
 
-  // Collect relevant cookies
-  let cookies = [];
-  try {
-    const primaryCookies = await chrome.cookies.getAll({ url: url });
-    cookies.push(...primaryCookies);
-
-    if (pageUrl && pageUrl !== url) {
-      const pageCookies = await chrome.cookies.getAll({ url: pageUrl });
-      for (const pc of pageCookies) {
-        if (!cookies.some((c) => c.name === pc.name && c.domain === pc.domain)) {
-          cookies.push(pc);
-        }
-      }
-    }
-  } catch (err) {
-    console.warn('Could not read cookies for URL:', url, err);
-  }
+  // Collect relevant cookies (including .youtube.com + .google.com for YouTube/youtu.be)
+  const cookies = await collectBrowserCookies(url, pageUrl, storeId);
 
   const payload = {
     url: url,
@@ -337,7 +388,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'SEND_DOWNLOAD') {
-    sendToDaemon(message.payload)
+    const payload = { ...message.payload, storeId: sender?.tab?.cookieStoreId || null };
+    sendToDaemon(payload)
       .then((res) => sendResponse({ success: true, data: res }))
       .catch((err) => sendResponse({ success: false, error: err.message }));
     return true;
@@ -353,6 +405,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           let token = config.authToken || '';
           if (!token) {
             token = await autoPairToken(daemonUrl);
+          } else {
+            syncYouTubeCookies(daemonUrl, token);
           }
           sendResponse({ online: true, info: data, token });
         } else {

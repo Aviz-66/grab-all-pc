@@ -95,6 +95,7 @@ func (s *Server) setupRoutes() http.Handler {
 	// API endpoints
 	mux.HandleFunc("/api/ping", s.handlePing)
 	mux.HandleFunc("/api/pair", s.handlePair)
+	mux.HandleFunc("/api/sync-cookies", s.handleSyncCookies)
 	mux.HandleFunc("/api/show-window", s.handleShowWindow)
 	mux.HandleFunc("/api/events", s.handleSSE)
 	mux.HandleFunc("/api/queue", s.handleQueue)
@@ -228,13 +229,28 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":          "ok",
-		"version":         "2.0.1",
+		"version":         "2.0.4",
 		"nativeGui":       s.onShowWindow != nil,
 		"downloadDir":     s.config.GetDownloadDir(),
 		"maxConcurrent":   s.config.GetMaxConcurrent(),
 		"ytDlpAvailable":  hasYtDlp == nil,
 		"ffmpegAvailable": hasFFmpeg,
 	})
+}
+
+func (s *Server) handleSyncCookies(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Cookies []Cookie `json:"cookies"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err == nil && len(req.Cookies) > 0 {
+		s.queue.UpdateYouTubeCookies(req.Cookies)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
 }
 
 // handlePair allows browser extensions to pair automatically with zero manual token copy-pasting,

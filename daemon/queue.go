@@ -82,6 +82,30 @@ type QueueManager struct {
 	onUpdate        func()
 	onTaskAdded     func(task *DownloadTask)
 	onPlaylistAdded func(title string, count int)
+	ytCookiesMu     sync.RWMutex
+	ytCookies       []Cookie
+}
+
+func (qm *QueueManager) UpdateYouTubeCookies(cookies []Cookie) {
+	if len(cookies) == 0 {
+		return
+	}
+	cp := make([]Cookie, len(cookies))
+	copy(cp, cookies)
+	qm.ytCookiesMu.Lock()
+	qm.ytCookies = cp
+	qm.ytCookiesMu.Unlock()
+}
+
+func (qm *QueueManager) GetYouTubeCookies() []Cookie {
+	qm.ytCookiesMu.RLock()
+	defer qm.ytCookiesMu.RUnlock()
+	if len(qm.ytCookies) == 0 {
+		return nil
+	}
+	cp := make([]Cookie, len(qm.ytCookies))
+	copy(cp, qm.ytCookies)
+	return cp
 }
 
 func (qm *QueueManager) SetUIHooks(onUpdate func(), onTaskAdded func(task *DownloadTask), onPlaylistAdded func(title string, count int)) {
@@ -257,6 +281,14 @@ func (qm *QueueManager) AddTask(req AddRequest) (*DownloadTask, error) {
 		title = defaultTitleFromURL(req.URL)
 	}
 
+	if isYouTubeURL(req.URL) {
+		if len(req.Cookies) > 0 && hasYouTubeAuthCookies(req.Cookies) {
+			qm.UpdateYouTubeCookies(req.Cookies)
+		} else if len(req.Cookies) == 0 {
+			req.Cookies = qm.GetYouTubeCookies()
+		}
+	}
+
 	task := &DownloadTask{
 		ID:        taskID,
 		URL:       req.URL,
@@ -305,6 +337,14 @@ func (qm *QueueManager) AddPlaylistTasks(ctx context.Context, req AddRequest) ([
 	req.URL = strings.TrimSpace(req.URL)
 	if req.URL == "" {
 		return nil, "", fmt.Errorf("URL cannot be empty")
+	}
+
+	if isYouTubeURL(req.URL) {
+		if len(req.Cookies) > 0 && hasYouTubeAuthCookies(req.Cookies) {
+			qm.UpdateYouTubeCookies(req.Cookies)
+		} else if len(req.Cookies) == 0 {
+			req.Cookies = qm.GetYouTubeCookies()
+		}
 	}
 
 	playlistTitle, entries, err := ExpandYtDlpPlaylist(ctx, qm.config, req)
@@ -489,6 +529,7 @@ func (qm *QueueManager) ResumeTask(id string) bool {
 	}
 
 	resumed := false
+	freshYTCookies := qm.GetYouTubeCookies()
 	task.mu.Lock()
 	if task.Status == StatusPaused || task.Status == StatusError || task.Status == StatusCanceled {
 		task.runID++
@@ -496,6 +537,9 @@ func (qm *QueueManager) ResumeTask(id string) bool {
 		task.ErrorMessage = ""
 		task.Speed = ""
 		task.ETA = ""
+		if isYouTubeURL(task.URL) && len(freshYTCookies) > 0 {
+			task.Cookies = freshYTCookies
+		}
 		task.UpdatedAt = time.Now()
 		resumed = true
 	}

@@ -35,6 +35,26 @@ func isYouTubeURL(rawURL string) bool {
 		strings.Contains(lower, "youtube-nocookie.com/")
 }
 
+// hasYouTubeAuthCookies checks whether a cookie slice actually contains signed-in
+// Google/YouTube session cookies (as opposed to logged-out VISITOR_INFO1_LIVE tracking cookies).
+func hasYouTubeAuthCookies(cookies []Cookie) bool {
+	hasLoginInfo := false
+	hasSID := false
+	for _, c := range cookies {
+		switch c.Name {
+		case "LOGIN_INFO":
+			if c.Value != "" {
+				hasLoginInfo = true
+			}
+		case "SAPISID", "__Secure-1PAPISID", "__Secure-3PAPISID", "SID", "__Secure-1PSID", "__Secure-3PSID":
+			if c.Value != "" {
+				hasSID = true
+			}
+		}
+	}
+	return hasLoginInfo || hasSID
+}
+
 // executableDir returns the directory containing the running daemon binary, falling back to CWD.
 func executableDir() string {
 	if exe, err := os.Executable(); err == nil {
@@ -314,9 +334,17 @@ func runYtDlpDownload(ctx context.Context, qm *QueueManager, task *DownloadTask)
 		return fmt.Errorf("failed to create download directory: %w", err)
 	}
 
-	// Write Netscape temp cookie file if cookies were provided
+	// Ensure QuickJS is present for YouTube JS challenge decryption even if user has a global yt-dlp
+	if isYouTubeURL(task.URL) && resolveQuickJSBinary() == "" {
+		_, _ = DownloadQuickJSStandalone(filepath.Join(executableDir(), "bin"))
+	}
+
+	// Write Netscape temp cookie file if cookies were provided.
+	// Note: For YouTube, only pass cookies if they contain real login cookies (passing logged-out
+	// VISITOR_INFO1_LIVE cookies forces yt-dlp off non-cookie clients and triggers bot checks).
+	useCookies := len(task.Cookies) > 0 && (!isYouTubeURL(task.URL) || hasYouTubeAuthCookies(task.Cookies))
 	var cookieFile string
-	if len(task.Cookies) > 0 {
+	if useCookies {
 		cookieFile = filepath.Join(os.TempDir(), fmt.Sprintf("ytdlp_cookies_%s.txt", task.ID))
 		if err := WriteNetscapeCookiesFile(task.Cookies, cookieFile); err == nil {
 			defer func() {
@@ -330,11 +358,14 @@ func runYtDlpDownload(ctx context.Context, qm *QueueManager, task *DownloadTask)
 	err = executeYtDlpAttempt(ctx, qm, task, binPath, downloadDir, cookieFile)
 	if err != nil && ctx.Err() == nil && cookieFile != "" && isYouTubeURL(task.URL) {
 		errMsg := err.Error()
-		// YouTube sometimes serves SABR-only / empty formats to logged-in web cookies;
-		// retrying without cookies lets yt-dlp fall back to TV / mobile clients cleanly.
+		// Retry without cookies if YouTube served SABR-only formats or flagged rotated session cookies
 		if strings.Contains(errMsg, "Requested format is not available") ||
-			strings.Contains(errMsg, "Only images are available") {
-			return executeYtDlpAttempt(ctx, qm, task, binPath, downloadDir, "")
+			strings.Contains(errMsg, "Only images are available") ||
+			strings.Contains(errMsg, "no longer valid") ||
+			strings.Contains(errMsg, "not a bot") {
+			if retryErr := executeYtDlpAttempt(ctx, qm, task, binPath, downloadDir, ""); retryErr == nil {
+				return nil
+			}
 		}
 	}
 
