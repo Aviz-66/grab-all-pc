@@ -82,8 +82,8 @@ jobs:
           for attempt in 1 2 3 4; do
             echo "[*] Publishing release $TAG (attempt $attempt)..."
             if gh release view "$TAG" >/dev/null 2>&1; then
-              if gh release upload "$TAG" dist/* --clobber; then
-                echo "[+] Uploaded all assets to existing release $TAG!"
+              if gh release upload "$TAG" dist/* --clobber && gh release edit "$TAG" --draft=false --latest; then
+                echo "[+] Uploaded all assets and published release $TAG!"
                 exit 0
               fi
             else
