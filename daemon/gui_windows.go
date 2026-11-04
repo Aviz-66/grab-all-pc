@@ -1557,7 +1557,7 @@ func (g *winAppGUI) updateProgressPopup(pop *progressPopup, t *DownloadTask) {
 	case StatusDownloading:
 		mode = "active"
 		if strings.Contains(t.Speed, "Merging") || strings.Contains(t.Speed, "Extracting") ||
-			strings.Contains(t.Speed, "Starting") || strings.Contains(t.Speed, "Upgrading") {
+			(t.Progress == 0 && t.Speed != "" && !strings.HasSuffix(t.Speed, "/s")) {
 			statusLine = "Status: " + t.Speed
 		} else {
 			statusLine = "Status: Receiving data..."
@@ -1885,21 +1885,25 @@ func (g *winAppGUI) showTrayContextMenu() {
 // and seamlessly upgrades it once in the background to the pre-extracted yt-dlp_win.zip layout.
 func (g *winAppGUI) autoUpgradeSlowYtDlpIfNeeded() {
 	ytPath, err := resolveYtDlpBinary(g.cfg)
-	if err != nil || !isManagedSlowWindowsYtDlp(ytPath) {
+	if err != nil {
 		return
 	}
-	g.postStatusMessage("⚡ Upgrading yt-dlp to Fast-Start Mode (one-time fix for 1-2m startup delay)...")
-	upgraded, upErr := DownloadYtDlpStandalone(filepath.Dir(ytPath))
-	g.postStatusMessage("")
-	if upErr != nil {
-		return
+	if isManagedSlowWindowsYtDlp(ytPath) {
+		g.postStatusMessage("⚡ Upgrading yt-dlp to Fast-Start Mode (one-time fix for 1-2m startup delay)...")
+		upgraded, upErr := DownloadYtDlpStandalone(filepath.Dir(ytPath))
+		g.postStatusMessage("")
+		if upErr != nil {
+			return
+		}
+		g.cfg.mu.Lock()
+		g.cfg.YtDlpPath = upgraded
+		g.cfg.mu.Unlock()
+		_ = g.cfg.Save()
+		g.refreshStatusBar()
+		g.showTrayBalloon("Fast-Start Mode Enabled", "yt-dlp upgraded! Video downloads now start in ~2-4 seconds.")
 	}
-	g.cfg.mu.Lock()
-	g.cfg.YtDlpPath = upgraded
-	g.cfg.mu.Unlock()
-	_ = g.cfg.Save()
-	g.refreshStatusBar()
-	g.showTrayBalloon("Fast-Start Mode Enabled", "yt-dlp upgraded! Video downloads now start in ~1-3 seconds.")
+	// Pre-warm YouTube's preprocessed base.js solver cache silently in the background!
+	PrewarmYouTubeSolverCache(g.cfg)
 }
 
 func (g *winAppGUI) showToolsPopupMenu() {
@@ -2080,6 +2084,7 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 			_ = g.cfg.Save()
 			g.postStatusMessage("")
 			g.showTrayBalloon("Fast-Start yt-dlp + QuickJS Ready", "Installed unpacked build to "+path)
+			go PrewarmYouTubeSolverCache(g.cfg)
 		}()
 
 	case idmInstallFFmpeg:
@@ -2126,7 +2131,7 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 	case idmAbout:
 		procMessageBoxW.Call(
 			g.mainHwnd,
-			uintptr(unsafe.Pointer(utf16Ptr("GrabAll Download Manager v2.1.0 (Native Win32 Edition)\n\nUltra-lightweight IDM-style downloader built for low-RAM PCs.\n• Native Win32 GUI (~14 MB RAM, zero WebView/Electron bloat)\n• Smart Playlist Picker (Custom Count / Range / Audio & HD Video)\n• Fast-Start unpacked yt-dlp + Direct HTTP resume"))),
+			uintptr(unsafe.Pointer(utf16Ptr("GrabAll Download Manager v2.1.1 (Native Win32 Edition)\n\nUltra-lightweight IDM-style downloader built for low-RAM PCs.\n• Native Win32 GUI (~14 MB RAM, zero WebView/Electron bloat)\n• Cached YouTube EJS Solver (11x faster video extraction)\n• Smart Playlist Picker (Custom Count / Range / Audio & HD Video)"))),
 			uintptr(unsafe.Pointer(utf16Ptr("About GrabAll"))),
 			mbOK|mbIconInfo,
 		)

@@ -1,12 +1,15 @@
 # Binaries
 graball
 graball.exe
+graball-extension.zip
 bin/
 
 # Runtime data
 config.json
 queue.json
 downloads/
+cache/
+plugins/
 *.part
 
 # Temp cookies

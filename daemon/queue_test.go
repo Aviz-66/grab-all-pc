@@ -379,4 +379,29 @@ func TestZipExtractionAndSubprocessTreeKill(t *testing.T) {
 			t.Fatalf("Subprocess tree took too long to terminate on cancel: %v", elapsed)
 		}
 	}
+
+	// 3. Verify player cache detection & automatic 3-file rotation
+	cacheRoot := filepath.Join(t.TempDir(), "cache")
+	solverDir := filepath.Join(cacheRoot, "challenge-solver")
+	if err := os.MkdirAll(solverDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if hasCachedPlayerSolver(cacheRoot) {
+		t.Fatalf("Expected false before player files exist")
+	}
+	now := time.Now()
+	for i := 0; i < 5; i++ {
+		fp := filepath.Join(solverDir, "player_test_"+string(rune('A'+i))+".json")
+		_ = os.WriteFile(fp, []byte("{}"), 0644)
+		mod := now.Add(time.Duration(i) * time.Minute)
+		_ = os.Chtimes(fp, mod, mod)
+	}
+	if !hasCachedPlayerSolver(cacheRoot) {
+		t.Fatalf("Expected true after player files exist")
+	}
+	pruneOldPlayerCaches(cacheRoot)
+	rem, _ := os.ReadDir(solverDir)
+	if len(rem) != 3 {
+		t.Fatalf("Expected pruneOldPlayerCaches to keep 3 newest files, got %d", len(rem))
+	}
 }

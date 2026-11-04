@@ -22,6 +22,7 @@ func runPlatformApp(cfg *Config, qm *QueueManager, srv *Server, startInTray bool
 		fmt.Printf("      You can install it automatically from the Web UI or run scripts/setup_ytdlp.sh\n")
 	} else {
 		fmt.Printf("  [+] yt-dlp binary: %s\n", ytPath)
+		go PrewarmYouTubeSolverCache(cfg)
 	}
 
 	ffmpegPath := resolveFFmpegBinary(cfg)
