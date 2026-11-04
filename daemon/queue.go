@@ -50,6 +50,7 @@ type DownloadTask struct {
 
 	// Runtime controls
 	cancelFunc context.CancelFunc `json:"-"`
+	runID      uint64             `json:"-"`
 	mu         sync.Mutex         `json:"-"`
 }
 
@@ -449,6 +450,7 @@ func (qm *QueueManager) PauseTask(id string) bool {
 
 	task.mu.Lock()
 	if task.Status == StatusDownloading {
+		task.runID++
 		task.Status = StatusPaused
 		task.Speed = ""
 		task.ETA = ""
@@ -460,6 +462,7 @@ func (qm *QueueManager) PauseTask(id string) bool {
 		shouldSave = true
 		shouldTrigger = true
 	} else if task.Status == StatusQueued {
+		task.runID++
 		task.Status = StatusPaused
 		task.UpdatedAt = time.Now()
 		shouldSave = true
@@ -488,6 +491,7 @@ func (qm *QueueManager) ResumeTask(id string) bool {
 	resumed := false
 	task.mu.Lock()
 	if task.Status == StatusPaused || task.Status == StatusError || task.Status == StatusCanceled {
+		task.runID++
 		task.Status = StatusQueued
 		task.ErrorMessage = ""
 		task.Speed = ""
@@ -516,6 +520,7 @@ func (qm *QueueManager) CancelTask(id string) bool {
 
 	task.mu.Lock()
 	if task.Status == StatusDownloading {
+		task.runID++
 		task.Status = StatusCanceled
 		task.Speed = ""
 		task.ETA = ""
@@ -525,6 +530,7 @@ func (qm *QueueManager) CancelTask(id string) bool {
 			task.cancelFunc = nil
 		}
 	} else if task.Status == StatusQueued || task.Status == StatusPaused {
+		task.runID++
 		task.Status = StatusCanceled
 		task.UpdatedAt = time.Now()
 	}
@@ -665,6 +671,8 @@ func (qm *QueueManager) scheduleTasks() {
 			task.mu.Unlock()
 			continue
 		}
+		task.runID++
+		myRunID := task.runID
 		task.Status = StatusDownloading
 		task.UpdatedAt = time.Now()
 		ctx, cancel := context.WithCancel(context.Background())
@@ -676,11 +684,11 @@ func (qm *QueueManager) scheduleTasks() {
 		qm.BroadcastUpdate()
 
 		qm.wg.Add(1)
-		go qm.runDownload(ctx, task)
+		go qm.runDownload(ctx, task, myRunID)
 	}
 }
 
-func (qm *QueueManager) runDownload(ctx context.Context, task *DownloadTask) {
+func (qm *QueueManager) runDownload(ctx context.Context, task *DownloadTask, myRunID uint64) {
 	defer qm.wg.Done()
 	var err error
 	if task.Engine == EngineYtDlp {
@@ -690,6 +698,11 @@ func (qm *QueueManager) runDownload(ctx context.Context, task *DownloadTask) {
 	}
 
 	task.mu.Lock()
+	if task.runID != myRunID {
+		// Superseded by Pause, Resume, or Cancel; do not overwrite newer state
+		task.mu.Unlock()
+		return
+	}
 	task.cancelFunc = nil
 	now := time.Now()
 	task.UpdatedAt = now

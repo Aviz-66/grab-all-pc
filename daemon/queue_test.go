@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -40,6 +41,17 @@ func TestQueueManagerBasicOps(t *testing.T) {
 		DefaultEngine: "auto",
 	}
 
+	// Local blocking test server so direct download stays in-flight deterministically without external DNS/HTTP
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1048576")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer ts.Close()
+
 	dataFile := filepath.Join(tmpDir, "queue.json")
 	broker := NewSSEBroker()
 	qm := NewQueueManager(cfg, dataFile, broker)
@@ -47,7 +59,7 @@ func TestQueueManagerBasicOps(t *testing.T) {
 
 	// Add direct task
 	task, err := qm.AddTask(AddRequest{
-		URL:      "https://example.com/test.zip",
+		URL:      ts.URL + "/test.zip",
 		FileName: "test.zip",
 	})
 	if err != nil {
@@ -156,6 +168,12 @@ func TestPlaylistHelpersAndProgressParsing(t *testing.T) {
 
 func TestSameOriginAuthAndCookieSanitization(t *testing.T) {
 	tmpDir := t.TempDir()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		<-r.Context().Done()
+	}))
+	defer ts.Close()
+
 	cfg := &Config{
 		Port:          17890,
 		AuthToken:     "supersecret",
@@ -181,7 +199,7 @@ func TestSameOriginAuthAndCookieSanitization(t *testing.T) {
 	}
 
 	task, err := qm.AddTask(AddRequest{
-		URL:     "https://example.com/file.zip",
+		URL:     ts.URL + "/file.zip",
 		Cookies: []Cookie{{Name: "SID", Value: "secretval", Domain: ".example.com"}},
 	})
 	if err != nil {
