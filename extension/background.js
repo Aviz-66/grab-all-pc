@@ -293,6 +293,7 @@ async function sendToDaemon({
   fileName,
   engine = 'auto',
   quality = 'best',
+  speedMode = '',
   playlist = false,
   playlistStart = 0,
   playlistEnd = 0,
@@ -300,7 +301,7 @@ async function sendToDaemon({
   playlistItems = null,
   storeId = null,
 }) {
-  const config = await chrome.storage.local.get(DEFAULT_CONFIG);
+  const config = await chrome.storage.local.get({ ...DEFAULT_CONFIG, preferredSpeedMode: '' });
   const daemonUrl = config.daemonUrl || 'http://127.0.0.1:17890';
   let token = config.authToken || '';
   if (!token) {
@@ -316,6 +317,7 @@ async function sendToDaemon({
     fileName: fileName || '',
     engine: engine,
     quality: quality || 'best',
+    speedMode: speedMode || config.preferredSpeedMode || '',
     playlist: Boolean(playlist),
     playlistStart: Number(playlistStart) || 0,
     playlistEnd: Number(playlistEnd) || 0,

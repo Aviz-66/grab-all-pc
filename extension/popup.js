@@ -19,11 +19,16 @@ async function loadConfig() {
     interceptDownloads: false,
     daemonUrl: 'http://127.0.0.1:17890',
     preferredQuality: 'best',
+    preferredSpeedMode: 'turbo',
   });
 
   document.getElementById('input-token').value = cfg.authToken;
   document.getElementById('check-intercept').checked = cfg.interceptDownloads;
   document.getElementById('select-quality').value = cfg.preferredQuality || 'best';
+  const speedSel = document.getElementById('select-speed-mode');
+  if (speedSel) {
+    speedSel.value = cfg.preferredSpeedMode === 'regular' ? 'regular' : 'turbo';
+  }
 
   const hasList = activeTab && activeTab.url && activeTab.url.includes('list=');
   const isPurePl = activeTab && activeTab.url && activeTab.url.includes('/playlist?') && hasList;
@@ -92,7 +97,8 @@ async function loadDetectedMedia() {
 
         div.querySelector('.btn-dl-stream').addEventListener('click', () => {
           const quality = document.getElementById('select-quality').value;
-          sendDownload(item.url, activeTab.title, engine, quality);
+          const speedMode = document.getElementById('select-speed-mode')?.value || 'turbo';
+          sendDownload(item.url, activeTab.title, engine, quality, false, 1, 0, speedMode);
         });
 
         container.appendChild(div);
@@ -106,6 +112,14 @@ function initListeners() {
   document.getElementById('select-quality').addEventListener('change', async (e) => {
     await chrome.storage.local.set({ preferredQuality: e.target.value });
   });
+
+  // Persist speed mode selection (Turbo 6x vs Watch Live 1x)
+  const speedSel = document.getElementById('select-speed-mode');
+  if (speedSel) {
+    speedSel.addEventListener('change', async (e) => {
+      await chrome.storage.local.set({ preferredSpeedMode: e.target.value });
+    });
+  }
 
   const plCheck = document.getElementById('check-playlist');
   const plRow = document.getElementById('playlist-range-row');
@@ -123,10 +137,11 @@ function initListeners() {
   document.getElementById('btn-download-page').addEventListener('click', () => {
     if (!activeTab || !activeTab.url) return;
     const quality = document.getElementById('select-quality').value;
+    const speedMode = document.getElementById('select-speed-mode')?.value || 'turbo';
     const playlist = document.getElementById('check-playlist')?.checked || false;
     const plStart = parseInt(document.getElementById('input-pl-start')?.value || '1', 10) || 1;
     const plCount = parseInt(document.getElementById('input-pl-count')?.value || '0', 10) || 0;
-    sendDownload(activeTab.url, activeTab.title, 'ytdlp', quality, playlist, plStart, plCount);
+    sendDownload(activeTab.url, activeTab.title, 'ytdlp', quality, playlist, plStart, plCount, speedMode);
   });
 
   // Intercept downloads toggle
@@ -156,7 +171,7 @@ function initListeners() {
   });
 }
 
-function sendDownload(url, title, engine, quality, playlist = false, playlistStart = 1, playlistCount = 0) {
+function sendDownload(url, title, engine, quality, playlist = false, playlistStart = 1, playlistCount = 0, speedMode = 'turbo') {
   showAlert(playlist ? 'Scanning playlist...' : 'Sending to GrabAll...', false);
 
   chrome.runtime.sendMessage(
@@ -169,6 +184,7 @@ function sendDownload(url, title, engine, quality, playlist = false, playlistSta
         title: title || '',
         engine: engine || 'auto',
         quality: quality || 'best',
+        speedMode: speedMode || 'turbo',
         playlist: Boolean(playlist),
         playlistStart: playlist ? playlistStart : 0,
         playlistCount: playlist ? playlistCount : 0,

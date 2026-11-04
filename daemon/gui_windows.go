@@ -206,17 +206,20 @@ const (
 	idmChangeDir     = 1014
 	idmCopyToken     = 1015
 	idmCopyURL       = 1016
-	idmToggleStartup = 1017
-	idmTogglePopup   = 1018
-	idmConc1         = 1021
-	idmConc2         = 1022
-	idmConc3         = 1023
-	idmConc4         = 1024
-	idmOpenWeb       = 1030
-	idmAbout         = 1031
-	idmShowMain      = 1040
-	idmToolsMenu     = 1041
-	idmExit          = 1099
+	idmToggleStartup     = 1017
+	idmTogglePopup       = 1018
+	idmToggleTurbo       = 1019
+	idmConc1             = 1021
+	idmConc2             = 1022
+	idmConc3             = 1023
+	idmConc4             = 1024
+	idmTaskSwitchRegular = 1025
+	idmTaskSwitchTurbo   = 1026
+	idmOpenWeb           = 1030
+	idmAbout             = 1031
+	idmShowMain          = 1040
+	idmToolsMenu         = 1041
+	idmExit              = 1099
 
 	idcListView = 2001
 	idcStatus   = 2002
@@ -234,6 +237,7 @@ const (
 	idcAddBtnCancel = 4005
 	idcAddEditStart = 4006
 	idcAddEditCount = 4007
+	idcAddChkStream = 4008
 )
 
 var (
@@ -515,6 +519,7 @@ type addDialogControls struct {
 	editURL   uintptr
 	comboQual uintptr
 	chkPlay   uintptr
+	chkStream uintptr
 	editStart uintptr
 	editCount uintptr
 }
@@ -979,6 +984,8 @@ func (g *winAppGUI) buildMainMenu() uintptr {
 	// Options Menu
 	hOpt, _, _ := procCreatePopupMenu.Call()
 	g.hMenuOpt = hOpt
+	procAppendMenuW.Call(hOpt, mfString, idmToggleTurbo, uintptr(unsafe.Pointer(utf16Ptr("⚡ Turbo Multi-Connection Speed (6x Faster — uncheck for Watch-Live 1x)"))))
+	procAppendMenuW.Call(hOpt, mfSeparator, 0, 0)
 	procAppendMenuW.Call(hOpt, mfString, idmToggleStartup, uintptr(unsafe.Pointer(utf16Ptr("Start GrabAll Automatically with Windows"))))
 	procAppendMenuW.Call(hOpt, mfString, idmTogglePopup, uintptr(unsafe.Pointer(utf16Ptr("Show IDM Progress Window on New Downloads"))))
 	procAppendMenuW.Call(hOpt, mfSeparator, 0, 0)
@@ -1005,6 +1012,12 @@ func (g *winAppGUI) refreshOptionMenuChecks() {
 	if g.hMenuOpt == 0 {
 		return
 	}
+	if g.cfg.GetSpeedMode() == SpeedModeTurbo {
+		procCheckMenuItem.Call(g.hMenuOpt, idmToggleTurbo, mfByCommand|mfChecked)
+	} else {
+		procCheckMenuItem.Call(g.hMenuOpt, idmToggleTurbo, mfByCommand|mfUnchecked)
+	}
+
 	if isAutoStartEnabled() {
 		procCheckMenuItem.Call(g.hMenuOpt, idmToggleStartup, mfByCommand|mfChecked)
 	} else {
@@ -1440,9 +1453,15 @@ func (g *winAppGUI) refreshStatusBar() {
 		ffState = "Optional (click Engine Setup for 1080p+/MP3)"
 	}
 
+	modeLabel := "Turbo (6x)"
+	if g.cfg.GetSpeedMode() == SpeedModeRegular {
+		modeLabel = "Regular (Watch Live)"
+	}
+
 	status := fmt.Sprintf(
-		"Active: %d  |  Queued: %d  |  Completed: %d   •   Folder: %s   •   yt-dlp: %s  |  FFmpeg: %s",
+		"Active: %d  |  Queued: %d  |  Completed: %d   •   Speed: %s   •   Folder: %s   •   yt-dlp: %s  |  FFmpeg: %s",
 		active, queued, done,
+		modeLabel,
 		filepath.Clean(g.cfg.GetDownloadDir()),
 		ytState, ffState,
 	)
@@ -1688,7 +1707,7 @@ func (g *winAppGUI) openAddURLDialog() {
 	}
 
 	w := g.scale(480)
-	h := g.scale(282)
+	h := g.scale(312)
 	scrW, _, _ := procGetSystemMetrics.Call(smCxScreen)
 	scrH, _, _ := procGetSystemMetrics.Call(smCyScreen)
 	posX := (int(scrW) - w) / 2
@@ -1728,9 +1747,14 @@ func (g *winAppGUI) openAddURLDialog() {
 	g.createChildControl("STATIC", "Max Videos (0 = All):", wsChild|wsVisible, 0, pad+g.scale(182), g.scale(138), g.scale(145), g.scale(20), hwnd, 0, false)
 	editCount := g.createChildControl("EDIT", "0", wsChild|wsVisible|wsTabStop|esAutoHScroll, wsExClientEdge, pad+g.scale(330), g.scale(135), g.scale(66), g.scale(24), hwnd, idcAddEditCount, false)
 
+	chkStream := g.createChildControl("BUTTON", "Watch while downloading (Regular 1-stream live mode)", wsChild|wsVisible|wsTabStop|bsAutoCheckBox, 0, pad, g.scale(170), contentW, g.scale(22), hwnd, idcAddChkStream, false)
+	if g.cfg.GetSpeedMode() == SpeedModeRegular {
+		procSendMessageW.Call(chkStream, bmSetCheck, bstChecked, 0)
+	}
+
 	btnW := g.scale(130)
 	btnH := g.scale(32)
-	btnY := g.scale(182)
+	btnY := g.scale(208)
 	g.createChildControl("BUTTON", "Start Download", wsChild|wsVisible|wsTabStop|bsDefPushButton, 0, pad+contentW-btnW*2-g.scale(8), btnY, btnW, btnH, hwnd, idcAddBtnStart, true)
 	g.createChildControl("BUTTON", "Cancel", wsChild|wsVisible|wsTabStop|bsPushButton, 0, pad+contentW-btnW, btnY, btnW, btnH, hwnd, idcAddBtnCancel, false)
 
@@ -1749,6 +1773,7 @@ func (g *winAppGUI) openAddURLDialog() {
 		editURL:   editURL,
 		comboQual: combo,
 		chkPlay:   chkPlay,
+		chkStream: chkStream,
 		editStart: editStart,
 		editCount: editCount,
 	}
@@ -1856,6 +1881,12 @@ func (g *winAppGUI) showTrayContextMenu() {
 	procAppendMenuW.Call(hMenu, mfString, idmOpenDownloads, uintptr(unsafe.Pointer(utf16Ptr("Open Downloads Folder"))))
 	procAppendMenuW.Call(hMenu, mfSeparator, 0, 0)
 
+	turboFlags := uintptr(mfString | mfUnchecked)
+	if g.cfg.GetSpeedMode() == SpeedModeTurbo {
+		turboFlags = uintptr(mfString | mfChecked)
+	}
+	procAppendMenuW.Call(hMenu, turboFlags, idmToggleTurbo, uintptr(unsafe.Pointer(utf16Ptr("⚡ Turbo Multi-Connection Speed (6x)"))))
+
 	startFlags := uintptr(mfString | mfUnchecked)
 	if isAutoStartEnabled() {
 		startFlags = uintptr(mfString | mfChecked)
@@ -1952,12 +1983,30 @@ func (g *winAppGUI) showRowContextMenu(taskID string) {
 	defer procDestroyMenu.Call(hMenu)
 
 	openState := uintptr(mfString | mfGrayed)
+	openLabel := "Open / Play File"
 	if snap.Status == StatusCompleted {
 		openState = uintptr(mfString | mfEnabled)
+	} else if snap.Status == StatusDownloading || snap.Status == StatusPaused {
+		openState = uintptr(mfString | mfEnabled)
+		openLabel = "🎬 Watch / Play While Downloading"
 	}
-	procAppendMenuW.Call(hMenu, openState, idmOpenFile, uintptr(unsafe.Pointer(utf16Ptr("Open / Play File"))))
+	procAppendMenuW.Call(hMenu, openState, idmOpenFile, uintptr(unsafe.Pointer(utf16Ptr(openLabel))))
 	procAppendMenuW.Call(hMenu, mfString, idmOpenFolder, uintptr(unsafe.Pointer(utf16Ptr("Open Containing Folder"))))
 	procAppendMenuW.Call(hMenu, mfString, idmShowProgress, uintptr(unsafe.Pointer(utf16Ptr("Show Progress Window"))))
+
+	if snap.Status != StatusCompleted {
+		effMode := snap.SpeedMode
+		if effMode != SpeedModeRegular && effMode != SpeedModeTurbo {
+			effMode = g.cfg.GetSpeedMode()
+		}
+		procAppendMenuW.Call(hMenu, mfSeparator, 0, 0)
+		if effMode == SpeedModeTurbo {
+			procAppendMenuW.Call(hMenu, mfString, idmTaskSwitchRegular, uintptr(unsafe.Pointer(utf16Ptr("🎬 Switch to Regular Mode (Watch While Downloading)"))))
+		} else {
+			procAppendMenuW.Call(hMenu, mfString, idmTaskSwitchTurbo, uintptr(unsafe.Pointer(utf16Ptr("⚡ Switch to Turbo Speed (6x Multi-Connection)"))))
+		}
+	}
+
 	procAppendMenuW.Call(hMenu, mfSeparator, 0, 0)
 	procAppendMenuW.Call(hMenu, mfString, idmResume, uintptr(unsafe.Pointer(utf16Ptr("Resume / Retry"))))
 	procAppendMenuW.Call(hMenu, mfString, idmPause, uintptr(unsafe.Pointer(utf16Ptr("Pause"))))
@@ -2105,6 +2154,25 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 			g.showTrayBalloon("FFmpeg Ready", "1080p+ HD merging & MP3 extraction enabled!")
 		}()
 
+	case idmToggleTurbo:
+		if g.cfg.GetSpeedMode() == SpeedModeTurbo {
+			g.cfg.SetSpeedMode(SpeedModeRegular)
+		} else {
+			g.cfg.SetSpeedMode(SpeedModeTurbo)
+		}
+		g.refreshOptionMenuChecks()
+		g.refreshStatusBar()
+
+	case idmTaskSwitchRegular:
+		if selID != "" {
+			g.qm.SetTaskSpeedMode(selID, SpeedModeRegular)
+		}
+
+	case idmTaskSwitchTurbo:
+		if selID != "" {
+			g.qm.SetTaskSpeedMode(selID, SpeedModeTurbo)
+		}
+
 	case idmToggleStartup:
 		next := !isAutoStartEnabled()
 		if err := setAutoStartEnabled(next); err != nil {
@@ -2131,7 +2199,7 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 	case idmAbout:
 		procMessageBoxW.Call(
 			g.mainHwnd,
-			uintptr(unsafe.Pointer(utf16Ptr("GrabAll Download Manager v2.1.2 (Native Win32 Edition)\n\nUltra-lightweight IDM-style downloader built for low-RAM PCs.\n• Native Win32 GUI (~14 MB RAM, zero WebView/Electron bloat)\n• Cached YouTube EJS Solver (11x faster video extraction)\n• Smart Playlist Picker + Windows MAX_PATH Long-Title Protection"))),
+			uintptr(unsafe.Pointer(utf16Ptr("GrabAll Download Manager v2.2.0 (Native Win32 Edition)\n\nUltra-lightweight IDM-style downloader built for low-RAM PCs.\n• Native Win32 GUI (~14 MB RAM, zero WebView/Electron bloat)\n• Turbo 6x Parallel Engine + Switchable Regular Watch-Live Mode\n• Cached YouTube EJS Solver + Smart Playlist Picker"))),
 			uintptr(unsafe.Pointer(utf16Ptr("About GrabAll"))),
 			mbOK|mbIconInfo,
 		)
@@ -2398,6 +2466,11 @@ func addDlgWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 			}
 			chk, _, _ := procSendMessageW.Call(g.addDlg.chkPlay, bmGetCheck, 0, 0)
 			isPlaylist := chk == bstChecked || isPurePlaylistURL(rawURL)
+			chkStream, _, _ := procSendMessageW.Call(g.addDlg.chkStream, bmGetCheck, 0, 0)
+			speedMode := SpeedModeTurbo
+			if chkStream == bstChecked {
+				speedMode = SpeedModeRegular
+			}
 			plStart, _ := strconv.Atoi(strings.TrimSpace(getWindowString(g.addDlg.editStart)))
 			plCount, _ := strconv.Atoi(strings.TrimSpace(getWindowString(g.addDlg.editCount)))
 			if plStart < 1 {
@@ -2414,6 +2487,7 @@ func addDlgWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 				URL:           rawURL,
 				Engine:        EngineAuto,
 				Quality:       qual,
+				SpeedMode:     speedMode,
 				Playlist:      isPlaylist,
 				PlaylistStart: plStart,
 				PlaylistCount: plCount,

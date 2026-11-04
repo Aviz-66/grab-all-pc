@@ -658,6 +658,13 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 	_ = os.MkdirAll(cacheDir, 0755)
 	defer pruneOldPlayerCaches(cacheDir)
 
+	speedMode := qm.ResolveTaskSpeedMode(task)
+	isTurbo := speedMode == SpeedModeTurbo
+	concFrags := "1"
+	if isTurbo {
+		concFrags = "6"
+	}
+
 	args := []string{
 		"--force-ipv4",
 		"--socket-timeout", "15",
@@ -670,9 +677,16 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 		"--progress-template", "download:DOWNLOAD_INFO:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes,progress.total_bytes_estimate)s|%(progress.fragment_index)s|%(progress.fragment_count)s|%(progress.filename)s",
 		"--progress-template", "postprocess:POSTPROCESS_INFO:%(progress.status)s|%(progress.postprocessor)s",
 		"--paths", fmt.Sprintf("home:%s", downloadDir),
-		"--concurrent-fragments", "2",
+		"--concurrent-fragments", concFrags,
+		"--buffer-size", "64K",
 		"--retries", "3",
 		"--fragment-retries", "3",
+	}
+
+	ytDashySort := ""
+	if isTurbo && isYouTubeURL(task.URL) {
+		args = append(args, "--extractor-args", "youtube:formats=dashy,duplicate")
+		ytDashySort = ",proto:http_dash_segments"
 	}
 
 	if pluginsDir := ensureYtDlpSpeedPlugin(); pluginsDir != "" {
@@ -697,6 +711,9 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 	}
 
 	if strings.HasPrefix(quality, "audio") {
+		if ytDashySort != "" {
+			args = append(args, "-S", "proto:http_dash_segments")
+		}
 		switch quality {
 		case "audio-m4a":
 			args = append(args, "-f", "ba[ext=m4a]/ba/b")
@@ -711,12 +728,12 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 		case "audio-mp3":
 			args = append(args, "-f", "ba/b")
 			if hasFFmpeg {
-				args = append(args, "--extract-audio", "--audio-format", "mp3", "--audio-quality", "0")
+				args = append(args, "--extract-audio", "--audio-format", "mp3", "--audio-quality", "0", "--postprocessor-args", "ExtractAudio:-threads 2")
 			}
 		default: // "audio-best" or "audio"
 			args = append(args, "-f", "ba[ext=m4a]/ba/b")
 			if hasFFmpeg {
-				args = append(args, "--extract-audio", "--audio-format", "mp3", "--audio-quality", "0")
+				args = append(args, "--extract-audio", "--audio-format", "mp3", "--audio-quality", "0", "--postprocessor-args", "ExtractAudio:-threads 2")
 			}
 		}
 	} else {
@@ -730,17 +747,17 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 
 		switch quality {
 		case "2160", "4k":
-			args = append(args, "-S", "res:2160,ext:mp4:m4a")
+			args = append(args, "-S", "res:2160,ext:mp4:m4a"+ytDashySort)
 		case "1080":
-			args = append(args, "-S", "res:1080,ext:mp4:m4a")
+			args = append(args, "-S", "res:1080,ext:mp4:m4a"+ytDashySort)
 		case "720":
-			args = append(args, "-S", "res:720,ext:mp4:m4a")
+			args = append(args, "-S", "res:720,ext:mp4:m4a"+ytDashySort)
 		case "480":
-			args = append(args, "-S", "res:480,ext:mp4:m4a")
+			args = append(args, "-S", "res:480,ext:mp4:m4a"+ytDashySort)
 		case "360":
-			args = append(args, "-S", "res:360,ext:mp4:m4a")
+			args = append(args, "-S", "res:360,ext:mp4:m4a"+ytDashySort)
 		default: // "best"
-			args = append(args, "-S", "ext:mp4:m4a")
+			args = append(args, "-S", "ext:mp4:m4a"+ytDashySort)
 		}
 	}
 
@@ -890,7 +907,13 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 				}
 
 				if speedStr != "NA" && speedStr != "Unknown B/s" && speedStr != "" {
-					task.Speed = speedStr
+					if !isTurbo {
+						task.Speed = speedStr + " (Live)"
+					} else if fragCnt > 1 {
+						task.Speed = speedStr + " (6x)"
+					} else {
+						task.Speed = speedStr
+					}
 				}
 				if etaStr != "NA" && etaStr != "Unknown" && etaStr != "" {
 					task.ETA = etaStr

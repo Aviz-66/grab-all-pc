@@ -283,8 +283,9 @@ function updateTaskCard(card, task) {
     statEta.textContent = task.eta ? `⏱️ ${task.eta}` : '';
   }
 
-  if (card.dataset.status !== task.status) {
-    card.dataset.status = task.status;
+  const modeKey = `${task.status}|${task.speedMode || ''}`;
+  if (card.dataset.status !== modeKey) {
+    card.dataset.status = modeKey;
     const actions = card.querySelector('.task-actions');
     if (actions) {
       actions.innerHTML = getTaskButtons(task);
@@ -295,6 +296,12 @@ function updateTaskCard(card, task) {
 
 function getTaskButtons(task) {
   let buttons = '';
+  if (task.status !== 'completed') {
+    const isRegular = task.speedMode === 'regular';
+    buttons += isRegular
+      ? `<button class="btn btn-sm btn-secondary btn-action-mode" data-next="turbo" title="Switch to 6x Turbo Multi-Connection Speed">⚡ Turbo</button>`
+      : `<button class="btn btn-sm btn-secondary btn-action-mode" data-next="regular" title="Switch to Regular 1-Stream Mode (Watch While Downloading)">🎬 Live</button>`;
+  }
   if (task.status === 'downloading') {
     buttons += `<button class="btn btn-sm btn-secondary btn-action-pause" title="Pause">⏸️ Pause</button>`;
     buttons += `<button class="btn btn-sm btn-secondary btn-action-cancel" title="Cancel">⏹️ Cancel</button>`;
@@ -309,6 +316,15 @@ function getTaskButtons(task) {
 }
 
 function attachTaskActionEvents(card, task) {
+  const btnMode = card.querySelector('.btn-action-mode');
+  if (btnMode) {
+    btnMode.onclick = () => {
+      const next = btnMode.getAttribute('data-next') || 'regular';
+      doAction('/api/speed-mode', { id: task.id, speedMode: next });
+      showToast(next === 'regular' ? 'Switched to Regular Mode (Watch Live)' : 'Switched to 6x Turbo Speed');
+    };
+  }
+
   const btnPause = card.querySelector('.btn-action-pause');
   if (btnPause) {
     btnPause.onclick = () => doAction('/api/pause', { id: task.id });

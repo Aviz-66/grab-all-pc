@@ -103,6 +103,7 @@ func (s *Server) setupRoutes() http.Handler {
 	mux.HandleFunc("/api/playlist/preview", s.handlePlaylistPreview)
 	mux.HandleFunc("/api/pause", s.handlePause)
 	mux.HandleFunc("/api/resume", s.handleResume)
+	mux.HandleFunc("/api/speed-mode", s.handleSpeedMode)
 	mux.HandleFunc("/api/cancel", s.handleCancel)
 	mux.HandleFunc("/api/delete", s.handleDelete)
 	mux.HandleFunc("/api/clear-completed", s.handleClearCompleted)
@@ -230,10 +231,11 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":          "ok",
-		"version":         "2.1.2",
+		"version":         "2.2.0",
 		"nativeGui":       s.onShowWindow != nil,
 		"downloadDir":     s.config.GetDownloadDir(),
 		"maxConcurrent":   s.config.GetMaxConcurrent(),
+		"speedMode":       s.config.GetSpeedMode(),
 		"ytDlpAvailable":  hasYtDlp == nil,
 		"ffmpegAvailable": hasFFmpeg,
 	})
@@ -430,6 +432,9 @@ func resolveTaskRevealPaths(cfg *Config, qm *QueueManager, taskID string) (fileP
 			if _, err := os.Stat(sp); err == nil {
 				return sp, filepath.Dir(sp)
 			}
+			if _, err := os.Stat(sp + ".part"); err == nil {
+				return sp + ".part", filepath.Dir(sp)
+			}
 		}
 		if sub != "" {
 			cand := resolveTaskDownloadDir(dirPath, sub)
@@ -491,6 +496,29 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": ok})
 }
 
+func (s *Server) handleSpeedMode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		ID        string `json:"id"`
+		SpeedMode string `json:"speedMode"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	ok := s.queue.SetTaskSpeedMode(req.ID, req.SpeedMode)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":   ok,
+		"speedMode": normalizeSpeedMode(strings.ToLower(strings.TrimSpace(req.SpeedMode))),
+	})
+}
+
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -550,6 +578,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			"ytDlpPath":       s.config.YtDlpPath,
 			"ffmpegPath":      s.config.FFmpegPath,
 			"defaultEngine":   s.config.DefaultEngine,
+			"speedMode":       normalizeSpeedMode(s.config.SpeedMode),
 			"ytDlpAvailable":  hasYtDlp == nil,
 			"ffmpegAvailable": hasFFmpeg,
 		}
@@ -563,6 +592,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			DownloadDir   string `json:"downloadDir"`
 			MaxConcurrent int    `json:"maxConcurrent"`
 			DefaultEngine string `json:"defaultEngine"`
+			SpeedMode     string `json:"speedMode"`
 			YtDlpPath     string `json:"ytDlpPath"`
 			FFmpegPath    string `json:"ffmpegPath"`
 		}
@@ -580,6 +610,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.DefaultEngine != "" {
 			s.config.DefaultEngine = req.DefaultEngine
+		}
+		if req.SpeedMode != "" {
+			s.config.SpeedMode = normalizeSpeedMode(strings.ToLower(strings.TrimSpace(req.SpeedMode)))
 		}
 		if req.YtDlpPath != "" {
 			s.config.YtDlpPath = req.YtDlpPath

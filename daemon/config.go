@@ -10,6 +10,18 @@ import (
 	"sync"
 )
 
+const (
+	SpeedModeTurbo   = "turbo"
+	SpeedModeRegular = "regular"
+)
+
+func normalizeSpeedMode(mode string) string {
+	if mode == SpeedModeRegular {
+		return SpeedModeRegular
+	}
+	return SpeedModeTurbo
+}
+
 type Config struct {
 	Port              int    `json:"port"`
 	AuthToken         string `json:"authToken"`
@@ -17,7 +29,8 @@ type Config struct {
 	MaxConcurrent     int    `json:"maxConcurrent"`
 	YtDlpPath         string `json:"ytDlpPath"`
 	FFmpegPath        string `json:"ffmpegPath"`
-	DefaultEngine     string `json:"defaultEngine"` // "auto", "direct", "ytdlp"
+	DefaultEngine     string `json:"defaultEngine"`       // "auto", "direct", "ytdlp"
+	SpeedMode         string `json:"speedMode,omitempty"` // "turbo" (default 6x) or "regular" (1x sequential watch-live)
 	ShowProgressPopup *bool  `json:"showProgressPopup,omitempty"`
 
 	mu         sync.RWMutex `json:"-"`
@@ -57,6 +70,7 @@ func LoadConfig(configPath string) (*Config, error) {
 		YtDlpPath:     "yt-dlp",
 		FFmpegPath:    "ffmpeg",
 		DefaultEngine: "auto",
+		SpeedMode:     SpeedModeTurbo,
 		configPath:    configPath,
 	}
 
@@ -155,6 +169,21 @@ func (c *Config) SetShowProgressPopup(v bool) {
 	c.mu.Lock()
 	val := v
 	c.ShowProgressPopup = &val
+	c.mu.Unlock()
+	_ = c.Save()
+}
+
+// GetSpeedMode returns "turbo" (default 6x parallel) or "regular" (1x sequential watch-live).
+func (c *Config) GetSpeedMode() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return normalizeSpeedMode(c.SpeedMode)
+}
+
+// SetSpeedMode updates the default speed mode and saves config.
+func (c *Config) SetSpeedMode(mode string) {
+	c.mu.Lock()
+	c.SpeedMode = normalizeSpeedMode(mode)
 	c.mu.Unlock()
 	_ = c.Save()
 }

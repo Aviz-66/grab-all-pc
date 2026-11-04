@@ -41,8 +41,9 @@ type DownloadTask struct {
 	UpdatedAt       time.Time  `json:"updatedAt"`
 	CompletedAt     *time.Time `json:"completedAt,omitempty"`
 
-	Quality   string   `json:"quality,omitempty"` // "best", "2160", "1080", "720", "480", "360", "audio-best", "audio-mp3"
-	SubDir    string   `json:"subDir,omitempty"`  // Optional subfolder inside DownloadDir (e.g. playlist title)
+	Quality   string   `json:"quality,omitempty"`   // "best", "2160", "1080", "720", "480", "360", "audio-best", "audio-mp3"
+	SpeedMode string   `json:"speedMode,omitempty"` // "turbo" or "regular" (empty inherits config)
+	SubDir    string   `json:"subDir,omitempty"`    // Optional subfolder inside DownloadDir (e.g. playlist title)
 	Cookies   []Cookie `json:"cookies,omitempty"`
 	UserAgent string   `json:"userAgent,omitempty"`
 	Referer   string   `json:"referer,omitempty"`
@@ -52,6 +53,7 @@ type DownloadTask struct {
 	cancelFunc context.CancelFunc `json:"-"`
 	runID      uint64             `json:"-"`
 	mu         sync.Mutex         `json:"-"`
+	runMu      sync.Mutex         `json:"-"`
 }
 
 type AddRequest struct {
@@ -60,6 +62,7 @@ type AddRequest struct {
 	FileName      string          `json:"fileName,omitempty"`
 	Engine        string          `json:"engine,omitempty"`        // "direct", "ytdlp", or "auto"
 	Quality       string          `json:"quality,omitempty"`       // "best", "2160", "1080", "720", "480", "360", "audio-best", "audio-mp3"
+	SpeedMode     string          `json:"speedMode,omitempty"`     // "turbo" or "regular"
 	Playlist      bool            `json:"playlist,omitempty"`      // Expand playlist into queue items
 	PlaylistStart int             `json:"playlistStart,omitempty"` // 1-based start index (default 1)
 	PlaylistEnd   int             `json:"playlistEnd,omitempty"`   // 1-based end index (0 = all/count)
@@ -182,6 +185,7 @@ func snapshotTask(t *DownloadTask, includeCookies bool) *DownloadTask {
 		UpdatedAt:       t.UpdatedAt,
 		CompletedAt:     t.CompletedAt,
 		Quality:         t.Quality,
+		SpeedMode:       t.SpeedMode,
 		SubDir:          t.SubDir,
 		UserAgent:       t.UserAgent,
 		Referer:         t.Referer,
@@ -293,6 +297,11 @@ func (qm *QueueManager) AddTask(req AddRequest) (*DownloadTask, error) {
 		}
 	}
 
+	var reqSpeedMode string
+	if strings.TrimSpace(req.SpeedMode) != "" {
+		reqSpeedMode = normalizeSpeedMode(strings.ToLower(strings.TrimSpace(req.SpeedMode)))
+	}
+
 	task := &DownloadTask{
 		ID:        taskID,
 		URL:       req.URL,
@@ -300,6 +309,7 @@ func (qm *QueueManager) AddTask(req AddRequest) (*DownloadTask, error) {
 		FileName:  req.FileName,
 		Engine:    engine,
 		Quality:   req.Quality,
+		SpeedMode: reqSpeedMode,
 		SubDir:    req.SubDir,
 		Status:    StatusQueued,
 		CreatedAt: time.Now(),
@@ -405,6 +415,11 @@ func (qm *QueueManager) AddPlaylistTasks(ctx context.Context, req AddRequest) ([
 		}
 	}
 
+	var reqSpeedMode string
+	if strings.TrimSpace(req.SpeedMode) != "" {
+		reqSpeedMode = normalizeSpeedMode(strings.ToLower(strings.TrimSpace(req.SpeedMode)))
+	}
+
 	now := time.Now()
 	batch := make([]*DownloadTask, 0, len(entries))
 	publicSnapshots := make([]*DownloadTask, 0, len(entries))
@@ -432,6 +447,7 @@ func (qm *QueueManager) AddPlaylistTasks(ctx context.Context, req AddRequest) ([
 			FileName:  outputTemplate,
 			Engine:    EngineYtDlp,
 			Quality:   req.Quality,
+			SpeedMode: reqSpeedMode,
 			SubDir:    subDir,
 			Status:    StatusQueued,
 			CreatedAt: now,
@@ -629,6 +645,56 @@ func (qm *QueueManager) CancelTask(id string) bool {
 	return true
 }
 
+// ResolveTaskSpeedMode returns the effective speed mode ("turbo" or "regular") for a task.
+func (qm *QueueManager) ResolveTaskSpeedMode(task *DownloadTask) string {
+	task.mu.Lock()
+	m := strings.ToLower(strings.TrimSpace(task.SpeedMode))
+	task.mu.Unlock()
+	if m == SpeedModeRegular || m == SpeedModeTurbo {
+		return m
+	}
+	return qm.config.GetSpeedMode()
+}
+
+// SetTaskSpeedMode switches a task between "turbo" (6x multi-connection) and "regular"
+// (1x sequential watch-while-downloading), seamlessly restarting active downloads in-place.
+func (qm *QueueManager) SetTaskSpeedMode(id, mode string) bool {
+	task := qm.GetByID(id)
+	if task == nil {
+		return false
+	}
+
+	target := normalizeSpeedMode(strings.ToLower(strings.TrimSpace(mode)))
+	var restartActive bool
+
+	task.mu.Lock()
+	if task.Status == StatusCompleted {
+		task.mu.Unlock()
+		return false
+	}
+	task.SpeedMode = target
+	task.UpdatedAt = time.Now()
+	if task.Status == StatusDownloading {
+		task.runID++
+		task.Status = StatusQueued
+		task.Speed = "Switching mode..."
+		task.ETA = ""
+		if task.cancelFunc != nil {
+			task.cancelFunc()
+			task.cancelFunc = nil
+		}
+		restartActive = true
+	}
+	task.mu.Unlock()
+
+	qm.save()
+	qm.BroadcastUpdate()
+	if restartActive {
+		qm.triggerLoop()
+	}
+	return true
+}
+
 // DeleteTask removes a task from the list and cleans up partial files if requested.
 func (qm *QueueManager) DeleteTask(id string, deleteFile bool) bool {
 	task := qm.GetByID(id)
@@ -647,6 +713,7 @@ func (qm *QueueManager) DeleteTask(id string, deleteFile bool) bool {
 	if deleteFile && savePath != "" {
 		_ = os.Remove(savePath)
 		_ = os.Remove(savePath + ".part")
+		_ = os.Remove(savePath + ".part.turbo")
 	}
 
 	qm.tasksMu.Lock()
@@ -777,8 +844,19 @@ func (qm *QueueManager) scheduleTasks() {
 
 func (qm *QueueManager) runDownload(ctx context.Context, task *DownloadTask, myRunID uint64) {
 	defer qm.wg.Done()
+	task.runMu.Lock()
+	defer task.runMu.Unlock()
+
+	task.mu.Lock()
+	if task.runID != myRunID {
+		task.mu.Unlock()
+		return
+	}
+	engine := task.Engine
+	task.mu.Unlock()
+
 	var err error
-	if task.Engine == EngineYtDlp {
+	if engine == EngineYtDlp {
 		err = runYtDlpDownload(ctx, qm, task)
 	} else {
 		err = runDirectDownload(ctx, qm, task)
