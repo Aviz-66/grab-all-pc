@@ -241,8 +241,27 @@
   <div id="status-alert" class="alert"></div>
 
   <!-- Primary Page Action -->
+  <div style="display:flex; gap:6px;">
+    <select id="select-quality" style="flex:1; background:var(--card); border:1px solid var(--border); color:var(--text); padding:6px 8px; border-radius:6px; font-size:12px; outline:none;">
+      <optgroup label="Video">
+        <option value="best" selected>🎬 Best Quality</option>
+        <option value="2160">📺 4K (2160p)</option>
+        <option value="1080">📺 1080p</option>
+        <option value="720">📺 720p</option>
+        <option value="480">📺 480p</option>
+        <option value="360">📺 360p</option>
+      </optgroup>
+      <optgroup label="Audio Only">
+        <option value="audio-mp3">🎵 Audio Only (MP3)</option>
+        <option value="audio-m4a">🎵 Audio Only (M4A)</option>
+        <option value="audio-opus">🎵 Audio Only (Opus)</option>
+        <option value="audio-best">🎵 Best Audio</option>
+      </optgroup>
+    </select>
+  </div>
+
   <button id="btn-download-page" class="btn btn-primary">
-    🎬 Download Current Page Video (yt-dlp)
+    🎬 Download Current Page Video
   </button>
 
   <!-- Detected Media -->

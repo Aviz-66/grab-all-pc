@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -98,6 +97,7 @@ func (s *Server) setupRoutes() http.Handler {
 	mux.HandleFunc("/api/clear-completed", s.handleClearCompleted)
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/install-ytdlp", s.handleInstallYtDlp)
+	mux.HandleFunc("/api/install-ffmpeg", s.handleInstallFFmpeg)
 
 	return s.corsAndAuthMiddleware(mux)
 }
@@ -404,16 +404,12 @@ func (s *Server) handleInstallYtDlp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cwd, err := os.Getwd()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	binDir := filepath.Join(cwd, "bin")
+	binDir := filepath.Join(executableDir(), "bin")
 	installedPath, err := DownloadYtDlpStandalone(binDir)
+	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error": "%s"}`, err.Error()), http.StatusInternalServerError)
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
@@ -422,7 +418,32 @@ func (s *Server) handleInstallYtDlp(w http.ResponseWriter, r *http.Request) {
 	s.config.mu.Unlock()
 	_ = s.config.Save()
 
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"path":    installedPath,
+	})
+}
+
+func (s *Server) handleInstallFFmpeg(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	binDir := filepath.Join(executableDir(), "bin")
+	installedPath, err := DownloadFFmpegStandalone(binDir)
 	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	s.config.mu.Lock()
+	s.config.FFmpegPath = installedPath
+	s.config.mu.Unlock()
+	_ = s.config.Save()
+
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"path":    installedPath,

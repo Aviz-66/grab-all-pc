@@ -28,15 +28,27 @@ function setupContextMenus() {
     });
 
     chrome.contextMenus.create({
-      id: 'graball-video-ytdlp',
-      title: '🎬 Download Video with GrabAll (yt-dlp)',
-      contexts: ['link', 'video', 'audio'],
+      id: 'graball-page-best',
+      title: '🎬 Download Video — Best Quality',
+      contexts: ['page', 'link', 'video'],
     });
 
     chrome.contextMenus.create({
-      id: 'graball-page-ytdlp',
-      title: '🎬 Download Current Page Video (yt-dlp)',
-      contexts: ['page'],
+      id: 'graball-page-1080',
+      title: '📺 Download Video — 1080p',
+      contexts: ['page', 'link', 'video'],
+    });
+
+    chrome.contextMenus.create({
+      id: 'graball-page-720',
+      title: '📺 Download Video — 720p',
+      contexts: ['page', 'link', 'video'],
+    });
+
+    chrome.contextMenus.create({
+      id: 'graball-page-audio',
+      title: '🎵 Download Audio Only (MP3)',
+      contexts: ['page', 'link', 'video', 'audio'],
     });
   });
 }
@@ -44,17 +56,24 @@ function setupContextMenus() {
 // Handle Context Menu Clicks
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   let targetUrl = '';
-  let engine = 'auto';
+  let engine = 'ytdlp';
+  let quality = 'best';
 
   if (info.menuItemId === 'graball-link-direct') {
     targetUrl = info.linkUrl;
     engine = 'direct';
-  } else if (info.menuItemId === 'graball-video-ytdlp') {
-    targetUrl = info.srcUrl || info.linkUrl;
-    engine = 'ytdlp';
-  } else if (info.menuItemId === 'graball-page-ytdlp') {
-    targetUrl = tab.url;
-    engine = 'ytdlp';
+  } else if (info.menuItemId === 'graball-page-best') {
+    targetUrl = info.linkUrl || info.srcUrl || tab?.url;
+    quality = 'best';
+  } else if (info.menuItemId === 'graball-page-1080') {
+    targetUrl = info.linkUrl || info.srcUrl || tab?.url;
+    quality = '1080';
+  } else if (info.menuItemId === 'graball-page-720') {
+    targetUrl = info.linkUrl || info.srcUrl || tab?.url;
+    quality = '720';
+  } else if (info.menuItemId === 'graball-page-audio') {
+    targetUrl = info.linkUrl || info.srcUrl || tab?.url;
+    quality = 'audio-mp3';
   }
 
   if (targetUrl) {
@@ -65,6 +84,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         referer: tab?.url,
         title: tab?.title,
         engine: engine,
+        quality: quality,
       });
       showBadgeSuccess(tab?.id);
     } catch (err) {
@@ -157,7 +177,7 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
 });
 
 // Send request to local Go daemon
-async function sendToDaemon({ url, pageUrl, referer, title, fileName, engine = 'auto' }) {
+async function sendToDaemon({ url, pageUrl, referer, title, fileName, engine = 'auto', quality = 'best' }) {
   const config = await chrome.storage.local.get(DEFAULT_CONFIG);
   const daemonUrl = config.daemonUrl || 'http://127.0.0.1:17890';
   const token = config.authToken || '';
@@ -185,6 +205,7 @@ async function sendToDaemon({ url, pageUrl, referer, title, fileName, engine = '
     title: title || '',
     fileName: fileName || '',
     engine: engine,
+    quality: quality || 'best',
     userAgent: navigator.userAgent,
     referer: referer || pageUrl || '',
     cookies: cookies,
@@ -231,6 +252,21 @@ function showBadgeError(tabId) {
 
 // Runtime message listener for popup & content scripts
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'MEDIA_DETECTED_FROM_DOM') {
+    const tabId = sender?.tab?.id;
+    const item = message.media;
+    if (tabId >= 0 && item && item.url) {
+      const list = tabMedia.get(tabId) || [];
+      if (!list.some((m) => m.url === item.url)) {
+        list.push({ url: item.url, type: item.type || 'Video', time: Date.now() });
+        if (list.length > 25) list.shift();
+        tabMedia.set(tabId, list);
+      }
+    }
+    sendResponse({ ok: true });
+    return true;
+  }
+
   if (message.type === 'GET_TAB_MEDIA') {
     const list = tabMedia.get(message.tabId) || [];
     sendResponse({ media: list });

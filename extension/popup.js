@@ -18,10 +18,12 @@ async function loadConfig() {
     authToken: '',
     interceptDownloads: false,
     daemonUrl: 'http://127.0.0.1:17890',
+    preferredQuality: 'best',
   });
 
   document.getElementById('input-token').value = cfg.authToken;
   document.getElementById('check-intercept').checked = cfg.interceptDownloads;
+  document.getElementById('select-quality').value = cfg.preferredQuality || 'best';
 }
 
 async function checkDaemonStatus() {
@@ -69,7 +71,8 @@ async function loadDetectedMedia() {
         `;
 
         div.querySelector('.btn-dl-stream').addEventListener('click', () => {
-          sendDownload(item.url, activeTab.title, engine);
+          const quality = document.getElementById('select-quality').value;
+          sendDownload(item.url, activeTab.title, engine, quality);
         });
 
         container.appendChild(div);
@@ -79,10 +82,16 @@ async function loadDetectedMedia() {
 }
 
 function initListeners() {
+  // Persist quality selection
+  document.getElementById('select-quality').addEventListener('change', async (e) => {
+    await chrome.storage.local.set({ preferredQuality: e.target.value });
+  });
+
   // Download Current Page
   document.getElementById('btn-download-page').addEventListener('click', () => {
     if (!activeTab || !activeTab.url) return;
-    sendDownload(activeTab.url, activeTab.title, 'ytdlp');
+    const quality = document.getElementById('select-quality').value;
+    sendDownload(activeTab.url, activeTab.title, 'ytdlp', quality);
   });
 
   // Intercept downloads toggle
@@ -106,7 +115,7 @@ function initListeners() {
   });
 }
 
-function sendDownload(url, title, engine) {
+function sendDownload(url, title, engine, quality) {
   showAlert('Sending to GrabAll...', false);
 
   chrome.runtime.sendMessage(
@@ -118,6 +127,7 @@ function sendDownload(url, title, engine) {
         referer: activeTab?.url,
         title: title || '',
         engine: engine || 'auto',
+        quality: quality || 'best',
       },
     },
     (res) => {

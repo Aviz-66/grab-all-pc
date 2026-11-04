@@ -173,8 +173,9 @@ function createTaskCard(task) {
   card.className = 'task-card';
   card.id = `task-${task.id}`;
 
-  const isVideo = task.engine === 'ytdlp' || /\.(mp4|webm|mkv|m3u8|mpd)$/i.test(task.fileName || task.url);
-  const icon = isVideo ? '🎬' : '📄';
+  const isAudio = task.quality && task.quality.startsWith('audio');
+  const isVideo = !isAudio && (task.engine === 'ytdlp' || /\.(mp4|webm|mkv|m3u8|mpd)$/i.test(task.fileName || task.url));
+  const icon = isAudio ? '🎵' : (isVideo ? '🎬' : '📄');
 
   card.innerHTML = `
     <div class="task-header">
@@ -184,6 +185,7 @@ function createTaskCard(task) {
           <div class="task-title" title="${escapeHtml(task.title || task.url)}">${escapeHtml(task.title || task.fileName || task.url)}</div>
           <div class="task-meta">
             <span class="engine-tag">${escapeHtml(task.engine)}</span>
+            ${task.quality && task.quality !== 'best' ? `<span class="engine-tag">${escapeHtml(qualityLabel(task.quality))}</span>` : ''}
             <span class="task-url" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(task.url)}</span>
           </div>
         </div>
@@ -191,7 +193,7 @@ function createTaskCard(task) {
       <span class="task-status-badge status-${task.status}">${task.status}</span>
     </div>
 
-    ${task.errorMessage ? `<div class="task-error-text">⚠️ ${escapeHtml(task.errorMessage)}</div>` : ''}
+    <div class="task-error-text" style="${task.errorMessage ? '' : 'display:none;'}">⚠️ ${escapeHtml(task.errorMessage || '')}</div>
 
     <div class="progress-container">
       <div class="progress-bar-bg">
@@ -202,9 +204,9 @@ function createTaskCard(task) {
     <div class="task-footer">
       <div class="task-stats">
         <span class="stat-progress"><strong>${task.progress.toFixed(1)}%</strong></span>
-        ${task.totalBytes > 0 ? `<span class="stat-size">${formatBytes(task.downloadedBytes)} / ${formatBytes(task.totalBytes)}</span>` : `<span class="stat-size">${formatBytes(task.downloadedBytes)}</span>`}
-        ${task.speed ? `<span class="stat-speed">⚡ ${escapeHtml(task.speed)}</span>` : ''}
-        ${task.eta ? `<span class="stat-eta">⏱️ ${escapeHtml(task.eta)}</span>` : ''}
+        <span class="stat-size">${task.totalBytes > 0 ? `${formatBytes(task.downloadedBytes)} / ${formatBytes(task.totalBytes)}` : formatBytes(task.downloadedBytes)}</span>
+        <span class="stat-speed">${task.speed ? `⚡ ${escapeHtml(task.speed)}` : ''}</span>
+        <span class="stat-eta">${task.eta ? `⏱️ ${escapeHtml(task.eta)}` : ''}</span>
       </div>
       <div class="task-actions">
         ${getTaskButtons(task)}
@@ -217,6 +219,24 @@ function createTaskCard(task) {
 }
 
 function updateTaskCard(card, task) {
+  const titleEl = card.querySelector('.task-title');
+  if (titleEl) {
+    const newTitle = task.title || task.fileName || task.url;
+    titleEl.textContent = newTitle;
+    titleEl.title = newTitle;
+  }
+
+  const errEl = card.querySelector('.task-error-text');
+  if (errEl) {
+    if (task.errorMessage) {
+      errEl.style.display = 'block';
+      errEl.textContent = `⚠️ ${task.errorMessage}`;
+    } else {
+      errEl.style.display = 'none';
+      errEl.textContent = '';
+    }
+  }
+
   const badge = card.querySelector('.task-status-badge');
   if (badge) {
     badge.className = `task-status-badge status-${task.status}`;
@@ -327,6 +347,7 @@ function initModals() {
     e.preventDefault();
     const url = document.getElementById('input-url').value.trim();
     const engine = document.getElementById('input-engine').value;
+    const quality = document.getElementById('input-quality').value;
     const fileName = document.getElementById('input-filename').value.trim();
 
     if (!url) return;
@@ -335,7 +356,7 @@ function initModals() {
       const res = await fetch('/api/add', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, engine, fileName }),
+        body: JSON.stringify({ url, engine, quality, fileName }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -398,7 +419,7 @@ function initSettings() {
       const res = await fetch('/api/install-ytdlp', { method: 'POST' });
       const data = await res.json();
       if (res.ok) {
-        showToast('yt-dlp installed successfully!');
+        showToast('yt-dlp (+ QuickJS) installed successfully!');
         await loadSettings();
       } else {
         showToast(data.error || 'Failed to install yt-dlp', true);
@@ -408,6 +429,28 @@ function initSettings() {
     } finally {
       btn.disabled = false;
       btn.textContent = 'Install / Update yt-dlp';
+    }
+  });
+
+  document.getElementById('btn-install-ffmpeg').addEventListener('click', async () => {
+    const btn = document.getElementById('btn-install-ffmpeg');
+    btn.disabled = true;
+    btn.textContent = 'Downloading FFmpeg...';
+
+    try {
+      const res = await fetch('/api/install-ffmpeg', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        showToast('FFmpeg installed successfully!');
+        await loadSettings();
+      } else {
+        showToast(data.error || 'Failed to install FFmpeg', true);
+      }
+    } catch (err) {
+      showToast('Error installing FFmpeg', true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Install FFmpeg';
     }
   });
 }
@@ -428,6 +471,15 @@ async function loadSettings() {
       statusEl.innerHTML = '<span style="color:var(--success)">✅ Installed & Ready</span>';
     } else {
       statusEl.innerHTML = '<span style="color:var(--warning)">⚠️ Not Installed</span>';
+    }
+
+    const ffmpegEl = document.getElementById('ffmpeg-status-text');
+    if (ffmpegEl) {
+      if (cfg.ffmpegAvailable) {
+        ffmpegEl.innerHTML = '<span style="color:var(--success)">✅ Installed & Ready</span>';
+      } else {
+        ffmpegEl.innerHTML = '<span style="color:var(--warning)">⚠️ Optional (install for 1080p+ & MP3)</span>';
+      }
     }
   } catch (err) {
     console.error('Failed to load settings', err);
@@ -459,4 +511,20 @@ function formatBytes(bytes) {
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+function qualityLabel(q) {
+  const labels = {
+    'best': 'Best',
+    '2160': '4K',
+    '1080': '1080p',
+    '720': '720p',
+    '480': '480p',
+    '360': '360p',
+    'audio-best': '🎵 Audio',
+    'audio-mp3': '🎵 MP3',
+    'audio-m4a': '🎵 M4A',
+    'audio-opus': '🎵 Opus',
+  };
+  return labels[q] || q;
 }

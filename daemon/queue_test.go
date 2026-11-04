@@ -94,3 +94,39 @@ func TestQueueManagerBasicOps(t *testing.T) {
 		t.Errorf("Expected 0 tasks remaining, got %d", len(all))
 	}
 }
+
+func TestYouTubeAndQuality(t *testing.T) {
+	if !isYouTubeURL("https://www.youtube.com/watch?v=jTJxwQlb_jY") {
+		t.Errorf("Expected youtube watch URL to be detected")
+	}
+	if !isYouTubeURL("https://youtu.be/jTJxwQlb_jY") {
+		t.Errorf("Expected youtu.be URL to be detected")
+	}
+	if isYouTubeURL("https://vimeo.com/12345") {
+		t.Errorf("Expected vimeo URL not to be detected as YouTube")
+	}
+
+	tmpDir := t.TempDir()
+	cfg := &Config{
+		Port:          17890,
+		AuthToken:     "testtoken",
+		DownloadDir:   tmpDir,
+		MaxConcurrent: 1,
+		DefaultEngine: "auto",
+	}
+	qm := NewQueueManager(cfg, filepath.Join(tmpDir, "queue.json"), NewSSEBroker())
+	defer qm.Stop()
+
+	task, err := qm.AddTask(AddRequest{
+		URL:     "https://www.youtube.com/watch?v=jTJxwQlb_jY",
+		Engine:  EngineYtDlp,
+		Quality: "audio-mp3",
+	})
+	if err != nil {
+		t.Fatalf("AddTask failed: %v", err)
+	}
+	if task.Quality != "audio-mp3" {
+		t.Errorf("Expected quality audio-mp3, got %q", task.Quality)
+	}
+	qm.CancelTask(task.ID)
+}

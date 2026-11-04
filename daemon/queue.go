@@ -41,6 +41,7 @@ type DownloadTask struct {
 	UpdatedAt       time.Time  `json:"updatedAt"`
 	CompletedAt     *time.Time `json:"completedAt,omitempty"`
 
+	Quality   string   `json:"quality,omitempty"` // "best", "1080", "720", "480", "360", "audio-best", "audio-mp3"
 	Cookies   []Cookie `json:"cookies,omitempty"`
 	UserAgent string   `json:"userAgent,omitempty"`
 	Referer   string   `json:"referer,omitempty"`
@@ -55,7 +56,8 @@ type AddRequest struct {
 	URL       string   `json:"url"`
 	Title     string   `json:"title,omitempty"`
 	FileName  string   `json:"fileName,omitempty"`
-	Engine    string   `json:"engine,omitempty"` // "direct", "ytdlp", or "auto"
+	Engine    string   `json:"engine,omitempty"`  // "direct", "ytdlp", or "auto"
+	Quality   string   `json:"quality,omitempty"` // "best", "1080", "720", "480", "360", "audio-best", "audio-mp3"
 	Cookies   []Cookie `json:"cookies,omitempty"`
 	UserAgent string   `json:"userAgent,omitempty"`
 	Referer   string   `json:"referer,omitempty"`
@@ -194,6 +196,7 @@ func (qm *QueueManager) AddTask(req AddRequest) (*DownloadTask, error) {
 		Title:     title,
 		FileName:  req.FileName,
 		Engine:    engine,
+		Quality:   req.Quality,
 		Status:    StatusQueued,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),

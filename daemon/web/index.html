@@ -73,9 +73,28 @@
               </select>
             </div>
             <div class="form-group">
-              <label for="input-filename">Custom Filename (Optional)</label>
-              <input type="text" id="input-filename" placeholder="optional-name.mp4">
+              <label for="input-quality">Quality</label>
+              <select id="input-quality">
+                <optgroup label="Video">
+                  <option value="best">🎬 Best Available</option>
+                  <option value="2160">📺 4K (2160p)</option>
+                  <option value="1080">📺 1080p (Full HD)</option>
+                  <option value="720">📺 720p (HD)</option>
+                  <option value="480">📺 480p (SD)</option>
+                  <option value="360">📺 360p (Low)</option>
+                </optgroup>
+                <optgroup label="Audio Only">
+                  <option value="audio-mp3">🎵 Audio Only (MP3)</option>
+                  <option value="audio-m4a">🎵 Audio Only (M4A)</option>
+                  <option value="audio-opus">🎵 Audio Only (Opus)</option>
+                  <option value="audio-best">🎵 Audio Only (Best)</option>
+                </optgroup>
+              </select>
             </div>
+          </div>
+          <div class="form-group">
+            <label for="input-filename">Custom Filename (Optional)</label>
+            <input type="text" id="input-filename" placeholder="optional-name.mp4">
           </div>
           <div class="modal-actions">
             <button type="button" class="btn btn-secondary" data-close="modal-add">Cancel</button>
@@ -117,6 +136,13 @@
             <div class="engine-status-box">
               <span id="ytdlp-status-text">Checking...</span>
               <button type="button" id="btn-install-ytdlp" class="btn btn-sm btn-accent">Install / Update yt-dlp</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>FFmpeg Status (for 1080p/4K video merge &amp; MP3 audio)</label>
+            <div class="engine-status-box">
+              <span id="ffmpeg-status-text">Checking...</span>
+              <button type="button" id="btn-install-ffmpeg" class="btn btn-sm btn-accent">Install FFmpeg</button>
             </div>
           </div>
           <div class="form-group">
