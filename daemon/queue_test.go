@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestEngineDetection(t *testing.T) {
@@ -403,5 +404,61 @@ func TestZipExtractionAndSubprocessTreeKill(t *testing.T) {
 	rem, _ := os.ReadDir(solverDir)
 	if len(rem) != 3 {
 		t.Fatalf("Expected pruneOldPlayerCaches to keep 3 newest files, got %d", len(rem))
+	}
+}
+
+func TestWindowsMaxPathAndUnicodeSanitization(t *testing.T) {
+	// 1. Multi-byte Sinhala UTF-8 must never split mid-rune or leave trailing spaces/dots
+	sinhalaPlaylist := "Mix - Wickszen - Natawannam | Mewa Balan Iddi (මේවා බලන් ඉද්දි) Official Music Video (Dir.By Pasindu Fdo)..."
+	sub := sanitizeSubDirName(sinhalaPlaylist)
+	if !utf8.ValidString(sub) {
+		t.Fatalf("sanitizeSubDirName produced invalid UTF-8: %q", sub)
+	}
+	if utf16Len(sub) > 55 {
+		t.Fatalf("Expected sanitizeSubDirName <= 55 UTF-16 units, got %d (%q)", utf16Len(sub), sub)
+	}
+	if strings.HasSuffix(sub, " ") || strings.HasSuffix(sub, ".") {
+		t.Fatalf("Subdir must not end with space or dot: %q", sub)
+	}
+
+	// 2. Exact Windows MAX_PATH overflow scenario from user report (existing long Mix folder + long multi-artist track)
+	legacyWinDir := `C:\Users\Administrator\Downloads\Mix - Wickszen - Natawannam _ Mewa Balan Iddi (මේවා බලන් ඉද්දි) Official Music Video (Dir.By Pasindu Fdo)`
+	longTrackTitle := "Mata Aye Ona (මට ආයේ ඕනා) - Raveen Tharuka Yasas Medagedara Shanudrie, Zenith, Kasuni, Piyumali"
+
+	// Case A: Template form ("04 - %(title)s [%(id)s].%(ext)s")
+	fittedTmpl := fitYtDlpOutputTemplate(legacyWinDir, "04 - %(title)s [%(id)s].%(ext)s")
+	if !strings.Contains(fittedTmpl, "%(title).65s") {
+		t.Fatalf("Expected dynamic title precision slice in template, got %q", fittedTmpl)
+	}
+	simulatedExpandedA := legacyWinDir + `\` + "04 - " + truncateUTF16Safe(longTrackTitle, 65) + " [2euX0MvU-Wo].f251.webm.part"
+	if utf16Len(simulatedExpandedA) >= 260 {
+		t.Fatalf("Expanded path A exceeded Windows MAX_PATH (260): %d (%q)", utf16Len(simulatedExpandedA), simulatedExpandedA)
+	}
+
+	// Case B: Persisted literal .webm filename from an earlier failed attempt before v2.1.2
+	persistedFailedName := "04 - " + longTrackTitle + " [2euX0MvU-Wo].webm"
+	fittedLiteral := fitYtDlpOutputTemplate(legacyWinDir, persistedFailedName)
+	if !utf8.ValidString(fittedLiteral) || !strings.HasSuffix(fittedLiteral, " [2euX0MvU-Wo].%(ext)s") {
+		t.Fatalf("Expected fitted literal template to preserve [id].%%(ext)s and valid UTF-8, got %q", fittedLiteral)
+	}
+	simulatedExpandedB := legacyWinDir + `\` + strings.TrimSuffix(fittedLiteral, ".%(ext)s") + ".f251.webm.part"
+	if utf16Len(simulatedExpandedB) >= 260 {
+		t.Fatalf("Expanded path B exceeded Windows MAX_PATH (260): %d (%q)", utf16Len(simulatedExpandedB), simulatedExpandedB)
+	}
+
+	// 3. Existing legacy subfolder on disk is reused when retrying in-progress playlists
+	baseTmp := t.TempDir()
+	legacyName := "Mix - Existing Long Playlist Folder For Retry Continuity"
+	legacyFull := filepath.Join(baseTmp, legacyName)
+	if err := os.MkdirAll(legacyFull, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveTaskDownloadDir(baseTmp, legacyName); got != legacyFull {
+		t.Fatalf("Expected resolveTaskDownloadDir to reuse existing legacy folder %q, got %q", legacyFull, got)
+	}
+
+	// 4. Windows reserved device names are safely prefixed
+	if got := sanitizeFileName("CON.txt"); strings.EqualFold(strings.TrimSuffix(got, ".txt"), "CON") {
+		t.Fatalf("Expected Windows reserved name CON.txt to be escaped, got %q", got)
 	}
 }

@@ -611,10 +611,7 @@ func runYtDlpDownload(ctx context.Context, qm *QueueManager, task *DownloadTask)
 		}
 	}
 
-	downloadDir := qm.config.GetDownloadDir()
-	if task.SubDir != "" {
-		downloadDir = filepath.Join(downloadDir, sanitizeFileName(task.SubDir))
-	}
+	downloadDir := resolveTaskDownloadDir(qm.config.GetDownloadDir(), task.SubDir)
 	if err := os.MkdirAll(downloadDir, 0755); err != nil {
 		return fmt.Errorf("failed to create download directory: %w", err)
 	}
@@ -747,12 +744,12 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 		}
 	}
 
-	// Output template
-	if task.FileName != "" {
-		args = append(args, "-o", task.FileName)
-	} else {
-		args = append(args, "-o", "%(title)s [%(id)s].%(ext)s")
-	}
+	task.mu.Lock()
+	origFileName := task.FileName
+	task.mu.Unlock()
+
+	// Force Windows-safe characters and dynamically fit %(title)s below Windows MAX_PATH (260)
+	args = append(args, "--windows-filenames", "-o", fitYtDlpOutputTemplate(downloadDir, origFileName))
 
 	if cookieFile != "" {
 		args = append(args, "--cookies", cookieFile)
@@ -1009,10 +1006,16 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 	wg.Wait()
 	cmdErr := cmd.Wait()
 	if ctx.Err() != nil {
+		task.mu.Lock()
+		task.FileName = origFileName
+		task.mu.Unlock()
 		return ctx.Err()
 	}
 
 	if cmdErr != nil {
+		task.mu.Lock()
+		task.FileName = origFileName
+		task.mu.Unlock()
 		stderrMu.Lock()
 		detail := strings.Join(stderrLines, "; ")
 		stderrMu.Unlock()

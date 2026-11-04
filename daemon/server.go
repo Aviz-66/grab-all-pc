@@ -230,7 +230,7 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":          "ok",
-		"version":         "2.1.1",
+		"version":         "2.1.2",
 		"nativeGui":       s.onShowWindow != nil,
 		"downloadDir":     s.config.GetDownloadDir(),
 		"maxConcurrent":   s.config.GetMaxConcurrent(),
@@ -432,7 +432,7 @@ func resolveTaskRevealPaths(cfg *Config, qm *QueueManager, taskID string) (fileP
 			}
 		}
 		if sub != "" {
-			cand := filepath.Join(dirPath, sanitizeFileName(sub))
+			cand := resolveTaskDownloadDir(dirPath, sub)
 			if _, err := os.Stat(cand); err == nil {
 				dirPath = cand
 			}

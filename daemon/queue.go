@@ -396,10 +396,7 @@ func (qm *QueueManager) AddPlaylistTasks(ctx context.Context, req AddRequest) ([
 		return []*DownloadTask{single}, "", nil
 	}
 
-	subDir := sanitizeFileName(playlistTitle)
-	if subDir == "" || subDir == "download.bin" {
-		subDir = "Playlist"
-	}
+	subDir := sanitizeSubDirName(playlistTitle)
 
 	maxIdx := len(entries)
 	for _, e := range entries {
