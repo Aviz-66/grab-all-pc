@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GrabAll Download Manager</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Top Bar -->
+    <header class="header">
+      <div class="brand">
+        <div class="logo-icon">⚡</div>
+        <div>
+          <h1>GrabAll</h1>
+          <span class="subtitle">Lightweight Download Manager</span>
+        </div>
+      </div>
+      <div class="header-actions">
+        <div class="system-stats">
+          <span id="active-count-badge" class="badge badge-active">0 Active</span>
+          <span id="speed-badge" class="badge badge-speed">0 KB/s</span>
+        </div>
+        <button id="btn-add-modal" class="btn btn-primary">+ Add URL</button>
+        <button id="btn-settings-modal" class="btn btn-secondary" title="Settings">⚙️ Settings</button>
+      </div>
+    </header>
+
+    <!-- Controls & Filter Bar -->
+    <div class="toolbar">
+      <div class="filters">
+        <button class="filter-tab active" data-filter="all">All <span id="count-all">0</span></button>
+        <button class="filter-tab" data-filter="downloading">Downloading <span id="count-downloading">0</span></button>
+        <button class="filter-tab" data-filter="queued">Queued <span id="count-queued">0</span></button>
+        <button class="filter-tab" data-filter="completed">Completed <span id="count-completed">0</span></button>
+        <button class="filter-tab" data-filter="error">Failed <span id="count-error">0</span></button>
+      </div>
+      <div class="bulk-actions">
+        <button id="btn-clear-completed" class="btn btn-sm btn-ghost">🧹 Clear Completed</button>
+      </div>
+    </div>
+
+    <!-- Main Queue List -->
+    <main class="main-content">
+      <div id="queue-empty" class="empty-state">
+        <div class="empty-icon">📥</div>
+        <h3>No downloads yet</h3>
+        <p>Use the Brave extension to catch downloads & videos, or click <strong>+ Add URL</strong> above.</p>
+      </div>
+      <div id="queue-list" class="queue-list"></div>
+    </main>
+
+    <!-- Add Download Modal -->
+    <div id="modal-add" class="modal-backdrop hidden">
+      <div class="modal">
+        <div class="modal-header">
+          <h3>Add New Download</h3>
+          <button class="modal-close" data-close="modal-add">&times;</button>
+        </div>
+        <form id="form-add">
+          <div class="form-group">
+            <label for="input-url">Download or Video URL *</label>
+            <input type="url" id="input-url" placeholder="https://example.com/file.zip or video page" required autofocus>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="input-engine">Engine</label>
+              <select id="input-engine">
+                <option value="auto">Auto Detect (Recommended)</option>
+                <option value="ytdlp">yt-dlp (YouTube, HLS/m3u8, video streams)</option>
+                <option value="direct">Direct HTTP (Files, zip, iso, mp4)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="input-filename">Custom Filename (Optional)</label>
+              <input type="text" id="input-filename" placeholder="optional-name.mp4">
+            </div>
+          </div>
+          <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" data-close="modal-add">Cancel</button>
+            <button type="submit" class="btn btn-primary">Start Download</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="modal-settings" class="modal-backdrop hidden">
+      <div class="modal">
+        <div class="modal-header">
+          <h3>Daemon Settings</h3>
+          <button class="modal-close" data-close="modal-settings">&times;</button>
+        </div>
+        <form id="form-settings">
+          <div class="form-group">
+            <label for="setting-download-dir">Download Directory</label>
+            <input type="text" id="setting-download-dir" required>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="setting-max-concurrent">Max Concurrent Downloads</label>
+              <input type="number" id="setting-max-concurrent" min="1" max="10" value="2" required>
+              <small>Keep at 1-2 on low-RAM machines (1GB RAM).</small>
+            </div>
+            <div class="form-group">
+              <label for="setting-default-engine">Default Engine</label>
+              <select id="setting-default-engine">
+                <option value="auto">Auto</option>
+                <option value="ytdlp">yt-dlp</option>
+                <option value="direct">Direct</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>yt-dlp Engine Status</label>
+            <div class="engine-status-box">
+              <span id="ytdlp-status-text">Checking...</span>
+              <button type="button" id="btn-install-ytdlp" class="btn btn-sm btn-accent">Install / Update yt-dlp</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="setting-token">Daemon Auth Token (for Brave Extension)</label>
+            <div class="token-copy-box">
+              <input type="text" id="setting-token" readonly>
+              <button type="button" id="btn-copy-token" class="btn btn-sm btn-secondary">Copy Token</button>
+            </div>
+            <small>Paste this token into the GrabAll Brave extension popup to link it.</small>
+          </div>
+          <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" data-close="modal-settings">Close</button>
+            <button type="submit" class="btn btn-primary">Save Settings</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="toast hidden"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

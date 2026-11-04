@@ -1,0 +1,106 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test before release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - run: go test -v ./daemon/...
+
+  build-and-release:
+    name: Build & Release
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            suffix: linux-amd64
+            binary: graball
+          - goos: linux
+            goarch: arm64
+            suffix: linux-arm64
+            binary: graball
+          - goos: windows
+            goarch: amd64
+            suffix: windows-amd64
+            binary: graball.exe
+          - goos: darwin
+            goarch: amd64
+            suffix: darwin-amd64
+            binary: graball
+          - goos: darwin
+            goarch: arm64
+            suffix: darwin-arm64
+            binary: graball
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          go build -ldflags="-s -w" -o ${{ matrix.binary }} ./daemon
+
+      - name: Package
+        run: |
+          mkdir -p release
+          # Copy binary
+          cp ${{ matrix.binary }} release/
+          # Copy extension
+          cp -r extension release/extension
+          # Copy scripts
+          cp -r scripts release/scripts
+          # Copy README
+          cp README.md release/
+          # Tar/Zip
+          cd release
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip -r ../graball-${{ matrix.suffix }}.zip .
+          else
+            tar czf ../graball-${{ matrix.suffix }}.tar.gz .
+          fi
+          cd ..
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            graball-${{ matrix.suffix }}.*
+
+  release-extension:
+    name: Package Extension
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Zip extension
+        run: |
+          cd extension
+          zip -r ../graball-extension.zip .
+
+      - name: Upload extension to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: graball-extension.zip

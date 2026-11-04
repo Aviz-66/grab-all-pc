@@ -1,0 +1,17 @@
+# Binaries
+graball
+graball.exe
+bin/
+
+# Runtime data
+config.json
+queue.json
+downloads/
+*.part
+
+# Temp cookies
+/tmp/ytdlp_cookies_*
+
+# OS junk
+.DS_Store
+Thumbs.db
