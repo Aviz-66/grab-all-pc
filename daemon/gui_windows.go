@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -231,6 +232,8 @@ const (
 	idcAddChkPlay   = 4003
 	idcAddBtnStart  = 4004
 	idcAddBtnCancel = 4005
+	idcAddEditStart = 4006
+	idcAddEditCount = 4007
 )
 
 var (
@@ -512,6 +515,8 @@ type addDialogControls struct {
 	editURL   uintptr
 	comboQual uintptr
 	chkPlay   uintptr
+	editStart uintptr
+	editCount uintptr
 }
 
 var qualityPresets = []struct {
@@ -1682,8 +1687,8 @@ func (g *winAppGUI) openAddURLDialog() {
 		return
 	}
 
-	w := g.scale(470)
-	h := g.scale(242)
+	w := g.scale(480)
+	h := g.scale(282)
 	scrW, _, _ := procGetSystemMetrics.Call(smCxScreen)
 	scrH, _, _ := procGetSystemMetrics.Call(smCyScreen)
 	posX := (int(scrW) - w) / 2
@@ -1705,7 +1710,7 @@ func (g *winAppGUI) openAddURLDialog() {
 	pad := g.scale(14)
 	contentW := w - pad*2 - g.scale(14)
 
-	g.createChildControl("STATIC", "Video / File URL:", wsChild|wsVisible, 0, pad, g.scale(14), contentW, g.scale(18), hwnd, 0, true)
+	g.createChildControl("STATIC", "Video / Playlist / File URL:", wsChild|wsVisible, 0, pad, g.scale(14), contentW, g.scale(18), hwnd, 0, true)
 	editURL := g.createChildControl("EDIT", "", wsChild|wsVisible|wsTabStop|esAutoHScroll, wsExClientEdge, pad, g.scale(35), contentW, g.scale(26), hwnd, idcAddEditURL, false)
 
 	g.createChildControl("STATIC", "Format / Quality:", wsChild|wsVisible, 0, pad, g.scale(72), g.scale(130), g.scale(20), hwnd, 0, false)
@@ -1715,19 +1720,27 @@ func (g *winAppGUI) openAddURLDialog() {
 	}
 	procSendMessageW.Call(combo, cbSetCurSel, 0, 0)
 
-	chkPlay := g.createChildControl("BUTTON", "Download entire YouTube playlist (into subfolder)", wsChild|wsVisible|wsTabStop|bsAutoCheckBox, 0, pad, g.scale(106), contentW, g.scale(22), hwnd, idcAddChkPlay, false)
+	chkPlay := g.createChildControl("BUTTON", "Download YouTube playlist (saves into subfolder)", wsChild|wsVisible|wsTabStop|bsAutoCheckBox, 0, pad, g.scale(106), contentW, g.scale(22), hwnd, idcAddChkPlay, false)
+
+	g.createChildControl("STATIC", "Playlist Start #:", wsChild|wsVisible, 0, pad, g.scale(138), g.scale(105), g.scale(20), hwnd, 0, false)
+	editStart := g.createChildControl("EDIT", "1", wsChild|wsVisible|wsTabStop|esAutoHScroll, wsExClientEdge, pad+g.scale(108), g.scale(135), g.scale(56), g.scale(24), hwnd, idcAddEditStart, false)
+
+	g.createChildControl("STATIC", "Max Videos (0 = All):", wsChild|wsVisible, 0, pad+g.scale(182), g.scale(138), g.scale(145), g.scale(20), hwnd, 0, false)
+	editCount := g.createChildControl("EDIT", "0", wsChild|wsVisible|wsTabStop|esAutoHScroll, wsExClientEdge, pad+g.scale(330), g.scale(135), g.scale(66), g.scale(24), hwnd, idcAddEditCount, false)
 
 	btnW := g.scale(130)
 	btnH := g.scale(32)
-	btnY := g.scale(148)
+	btnY := g.scale(182)
 	g.createChildControl("BUTTON", "Start Download", wsChild|wsVisible|wsTabStop|bsDefPushButton, 0, pad+contentW-btnW*2-g.scale(8), btnY, btnW, btnH, hwnd, idcAddBtnStart, true)
 	g.createChildControl("BUTTON", "Cancel", wsChild|wsVisible|wsTabStop|bsPushButton, 0, pad+contentW-btnW, btnY, btnW, btnH, hwnd, idcAddBtnCancel, false)
 
 	// Auto-paste URL from clipboard if present (classic IDM touch!)
 	if clip := readClipboardText(hwnd); strings.HasPrefix(clip, "http://") || strings.HasPrefix(clip, "https://") {
 		setWindowString(editURL, clip)
-		if isPurePlaylistURL(clip) {
-			procSendMessageW.Call(chkPlay, bmSetCheck, bstChecked, 0)
+		if isPurePlaylistURL(clip) || strings.Contains(strings.ToLower(clip), "list=") {
+			if isPurePlaylistURL(clip) {
+				procSendMessageW.Call(chkPlay, bmSetCheck, bstChecked, 0)
+			}
 		}
 	}
 
@@ -1736,6 +1749,8 @@ func (g *winAppGUI) openAddURLDialog() {
 		editURL:   editURL,
 		comboQual: combo,
 		chkPlay:   chkPlay,
+		editStart: editStart,
+		editCount: editCount,
 	}
 
 	procShowWindow.Call(hwnd, swShowNormal)
@@ -2111,7 +2126,7 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 	case idmAbout:
 		procMessageBoxW.Call(
 			g.mainHwnd,
-			uintptr(unsafe.Pointer(utf16Ptr("GrabAll Download Manager v2.0.5 (Native Win32 Edition)\n\nUltra-lightweight IDM-style downloader built for low-RAM PCs.\n• Native Win32 GUI (~14 MB RAM, zero WebView/Electron bloat)\n• Fast-Start unpacked yt-dlp + Direct HTTP resume (YouTube, Playlists, Facebook, TikTok, 1400+ sites)"))),
+			uintptr(unsafe.Pointer(utf16Ptr("GrabAll Download Manager v2.1.0 (Native Win32 Edition)\n\nUltra-lightweight IDM-style downloader built for low-RAM PCs.\n• Native Win32 GUI (~14 MB RAM, zero WebView/Electron bloat)\n• Smart Playlist Picker (Custom Count / Range / Audio & HD Video)\n• Fast-Start unpacked yt-dlp + Direct HTTP resume"))),
 			uintptr(unsafe.Pointer(utf16Ptr("About GrabAll"))),
 			mbOK|mbIconInfo,
 		)
@@ -2378,15 +2393,25 @@ func addDlgWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 			}
 			chk, _, _ := procSendMessageW.Call(g.addDlg.chkPlay, bmGetCheck, 0, 0)
 			isPlaylist := chk == bstChecked || isPurePlaylistURL(rawURL)
+			plStart, _ := strconv.Atoi(strings.TrimSpace(getWindowString(g.addDlg.editStart)))
+			plCount, _ := strconv.Atoi(strings.TrimSpace(getWindowString(g.addDlg.editCount)))
+			if plStart < 1 {
+				plStart = 1
+			}
+			if plCount < 0 {
+				plCount = 0
+			}
 
 			g.addDlg = nil
 			procDestroyWindow.Call(hwnd)
 
 			req := AddRequest{
-				URL:      rawURL,
-				Engine:   EngineAuto,
-				Quality:  qual,
-				Playlist: isPlaylist,
+				URL:           rawURL,
+				Engine:        EngineAuto,
+				Quality:       qual,
+				Playlist:      isPlaylist,
+				PlaylistStart: plStart,
+				PlaylistCount: plCount,
 			}
 
 			if isPlaylist {

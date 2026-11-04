@@ -25,11 +25,17 @@ async function loadConfig() {
   document.getElementById('check-intercept').checked = cfg.interceptDownloads;
   document.getElementById('select-quality').value = cfg.preferredQuality || 'best';
 
-  if (activeTab && activeTab.url && activeTab.url.includes('/playlist?') && activeTab.url.includes('list=')) {
-    const plCheck = document.getElementById('check-playlist');
-    if (plCheck) plCheck.checked = true;
+  const hasList = activeTab && activeTab.url && activeTab.url.includes('list=');
+  const isPurePl = activeTab && activeTab.url && activeTab.url.includes('/playlist?') && hasList;
+  const plCheck = document.getElementById('check-playlist');
+  const plRow = document.getElementById('playlist-range-row');
+  if (isPurePl && plCheck) {
+    plCheck.checked = true;
+    if (plRow) plRow.style.display = 'flex';
     const dlBtn = document.getElementById('btn-download-page');
-    if (dlBtn) dlBtn.textContent = '📑 Download Entire Playlist';
+    if (dlBtn) dlBtn.textContent = '📑 Download Playlist Videos';
+  } else if (hasList && plRow && plCheck?.checked) {
+    plRow.style.display = 'flex';
   }
 }
 
@@ -101,12 +107,26 @@ function initListeners() {
     await chrome.storage.local.set({ preferredQuality: e.target.value });
   });
 
+  const plCheck = document.getElementById('check-playlist');
+  const plRow = document.getElementById('playlist-range-row');
+  if (plCheck && plRow) {
+    plCheck.addEventListener('change', () => {
+      plRow.style.display = plCheck.checked ? 'flex' : 'none';
+      const dlBtn = document.getElementById('btn-download-page');
+      if (dlBtn) {
+        dlBtn.textContent = plCheck.checked ? '📑 Download Playlist Videos' : '🎬 Download Current Page Video';
+      }
+    });
+  }
+
   // Download Current Page
   document.getElementById('btn-download-page').addEventListener('click', () => {
     if (!activeTab || !activeTab.url) return;
     const quality = document.getElementById('select-quality').value;
     const playlist = document.getElementById('check-playlist')?.checked || false;
-    sendDownload(activeTab.url, activeTab.title, 'ytdlp', quality, playlist);
+    const plStart = parseInt(document.getElementById('input-pl-start')?.value || '1', 10) || 1;
+    const plCount = parseInt(document.getElementById('input-pl-count')?.value || '0', 10) || 0;
+    sendDownload(activeTab.url, activeTab.title, 'ytdlp', quality, playlist, plStart, plCount);
   });
 
   // Intercept downloads toggle
@@ -136,7 +156,7 @@ function initListeners() {
   });
 }
 
-function sendDownload(url, title, engine, quality, playlist = false) {
+function sendDownload(url, title, engine, quality, playlist = false, playlistStart = 1, playlistCount = 0) {
   showAlert(playlist ? 'Scanning playlist...' : 'Sending to GrabAll...', false);
 
   chrome.runtime.sendMessage(
@@ -150,6 +170,8 @@ function sendDownload(url, title, engine, quality, playlist = false) {
         engine: engine || 'auto',
         quality: quality || 'best',
         playlist: Boolean(playlist),
+        playlistStart: playlist ? playlistStart : 0,
+        playlistCount: playlist ? playlistCount : 0,
       },
     },
     (res) => {

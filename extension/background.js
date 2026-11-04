@@ -285,7 +285,21 @@ async function syncYouTubeCookies(daemonUrl, token) {
 }
 
 // Send request to local Go daemon
-async function sendToDaemon({ url, pageUrl, referer, title, fileName, engine = 'auto', quality = 'best', playlist = false, storeId = null }) {
+async function sendToDaemon({
+  url,
+  pageUrl,
+  referer,
+  title,
+  fileName,
+  engine = 'auto',
+  quality = 'best',
+  playlist = false,
+  playlistStart = 0,
+  playlistEnd = 0,
+  playlistCount = 0,
+  playlistItems = null,
+  storeId = null,
+}) {
   const config = await chrome.storage.local.get(DEFAULT_CONFIG);
   const daemonUrl = config.daemonUrl || 'http://127.0.0.1:17890';
   let token = config.authToken || '';
@@ -303,6 +317,10 @@ async function sendToDaemon({ url, pageUrl, referer, title, fileName, engine = '
     engine: engine,
     quality: quality || 'best',
     playlist: Boolean(playlist),
+    playlistStart: Number(playlistStart) || 0,
+    playlistEnd: Number(playlistEnd) || 0,
+    playlistCount: Number(playlistCount) || 0,
+    playlistItems: Array.isArray(playlistItems) ? playlistItems : undefined,
     userAgent: navigator.userAgent,
     referer: referer || pageUrl || '',
     cookies: cookies,
@@ -392,6 +410,61 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendToDaemon(payload)
       .then((res) => sendResponse({ success: true, data: res }))
       .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === 'PREVIEW_PLAYLIST') {
+    (async () => {
+      try {
+        const config = await chrome.storage.local.get(DEFAULT_CONFIG);
+        const daemonUrl = config.daemonUrl || 'http://127.0.0.1:17890';
+        let token = config.authToken || '';
+        if (!token) {
+          token = await autoPairToken(daemonUrl);
+        }
+        const storeId = sender?.tab?.cookieStoreId || null;
+        const cookies = await collectBrowserCookies(message.payload?.url, message.payload?.pageUrl, storeId);
+        const body = JSON.stringify({
+          url: message.payload?.url || '',
+          title: message.payload?.title || '',
+          playlistStart: Number(message.payload?.playlistStart) || 1,
+          playlistEnd: Number(message.payload?.playlistEnd) || 0,
+          playlistCount: Number(message.payload?.playlistCount) || 0,
+          userAgent: navigator.userAgent,
+          referer: message.payload?.pageUrl || '',
+          cookies,
+        });
+        let res = await fetch(`${daemonUrl}/api/playlist/preview`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Daemon-Token': token,
+            'X-GrabAll-Ext': chrome.runtime.id || 'graball-mv3',
+          },
+          body,
+        });
+        if (res.status === 401) {
+          token = await autoPairToken(daemonUrl);
+          res = await fetch(`${daemonUrl}/api/playlist/preview`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Daemon-Token': token,
+              'X-GrabAll-Ext': chrome.runtime.id || 'graball-mv3',
+            },
+            body,
+          });
+        }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          sendResponse({ success: false, error: data.error || `HTTP ${res.status}` });
+          return;
+        }
+        sendResponse({ success: true, data });
+      } catch (err) {
+        sendResponse({ success: false, error: err.message });
+      }
+    })();
     return true;
   }
 

@@ -55,16 +55,20 @@ type DownloadTask struct {
 }
 
 type AddRequest struct {
-	URL       string   `json:"url"`
-	Title     string   `json:"title,omitempty"`
-	FileName  string   `json:"fileName,omitempty"`
-	Engine    string   `json:"engine,omitempty"`   // "direct", "ytdlp", or "auto"
-	Quality   string   `json:"quality,omitempty"`  // "best", "2160", "1080", "720", "480", "360", "audio-best", "audio-mp3"
-	Playlist  bool     `json:"playlist,omitempty"` // Expand full playlist into queue items
-	SubDir    string   `json:"subDir,omitempty"`
-	Cookies   []Cookie `json:"cookies,omitempty"`
-	UserAgent string   `json:"userAgent,omitempty"`
-	Referer   string   `json:"referer,omitempty"`
+	URL           string          `json:"url"`
+	Title         string          `json:"title,omitempty"`
+	FileName      string          `json:"fileName,omitempty"`
+	Engine        string          `json:"engine,omitempty"`        // "direct", "ytdlp", or "auto"
+	Quality       string          `json:"quality,omitempty"`       // "best", "2160", "1080", "720", "480", "360", "audio-best", "audio-mp3"
+	Playlist      bool            `json:"playlist,omitempty"`      // Expand playlist into queue items
+	PlaylistStart int             `json:"playlistStart,omitempty"` // 1-based start index (default 1)
+	PlaylistEnd   int             `json:"playlistEnd,omitempty"`   // 1-based end index (0 = all/count)
+	PlaylistCount int             `json:"playlistCount,omitempty"` // Max number of videos to queue from PlaylistStart
+	PlaylistItems []PlaylistEntry `json:"playlistItems,omitempty"` // Pre-selected entries from checklist UI
+	SubDir        string          `json:"subDir,omitempty"`
+	Cookies       []Cookie        `json:"cookies,omitempty"`
+	UserAgent     string          `json:"userAgent,omitempty"`
+	Referer       string          `json:"referer,omitempty"`
 }
 
 type QueueManager struct {
@@ -347,14 +351,45 @@ func (qm *QueueManager) AddPlaylistTasks(ctx context.Context, req AddRequest) ([
 		}
 	}
 
-	playlistTitle, entries, err := ExpandYtDlpPlaylist(ctx, qm.config, req)
-	if err != nil {
-		return nil, "", err
+	var (
+		playlistTitle string
+		entries       []PlaylistEntry
+		err           error
+	)
+
+	// If user already selected exact items from the Playlist Checklist UI, queue them directly (0ms!)
+	if len(req.PlaylistItems) > 0 {
+		playlistTitle = strings.TrimSpace(req.Title)
+		if playlistTitle == "" {
+			playlistTitle = "Playlist"
+		}
+		for i, item := range req.PlaylistItems {
+			u := strings.TrimSpace(item.URL)
+			if u == "" {
+				continue
+			}
+			idx := item.Index
+			if idx <= 0 {
+				idx = i + 1
+			}
+			entries = append(entries, PlaylistEntry{
+				Index: idx,
+				URL:   u,
+				Title: strings.TrimSpace(item.Title),
+			})
+		}
+	} else {
+		playlistTitle, entries, err = ExpandYtDlpPlaylist(ctx, qm.config, req)
+		if err != nil {
+			return nil, "", err
+		}
 	}
 
 	if len(entries) == 0 {
 		// Fallback to single video task if not a multi-entry playlist
-		single, err := qm.AddTask(req)
+		singleReq := req
+		singleReq.Playlist = false
+		single, err := qm.AddTask(singleReq)
 		if err != nil {
 			return nil, "", err
 		}
@@ -366,14 +401,25 @@ func (qm *QueueManager) AddPlaylistTasks(ctx context.Context, req AddRequest) ([
 		subDir = "Playlist"
 	}
 
+	maxIdx := len(entries)
+	for _, e := range entries {
+		if e.Index > maxIdx {
+			maxIdx = e.Index
+		}
+	}
+
 	now := time.Now()
 	batch := make([]*DownloadTask, 0, len(entries))
 	publicSnapshots := make([]*DownloadTask, 0, len(entries))
 
 	for i, entry := range entries {
-		idxPrefix := fmt.Sprintf("%02d - ", i+1)
-		if len(entries) >= 100 {
-			idxPrefix = fmt.Sprintf("%03d - ", i+1)
+		num := entry.Index
+		if num <= 0 {
+			num = i + 1
+		}
+		idxPrefix := fmt.Sprintf("%02d - ", num)
+		if maxIdx >= 100 {
+			idxPrefix = fmt.Sprintf("%03d - ", num)
 		}
 		entryTitle := entry.Title
 		if entryTitle == "" {

@@ -100,6 +100,7 @@ func (s *Server) setupRoutes() http.Handler {
 	mux.HandleFunc("/api/events", s.handleSSE)
 	mux.HandleFunc("/api/queue", s.handleQueue)
 	mux.HandleFunc("/api/add", s.handleAdd)
+	mux.HandleFunc("/api/playlist/preview", s.handlePlaylistPreview)
 	mux.HandleFunc("/api/pause", s.handlePause)
 	mux.HandleFunc("/api/resume", s.handleResume)
 	mux.HandleFunc("/api/cancel", s.handleCancel)
@@ -229,7 +230,7 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":          "ok",
-		"version":         "2.0.5",
+		"version":         "2.1.0",
 		"nativeGui":       s.onShowWindow != nil,
 		"downloadDir":     s.config.GetDownloadDir(),
 		"maxConcurrent":   s.config.GetMaxConcurrent(),
@@ -368,6 +369,50 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"task":    task,
+	})
+}
+
+func (s *Server) handlePlaylistPreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req AddRequest
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request JSON: " + err.Error()})
+		return
+	}
+
+	req.URL = strings.TrimSpace(req.URL)
+	if req.URL == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "URL cannot be empty"})
+		return
+	}
+
+	if isYouTubeURL(req.URL) {
+		if len(req.Cookies) > 0 && hasYouTubeAuthCookies(req.Cookies) {
+			s.queue.UpdateYouTubeCookies(req.Cookies)
+		} else if len(req.Cookies) == 0 {
+			req.Cookies = s.queue.GetYouTubeCookies()
+		}
+	}
+
+	plTitle, entries, err := ExpandYtDlpPlaylist(r.Context(), s.config, req)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":       true,
+		"playlistTitle": plTitle,
+		"count":         len(entries),
+		"entries":       entries,
 	})
 }
 

@@ -199,8 +199,34 @@ func parseOptionalInt64(s string) int64 {
 }
 
 type PlaylistEntry struct {
-	URL   string
-	Title string
+	Index int    `json:"index,omitempty"`
+	URL   string `json:"url"`
+	Title string `json:"title"`
+}
+
+func computePlaylistBounds(rawURL string, start, end, count int) (int, int) {
+	if start < 1 {
+		start = 1
+	}
+	if count > 0 {
+		computedEnd := start + count - 1
+		if end <= 0 || computedEnd < end {
+			end = computedEnd
+		}
+	}
+	if end <= 0 {
+		// Cap infinite YouTube Radio/Mix (RD...) playlists at 25 by default unless specified,
+		// and regular playlists at 300 to stay fast on 1GB RAM PCs.
+		if u, err := url.Parse(rawURL); err == nil && strings.HasPrefix(u.Query().Get("list"), "RD") {
+			end = start + 24
+		} else {
+			end = start + 299
+		}
+	}
+	if end < start {
+		end = start
+	}
+	return start, end
 }
 
 func normalizePlaylistURL(rawURL string) string {
@@ -212,6 +238,16 @@ func normalizePlaylistURL(rawURL string) string {
 	if strings.Contains(host, "youtube.com") || strings.Contains(host, "youtu.be") {
 		listID := u.Query().Get("list")
 		if listID != "" {
+			// YouTube Mix / Radio playlists (RD...) require the watch?v=...&list=RD... URL
+			if strings.HasPrefix(listID, "RD") {
+				vid := u.Query().Get("v")
+				if vid == "" && strings.Contains(host, "youtu.be") {
+					vid = strings.Trim(u.Path, "/")
+				}
+				if vid != "" {
+					return "https://www.youtube.com/watch?v=" + url.QueryEscape(vid) + "&list=" + url.QueryEscape(listID)
+				}
+			}
 			return "https://www.youtube.com/playlist?list=" + url.QueryEscape(listID)
 		}
 	}
@@ -256,15 +292,19 @@ func runFlatPlaylist(ctx context.Context, binPath, targetURL, cookieFile string,
 	scanCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 
+	startIdx, endIdx := computePlaylistBounds(req.URL, req.PlaylistStart, req.PlaylistEnd, req.PlaylistCount)
+
 	cacheDir := filepath.Join(executableDir(), "cache")
 	args := []string{
 		"--force-ipv4",
 		"--socket-timeout", "15",
 		"--cache-dir", cacheDir,
+		"--yes-playlist",
 		"--flat-playlist",
 		"--dump-single-json",
 		"--no-warnings",
-		"--playlist-end", "200",
+		"--playlist-start", strconv.Itoa(startIdx),
+		"--playlist-end", strconv.Itoa(endIdx),
 		"--js-runtimes", "deno",
 		"--js-runtimes", "node",
 		"--js-runtimes", "bun",
@@ -301,10 +341,11 @@ func runFlatPlaylist(ctx context.Context, binPath, targetURL, cookieFile string,
 		Type    string `json:"_type"`
 		Title   string `json:"title"`
 		Entries []struct {
-			ID         string `json:"id"`
-			URL        string `json:"url"`
-			WebpageURL string `json:"webpage_url"`
-			Title      string `json:"title"`
+			ID            string `json:"id"`
+			URL           string `json:"url"`
+			WebpageURL    string `json:"webpage_url"`
+			Title         string `json:"title"`
+			PlaylistIndex int    `json:"playlist_index"`
 		} `json:"entries"`
 	}
 
@@ -317,7 +358,7 @@ func runFlatPlaylist(ctx context.Context, binPath, targetURL, cookieFile string,
 	}
 
 	entries := make([]PlaylistEntry, 0, len(parsed.Entries))
-	for _, e := range parsed.Entries {
+	for i, e := range parsed.Entries {
 		// Skip deleted/private placeholder entries
 		if e.Title == "[Deleted video]" || e.Title == "[Private video]" {
 			continue
@@ -336,7 +377,12 @@ func runFlatPlaylist(ctx context.Context, binPath, targetURL, cookieFile string,
 		if entryURL == "" {
 			continue
 		}
+		idx := e.PlaylistIndex
+		if idx <= 0 {
+			idx = startIdx + i
+		}
 		entries = append(entries, PlaylistEntry{
+			Index: idx,
 			URL:   entryURL,
 			Title: strings.TrimSpace(e.Title),
 		})

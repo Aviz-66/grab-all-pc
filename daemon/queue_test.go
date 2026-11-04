@@ -165,6 +165,43 @@ func TestPlaylistHelpersAndProgressParsing(t *testing.T) {
 		t.Errorf("normalizePlaylistURL = %q, expected playlist URL", gotURL)
 	}
 
+	// YouTube Mix / Radio (RD...) must keep watch?v=...&list=RD...
+	mixURL := normalizePlaylistURL("https://www.youtube.com/watch?v=abc123&list=RDabc123&index=3")
+	if mixURL != "https://www.youtube.com/watch?v=abc123&list=RDabc123" {
+		t.Errorf("normalizePlaylistURL for Mix = %q, expected watch URL with RD list", mixURL)
+	}
+
+	// Verify computePlaylistBounds for Start # + Count and RD Mix cap
+	if st, end := computePlaylistBounds("https://www.youtube.com/playlist?list=PL1", 4, 0, 10); st != 4 || end != 13 {
+		t.Errorf("computePlaylistBounds(start=4,count=10) = %d..%d, expected 4..13", st, end)
+	}
+	if st, end := computePlaylistBounds("https://www.youtube.com/watch?v=x&list=RDx", 1, 0, 0); st != 1 || end != 25 {
+		t.Errorf("computePlaylistBounds(RD default) = %d..%d, expected 1..25", st, end)
+	}
+
+	// Verify 0ms checklist PlaylistItems queuing preserves custom indices and quality
+	tmpDir := t.TempDir()
+	cfg := &Config{Port: 17890, DownloadDir: tmpDir, MaxConcurrent: 0}
+	qm := NewQueueManager(cfg, filepath.Join(tmpDir, "queue.json"), NewSSEBroker())
+	defer qm.Stop()
+
+	tasks, plTitle, err := qm.AddPlaylistTasks(context.Background(), AddRequest{
+		URL:      "https://www.youtube.com/playlist?list=PL_COURSE",
+		Title:    "Go Course",
+		Quality:  "audio-mp3",
+		Playlist: true,
+		PlaylistItems: []PlaylistEntry{
+			{Index: 3, URL: "https://www.youtube.com/watch?v=vid3", Title: "Lesson 3"},
+			{Index: 5, URL: "https://www.youtube.com/watch?v=vid5", Title: "Lesson 5"},
+		},
+	})
+	if err != nil || len(tasks) != 2 || plTitle != "Go Course" {
+		t.Fatalf("AddPlaylistTasks with PlaylistItems failed: err=%v len=%d title=%q", err, len(tasks), plTitle)
+	}
+	if !strings.Contains(tasks[0].Title, "03 - Lesson 3") || tasks[0].Quality != "audio-mp3" {
+		t.Errorf("Unexpected task[0]: title=%q quality=%q", tasks[0].Title, tasks[0].Quality)
+	}
+
 	if v := parseOptionalInt64("123456.8"); v != 123456 {
 		t.Errorf("parseOptionalInt64 float = %d, expected 123456", v)
 	}

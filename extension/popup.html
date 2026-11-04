@@ -261,8 +261,15 @@
   </div>
 
   <div class="toggle-row" style="font-size:12px; padding:2px 2px;">
-    <label for="check-playlist" style="cursor:pointer;">📑 Download Entire Playlist (if playlist URL)</label>
+    <label for="check-playlist" style="cursor:pointer;">📑 Download Playlist (if playlist URL)</label>
     <input type="checkbox" id="check-playlist">
+  </div>
+
+  <div id="playlist-range-row" style="display:none; gap:8px; align-items:center; font-size:11px; color:var(--muted); background:var(--card); border:1px solid var(--border); border-radius:6px; padding:6px 8px;">
+    <span>Start #:</span>
+    <input type="number" id="input-pl-start" min="1" value="1" style="width:52px; background:#0b0f19; border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:4px; font-size:12px;">
+    <span style="margin-left:auto;">Max Videos (0=All):</span>
+    <input type="number" id="input-pl-count" min="0" value="10" style="width:58px; background:#0b0f19; border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:4px; font-size:12px;">
   </div>
 
   <button id="btn-download-page" class="btn btn-primary">
