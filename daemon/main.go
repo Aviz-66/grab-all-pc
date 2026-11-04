@@ -5,16 +5,50 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
 	"path/filepath"
-	"syscall"
+	"runtime"
 )
 
 const Banner = `
   ======================================================
-     ⚡ GrabAll Download Manager (Ultra-Lean Edition)
+     ⚡ GrabAll Download Manager v2.0 (Ultra-Lean Edition)
   ======================================================
 `
+
+func isDirWritable(dir string) bool {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return false
+	}
+	probe := filepath.Join(dir, fmt.Sprintf(".graball_write_check_%d", os.Getpid()))
+	f, err := os.OpenFile(probe, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return false
+	}
+	_ = f.Close()
+	_ = os.Remove(probe)
+	return true
+}
+
+func resolveAppFilePath(flagVal, defaultName string) string {
+	if flagVal != defaultName {
+		return flagVal
+	}
+	// On Windows (especially when launched via Explorer or Startup registry where CWD is System32),
+	// prefer storing config.json / queue.json beside graball.exe, falling back to %APPDATA%\GrabAll.
+	if runtime.GOOS == "windows" {
+		exeDir := executableDir()
+		exeCandidate := filepath.Join(exeDir, defaultName)
+		if _, err := os.Stat(exeCandidate); err == nil || isDirWritable(exeDir) {
+			return exeCandidate
+		}
+		if appData := os.Getenv("APPDATA"); appData != "" {
+			appDir := filepath.Join(appData, "GrabAll")
+			_ = os.MkdirAll(appDir, 0755)
+			return filepath.Join(appDir, defaultName)
+		}
+	}
+	return flagVal
+}
 
 func main() {
 	var (
@@ -22,13 +56,20 @@ func main() {
 		configPathFlag  = flag.String("config", "config.json", "Path to config file")
 		dataPathFlag    = flag.String("data", "queue.json", "Path to queue data file")
 		downloadDirFlag = flag.String("downloads", "", "Directory to save downloaded files")
+		trayFlag        = flag.Bool("tray", false, "Start minimized in the Windows system tray")
+		headlessFlag    = flag.Bool("headless", false, "Run background daemon only without native GUI")
 	)
 	flag.Parse()
 
-	fmt.Print(Banner)
+	if runtime.GOOS != "windows" || *headlessFlag {
+		fmt.Print(Banner)
+	}
+
+	cfgPath := resolveAppFilePath(*configPathFlag, "config.json")
+	dataPath := resolveAppFilePath(*dataPathFlag, "queue.json")
 
 	// Load configuration
-	cfg, err := LoadConfig(*configPathFlag)
+	cfg, err := LoadConfig(cfgPath)
 	if err != nil {
 		log.Fatalf("[-] Failed to load config: %v", err)
 	}
@@ -40,56 +81,24 @@ func main() {
 		cfg.DownloadDir = *downloadDirFlag
 	}
 
+	// Single-instance check on Windows: bring existing GrabAll window to front if already running
+	if !*headlessFlag && activateExistingInstance(cfg) {
+		os.Exit(0)
+	}
+
 	// Ensure download directory exists
 	if err := os.MkdirAll(cfg.GetDownloadDir(), 0755); err != nil {
 		log.Printf("[!] Warning: Could not create download dir %s: %v", cfg.GetDownloadDir(), err)
 	}
 
-	// Check yt-dlp
-	ytPath, ytErr := resolveYtDlpBinary(cfg)
-	if ytErr != nil {
-		fmt.Printf("  [!] yt-dlp status: Not found in PATH.\n")
-		fmt.Printf("      You can install it automatically from the Web UI or run scripts/setup_ytdlp.sh\n")
-	} else {
-		fmt.Printf("  [+] yt-dlp binary: %s\n", ytPath)
-	}
-
-	ffmpegPath := resolveFFmpegBinary(cfg)
-	if ffmpegPath != "" {
-		fmt.Printf("  [+] ffmpeg binary: %s\n", ffmpegPath)
-	} else {
-		fmt.Printf("  [*] ffmpeg: Not found (optional, only needed when merging split audio/video)\n")
-	}
-
-	fmt.Printf("\n  🚀 Web Dashboard: http://127.0.0.1:%d\n", cfg.Port)
-	fmt.Printf("  🔑 Auth Token:   %s\n", cfg.GetToken())
-	fmt.Printf("  📁 Save Folder:  %s\n", filepath.Clean(cfg.GetDownloadDir()))
-	fmt.Printf("  ⚙️ Max Workers:  %d concurrent\n\n", cfg.GetMaxConcurrent())
-	fmt.Println("  Ready and listening for connections from Brave Extension and Web UI...")
-	fmt.Println("  Press Ctrl+C to stop.")
-
 	// SSE Broker
 	broker := NewSSEBroker()
 
 	// Queue Manager
-	qm := NewQueueManager(cfg, *dataPathFlag, broker)
+	qm := NewQueueManager(cfg, dataPath, broker)
 
 	// Server
 	srv := NewServer(cfg, qm, broker)
 
-	// Graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
-	go func() {
-		<-sigChan
-		fmt.Println("\n[*] Shutting down GrabAll gracefully...")
-		qm.Stop()
-		qm.save()
-		os.Exit(0)
-	}()
-
-	if err := srv.Start(); err != nil {
-		log.Fatalf("[-] Server failed: %v", err)
-	}
+	runPlatformApp(cfg, qm, srv, *trayFlag, *headlessFlag)
 }

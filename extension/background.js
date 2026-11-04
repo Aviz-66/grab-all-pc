@@ -196,11 +196,31 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
   }
 });
 
+// Auto-pair extension with local GrabAll app (zero manual token copy-pasting)
+async function autoPairToken(daemonUrl) {
+  try {
+    const res = await fetch(`${daemonUrl}/api/pair`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.token) {
+        await chrome.storage.local.set({ authToken: data.token });
+        return data.token;
+      }
+    }
+  } catch (e) {
+    // Daemon offline or older version
+  }
+  return '';
+}
+
 // Send request to local Go daemon
 async function sendToDaemon({ url, pageUrl, referer, title, fileName, engine = 'auto', quality = 'best', playlist = false }) {
   const config = await chrome.storage.local.get(DEFAULT_CONFIG);
   const daemonUrl = config.daemonUrl || 'http://127.0.0.1:17890';
-  const token = config.authToken || '';
+  let token = config.authToken || '';
+  if (!token) {
+    token = await autoPairToken(daemonUrl);
+  }
 
   // Collect relevant cookies
   let cookies = [];
@@ -232,7 +252,7 @@ async function sendToDaemon({ url, pageUrl, referer, title, fileName, engine = '
     cookies: cookies,
   };
 
-  const response = await fetch(`${daemonUrl}/api/add`, {
+  let response = await fetch(`${daemonUrl}/api/add`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -240,6 +260,21 @@ async function sendToDaemon({ url, pageUrl, referer, title, fileName, engine = '
     },
     body: JSON.stringify(payload),
   });
+
+  // If token rotated or missing, auto-pair once and retry transparently
+  if (response.status === 401) {
+    const refreshed = await autoPairToken(daemonUrl);
+    if (refreshed) {
+      response = await fetch(`${daemonUrl}/api/add`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Daemon-Token': refreshed,
+        },
+        body: JSON.stringify(payload),
+      });
+    }
+  }
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
@@ -304,16 +339,55 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'CHECK_DAEMON') {
     chrome.storage.local.get(DEFAULT_CONFIG).then(async (config) => {
       try {
-        const res = await fetch(`${config.daemonUrl}/api/ping`);
+        const daemonUrl = config.daemonUrl || 'http://127.0.0.1:17890';
+        const res = await fetch(`${daemonUrl}/api/ping`);
         if (res.ok) {
           const data = await res.json();
-          sendResponse({ online: true, info: data });
+          let token = config.authToken || '';
+          if (!token) {
+            token = await autoPairToken(daemonUrl);
+          }
+          sendResponse({ online: true, info: data, token });
         } else {
           sendResponse({ online: false });
         }
       } catch (e) {
         sendResponse({ online: false });
       }
+    });
+    return true;
+  }
+
+  if (message.type === 'OPEN_GRABALL_APP') {
+    chrome.storage.local.get(DEFAULT_CONFIG).then(async (config) => {
+      const daemonUrl = config.daemonUrl || 'http://127.0.0.1:17890';
+      let token = config.authToken || '';
+      if (!token) {
+        token = await autoPairToken(daemonUrl);
+      }
+      try {
+        let res = await fetch(`${daemonUrl}/api/show-window`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Daemon-Token': token },
+          body: '{}',
+        });
+        if (res.status === 401) {
+          token = await autoPairToken(daemonUrl);
+          res = await fetch(`${daemonUrl}/api/show-window`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Daemon-Token': token },
+            body: '{}',
+          });
+        }
+        if (res.ok) {
+          const data = await res.json();
+          sendResponse({ success: true, nativeGui: Boolean(data.nativeGui), daemonUrl });
+          return;
+        }
+      } catch (e) {
+        // Fallback to web tab
+      }
+      sendResponse({ success: false, nativeGui: false, daemonUrl });
     });
     return true;
   }

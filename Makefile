@@ -8,9 +8,9 @@ build:
 	@echo "Done! Binary at ./graball"
 
 windows:
-	@echo "Building GrabAll for Windows (amd64)..."
-	@GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o graball.exe ./daemon
-	@echo "Done! Windows executable at ./graball.exe"
+	@echo "Building GrabAll Native Win32 GUI for Windows (amd64)..."
+	@GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w -H=windowsgui" -o graball.exe ./daemon
+	@echo "Done! Windows GUI executable at ./graball.exe"
 
 run: build
 	@./graball

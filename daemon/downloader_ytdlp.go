@@ -236,6 +236,7 @@ func runFlatPlaylist(ctx context.Context, binPath, targetURL, cookieFile string,
 	args = append(args, targetURL)
 
 	cmd := exec.CommandContext(scanCtx, binPath, args...)
+	configureSubprocess(cmd)
 	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1", "PYTHONIOENCODING=utf-8")
 
 	out, err := cmd.Output()
@@ -449,6 +450,7 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 	args = append(args, task.URL)
 
 	cmd := exec.CommandContext(ctx, binPath, args...)
+	configureSubprocess(cmd)
 	// Critical on Windows: force Python inside yt-dlp.exe to flush stdout on every newline
 	// instead of 4KB-8KB block-buffering when piped!
 	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1", "PYTHONIOENCODING=utf-8")

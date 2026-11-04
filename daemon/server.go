@@ -1,15 +1,14 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -61,10 +60,11 @@ func (b *SSEBroker) BroadcastJSON(eventType string, data interface{}) {
 }
 
 type Server struct {
-	config  *Config
-	queue   *QueueManager
-	broker  *SSEBroker
-	httpSrv *http.Server
+	config       *Config
+	queue        *QueueManager
+	broker       *SSEBroker
+	httpSrv      *http.Server
+	onShowWindow func()
 }
 
 func NewServer(cfg *Config, qm *QueueManager, broker *SSEBroker) *Server {
@@ -73,6 +73,10 @@ func NewServer(cfg *Config, qm *QueueManager, broker *SSEBroker) *Server {
 		queue:  qm,
 		broker: broker,
 	}
+}
+
+func (s *Server) SetShowWindowHandler(fn func()) {
+	s.onShowWindow = fn
 }
 
 func (s *Server) setupRoutes() http.Handler {
@@ -90,6 +94,8 @@ func (s *Server) setupRoutes() http.Handler {
 
 	// API endpoints
 	mux.HandleFunc("/api/ping", s.handlePing)
+	mux.HandleFunc("/api/pair", s.handlePair)
+	mux.HandleFunc("/api/show-window", s.handleShowWindow)
 	mux.HandleFunc("/api/events", s.handleSSE)
 	mux.HandleFunc("/api/queue", s.handleQueue)
 	mux.HandleFunc("/api/add", s.handleAdd)
@@ -106,6 +112,13 @@ func (s *Server) setupRoutes() http.Handler {
 	return s.corsAndAuthMiddleware(mux)
 }
 
+func isBrowserExtensionOrigin(origin string) bool {
+	lower := strings.ToLower(strings.TrimSpace(origin))
+	return strings.HasPrefix(lower, "chrome-extension://") ||
+		strings.HasPrefix(lower, "moz-extension://") ||
+		strings.HasPrefix(lower, "safari-web-extension://")
+}
+
 func (s *Server) corsAndAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Set CORS headers
@@ -118,8 +131,8 @@ func (s *Server) corsAndAuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Check auth for /api/ routes (except /api/ping which is public for health checks)
-		if strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api/ping" {
+		// Check auth for /api/ routes (except /api/ping and /api/pair which enforces extension-origin check)
+		if strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api/ping" && r.URL.Path != "/api/pair" {
 			if !s.isAuthorized(r) {
 				http.Error(w, `{"error": "Unauthorized: invalid or missing daemon token"}`, http.StatusUnauthorized)
 				return
@@ -187,11 +200,40 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":          "ok",
-		"version":         "1.2.0",
+		"version":         "2.0.0",
+		"nativeGui":       s.onShowWindow != nil,
 		"downloadDir":     s.config.GetDownloadDir(),
 		"maxConcurrent":   s.config.GetMaxConcurrent(),
 		"ytDlpAvailable":  hasYtDlp == nil,
 		"ffmpegAvailable": hasFFmpeg,
+	})
+}
+
+// handlePair allows browser extensions (Origin: chrome-extension://... or moz-extension://...)
+// to pair automatically with zero manual token copy-pasting, while blocking regular web pages.
+func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
+	origin := r.Header.Get("Origin")
+	if !isBrowserExtensionOrigin(origin) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Forbidden: pairing restricted to browser extensions"})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"token":   s.config.GetToken(),
+	})
+}
+
+func (s *Server) handleShowWindow(w http.ResponseWriter, r *http.Request) {
+	if s.onShowWindow != nil {
+		s.onShowWindow()
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":   true,
+		"nativeGui": s.onShowWindow != nil,
 	})
 }
 
@@ -286,6 +328,31 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func resolveTaskRevealPaths(cfg *Config, qm *QueueManager, taskID string) (filePath, dirPath string) {
+	dirPath = cfg.GetDownloadDir()
+	if taskID == "" {
+		return "", dirPath
+	}
+	if task := qm.GetByID(taskID); task != nil {
+		task.mu.Lock()
+		sp := task.SavePath
+		sub := task.SubDir
+		task.mu.Unlock()
+		if sp != "" {
+			if _, err := os.Stat(sp); err == nil {
+				return sp, filepath.Dir(sp)
+			}
+		}
+		if sub != "" {
+			cand := filepath.Join(dirPath, sanitizeFileName(sub))
+			if _, err := os.Stat(cand); err == nil {
+				dirPath = cand
+			}
+		}
+	}
+	return "", dirPath
+}
+
 func (s *Server) handleOpenFolder(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -297,47 +364,9 @@ func (s *Server) handleOpenFolder(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
-	target := s.config.GetDownloadDir()
-	var filePath string
-	if req.ID != "" {
-		if task := s.queue.GetByID(req.ID); task != nil {
-			task.mu.Lock()
-			sp := task.SavePath
-			sub := task.SubDir
-			task.mu.Unlock()
-			if sp != "" {
-				if _, err := os.Stat(sp); err == nil {
-					filePath = sp
-					target = filepath.Dir(sp)
-				}
-			} else if sub != "" {
-				cand := filepath.Join(target, sanitizeFileName(sub))
-				if _, err := os.Stat(cand); err == nil {
-					target = cand
-				}
-			}
-		}
-	}
+	filePath, target := resolveTaskRevealPaths(s.config, s.queue, req.ID)
+	openFolderOrSelectFile(filePath, target)
 
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "windows":
-		if filePath != "" {
-			cmd = exec.Command("explorer.exe", "/select,"+filepath.Clean(filePath))
-		} else {
-			cmd = exec.Command("explorer.exe", filepath.Clean(target))
-		}
-	case "darwin":
-		if filePath != "" {
-			cmd = exec.Command("open", "-R", filePath)
-		} else {
-			cmd = exec.Command("open", target)
-		}
-	default:
-		cmd = exec.Command("xdg-open", target)
-	}
-
-	_ = cmd.Start()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
 }
@@ -541,4 +570,12 @@ func (s *Server) Start() error {
 		Handler: s.setupRoutes(),
 	}
 	return s.httpSrv.ListenAndServe()
+}
+
+func (s *Server) Shutdown() {
+	if s.httpSrv != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = s.httpSrv.Shutdown(ctx)
+	}
 }

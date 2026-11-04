@@ -36,14 +36,21 @@ async function loadConfig() {
 async function checkDaemonStatus() {
   const dot = document.getElementById('daemon-dot');
   const statusText = document.getElementById('daemon-status-text');
+  const openBtn = document.getElementById('btn-open-dashboard');
 
   chrome.runtime.sendMessage({ type: 'CHECK_DAEMON' }, (response) => {
     if (chrome.runtime.lastError || !response || !response.online) {
       dot.className = 'dot offline';
-      statusText.textContent = 'Daemon Offline';
+      statusText.textContent = 'GrabAll Not Running';
     } else {
       dot.className = 'dot online';
       statusText.textContent = 'Connected';
+      if (response.token) {
+        document.getElementById('input-token').value = response.token;
+      }
+      if (openBtn) {
+        openBtn.textContent = response.info?.nativeGui ? '⚡ Open GrabAll Window' : '🌐 Open Web Dashboard';
+      }
     }
   });
 }
@@ -116,10 +123,16 @@ function initListeners() {
     checkDaemonStatus();
   });
 
-  // Open Dashboard
-  document.getElementById('btn-open-dashboard').addEventListener('click', async () => {
-    const cfg = await chrome.storage.local.get({ daemonUrl: 'http://127.0.0.1:17890' });
-    chrome.tabs.create({ url: cfg.daemonUrl });
+  // Open GrabAll Window (or Web Dashboard fallback on Linux/macOS)
+  document.getElementById('btn-open-dashboard').addEventListener('click', () => {
+    chrome.runtime.sendMessage({ type: 'OPEN_GRABALL_APP' }, async (res) => {
+      if (res && res.nativeGui) {
+        window.close();
+      } else {
+        const cfg = await chrome.storage.local.get({ daemonUrl: 'http://127.0.0.1:17890' });
+        chrome.tabs.create({ url: res?.daemonUrl || cfg.daemonUrl });
+      }
+    });
   });
 }
 

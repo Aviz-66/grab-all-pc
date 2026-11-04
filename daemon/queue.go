@@ -67,13 +67,25 @@ type AddRequest struct {
 }
 
 type QueueManager struct {
-	config     *Config
-	tasks      []*DownloadTask
-	tasksMu    sync.RWMutex
-	dataFile   string
-	notifyChan chan struct{}
-	stopChan   chan struct{}
-	broker     *SSEBroker
+	config          *Config
+	tasks           []*DownloadTask
+	tasksMu         sync.RWMutex
+	dataFile        string
+	notifyChan      chan struct{}
+	stopChan        chan struct{}
+	broker          *SSEBroker
+	hooksMu         sync.RWMutex
+	onUpdate        func()
+	onTaskAdded     func(task *DownloadTask)
+	onPlaylistAdded func(title string, count int)
+}
+
+func (qm *QueueManager) SetUIHooks(onUpdate func(), onTaskAdded func(task *DownloadTask), onPlaylistAdded func(title string, count int)) {
+	qm.hooksMu.Lock()
+	qm.onUpdate = onUpdate
+	qm.onTaskAdded = onTaskAdded
+	qm.onPlaylistAdded = onPlaylistAdded
+	qm.hooksMu.Unlock()
 }
 
 func NewQueueManager(cfg *Config, dataFile string, broker *SSEBroker) *QueueManager {
@@ -184,6 +196,12 @@ func (qm *QueueManager) BroadcastUpdate() {
 	if qm.broker != nil {
 		qm.broker.BroadcastJSON("queue_update", qm.GetAll())
 	}
+	qm.hooksMu.RLock()
+	fn := qm.onUpdate
+	qm.hooksMu.RUnlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 func (qm *QueueManager) GetAll() []*DownloadTask {
@@ -257,7 +275,15 @@ func (qm *QueueManager) AddTask(req AddRequest) (*DownloadTask, error) {
 	qm.BroadcastUpdate()
 	qm.triggerLoop()
 
-	return snapshotTask(stored, false), nil
+	snap := snapshotTask(stored, false)
+	qm.hooksMu.RLock()
+	addedFn := qm.onTaskAdded
+	qm.hooksMu.RUnlock()
+	if addedFn != nil {
+		addedFn(snap)
+	}
+
+	return snap, nil
 }
 
 func isPurePlaylistURL(rawURL string) bool {
@@ -334,6 +360,13 @@ func (qm *QueueManager) AddPlaylistTasks(ctx context.Context, req AddRequest) ([
 	qm.save()
 	qm.BroadcastUpdate()
 	qm.triggerLoop()
+
+	qm.hooksMu.RLock()
+	plFn := qm.onPlaylistAdded
+	qm.hooksMu.RUnlock()
+	if plFn != nil {
+		plFn(playlistTitle, len(publicSnapshots))
+	}
 
 	return publicSnapshots, playlistTitle, nil
 }

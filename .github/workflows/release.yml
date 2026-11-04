@@ -17,10 +17,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23'
-      - run: go test -v ./daemon/...
+      - run: go test -v -race ./daemon/...
 
-  build-and-release:
-    name: Build & Release
+  build-and-package:
+    name: Build (${{ matrix.suffix }})
     needs: test
     runs-on: ubuntu-latest
     strategy:
@@ -60,35 +60,33 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: '0'
         run: |
-          go build -ldflags="-s -w" -o ${{ matrix.binary }} ./daemon
+          LDFLAGS="-s -w"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            LDFLAGS="-s -w -H=windowsgui"
+          fi
+          go build -ldflags="$LDFLAGS" -o ${{ matrix.binary }} ./daemon
 
-      - name: Package
+      - name: Package archive
         run: |
-          mkdir -p release
-          # Copy binary
+          mkdir -p release dist
           cp ${{ matrix.binary }} release/
-          # Copy extension
           cp -r extension release/extension
-          # Copy scripts
           cp -r scripts release/scripts
-          # Copy README
           cp README.md release/
-          # Tar/Zip
           cd release
           if [ "${{ matrix.goos }}" = "windows" ]; then
-            zip -r ../graball-${{ matrix.suffix }}.zip .
+            zip -r ../dist/graball-${{ matrix.suffix }}.zip .
           else
-            tar czf ../graball-${{ matrix.suffix }}.tar.gz .
+            tar czf ../dist/graball-${{ matrix.suffix }}.tar.gz .
           fi
-          cd ..
 
-      - name: Upload release asset
-        uses: softprops/action-gh-release@v2
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
         with:
-          files: |
-            graball-${{ matrix.suffix }}.*
+          name: release-${{ matrix.suffix }}
+          path: dist/graball-${{ matrix.suffix }}.*
 
-  release-extension:
+  package-extension:
     name: Package Extension
     needs: test
     runs-on: ubuntu-latest
@@ -97,10 +95,53 @@ jobs:
 
       - name: Zip extension
         run: |
+          mkdir -p dist
           cd extension
-          zip -r ../graball-extension.zip .
+          zip -r ../dist/graball-extension.zip .
 
-      - name: Upload extension to release
-        uses: softprops/action-gh-release@v2
+      - name: Upload extension artifact
+        uses: actions/upload-artifact@v4
         with:
-          files: graball-extension.zip
+          name: release-extension
+          path: dist/graball-extension.zip
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-and-package, package-extension]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List assets
+        run: ls -lh dist/
+
+      - name: Create or update GitHub Release (with retry)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -e
+          for attempt in 1 2 3 4; do
+            echo "[*] Publishing release $TAG (attempt $attempt)..."
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              if gh release upload "$TAG" dist/* --clobber; then
+                echo "[+] Uploaded all assets to existing release $TAG!"
+                exit 0
+              fi
+            else
+              if gh release create "$TAG" dist/* --title "GrabAll $TAG" --generate-notes; then
+                echo "[+] Created release $TAG with all assets!"
+                exit 0
+              fi
+            fi
+            echo "[!] Transient GitHub API error on attempt $attempt, retrying in $((attempt * 5))s..."
+            sleep $((attempt * 5))
+          done
+          echo "[-] Failed to publish release after 4 attempts"
+          exit 1

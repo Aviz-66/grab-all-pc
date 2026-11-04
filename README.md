@@ -63,28 +63,20 @@ make ytdlp
 # or click "Install yt-dlp" in the web dashboard Settings
 ```
 
-### 3. Run the daemon
+### 3. Run GrabAll
 
-```bash
-./graball
-# or on Windows:
-graball.exe
-```
+- **On Windows (`graball.exe`)**: Just **double-click `graball.exe`**!
+  - Opens a real **Native Win32 IDM-style Desktop Window** (~14 MB RAM, **zero black CMD window**).
+  - Lives in the **Windows System Tray** (right-click tray icon or **Options → Start with Windows** to auto-launch silently on boot).
+  - Pops up a native **IDM Mini Progress Dialog** whenever a download starts (with `Open File` / `Open Folder` on completion).
+- **On Linux / macOS (`./graball`)**: Runs as a lightweight ~12 MB daemon serving the embedded Web Dashboard on `http://127.0.0.1:17890`.
 
-You'll see:
-```
-  ⚡ GrabAll Download Manager (Ultra-Lean Edition)
-  🚀 Web Dashboard: http://127.0.0.1:17890
-  🔑 Auth Token:   <your-token>
-  📁 Save Folder:  ~/Downloads
-```
-
-### 4. Load the Brave/Chrome extension
+### 4. Load the Brave/Chrome extension (Zero Token Copy-Paste!)
 
 1. Open `brave://extensions` (or `chrome://extensions`)
 2. Enable **Developer mode** (top-right toggle)
 3. Click **Load unpacked** → select the `extension/` folder
-4. Open extension popup → paste the **Auth Token** from the daemon output → **Save**
+4. **Done!** The extension **auto-pairs** with `graball.exe` automatically — no token copy-pasting needed.
 
 ### 5. Download stuff
 
@@ -92,7 +84,7 @@ You'll see:
 - **YouTube pages & playlists** → injected **⚡ GrabAll** button under watch pages + **📑 Grab Playlist** button (auto-organizes playlist items into `Downloads/<Playlist Title>/01 - ...`)
 - **Right-click any link / page** → download link, current page video, or entire playlist
 - **Extension popup** shows detected `.m3u8` / `.mp4` streams with quality/audio selector (`Best`, `4K`, `1080p`, `720p`, `MP3`, `M4A`, etc.)
-- **Web Dashboard** at `http://127.0.0.1:17890` for live real-time progress, pause/resume/cancel, **📂 Folder** reveal, and 1-click **yt-dlp + QuickJS + FFmpeg** installers
+- **Native Win32 App (Windows) / Web Dashboard (`127.0.0.1:17890`)** for live progress, pause/resume/cancel, **Open Folder**, and 1-click **yt-dlp + QuickJS + FFmpeg** installers
 
 ## How It Works
 

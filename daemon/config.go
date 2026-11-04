@@ -11,13 +11,14 @@ import (
 )
 
 type Config struct {
-	Port          int    `json:"port"`
-	AuthToken     string `json:"authToken"`
-	DownloadDir   string `json:"downloadDir"`
-	MaxConcurrent int    `json:"maxConcurrent"`
-	YtDlpPath     string `json:"ytDlpPath"`
-	FFmpegPath    string `json:"ffmpegPath"`
-	DefaultEngine string `json:"defaultEngine"` // "auto", "direct", "ytdlp"
+	Port              int    `json:"port"`
+	AuthToken         string `json:"authToken"`
+	DownloadDir       string `json:"downloadDir"`
+	MaxConcurrent     int    `json:"maxConcurrent"`
+	YtDlpPath         string `json:"ytDlpPath"`
+	FFmpegPath        string `json:"ffmpegPath"`
+	DefaultEngine     string `json:"defaultEngine"` // "auto", "direct", "ytdlp"
+	ShowProgressPopup *bool  `json:"showProgressPopup,omitempty"`
 
 	mu         sync.RWMutex `json:"-"`
 	configPath string       `json:"-"`
@@ -137,4 +138,23 @@ func (c *Config) GetMaxConcurrent() int {
 		return 1
 	}
 	return c.MaxConcurrent
+}
+
+// GetShowProgressPopup returns whether the IDM-style mini progress window should appear on new downloads.
+func (c *Config) GetShowProgressPopup() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.ShowProgressPopup == nil {
+		return true
+	}
+	return *c.ShowProgressPopup
+}
+
+// SetShowProgressPopup updates the popup preference and saves config.
+func (c *Config) SetShowProgressPopup(v bool) {
+	c.mu.Lock()
+	val := v
+	c.ShowProgressPopup = &val
+	c.mu.Unlock()
+	_ = c.Save()
 }

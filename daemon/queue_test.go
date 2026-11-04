@@ -3,6 +3,7 @@ package main
 import (
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -194,5 +195,55 @@ func TestSameOriginAuthAndCookieSanitization(t *testing.T) {
 		if len(snap.Cookies) != 0 {
 			t.Errorf("Expected GetAll() snapshot to strip cookies")
 		}
+	}
+}
+
+func TestExtensionAutoPairingAndShowWindow(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := LoadConfig(filepath.Join(tmpDir, "cfg.json"))
+	qm := NewQueueManager(cfg, filepath.Join(tmpDir, "q.json"), nil)
+	defer qm.Stop()
+	srv := NewServer(cfg, qm, NewSSEBroker())
+
+	windowShown := false
+	srv.SetShowWindowHandler(func() {
+		windowShown = true
+	})
+
+	handler := srv.setupRoutes()
+
+	// 1. Web origin must be blocked from /api/pair (403)
+	evilReq := httptest.NewRequest("GET", "/api/pair", nil)
+	evilReq.Header.Set("Origin", "https://malicious-site.example")
+	evilRec := httptest.NewRecorder()
+	handler.ServeHTTP(evilRec, evilReq)
+	if evilRec.Code != 403 {
+		t.Fatalf("Expected 403 Forbidden for web origin on /api/pair, got %d", evilRec.Code)
+	}
+
+	// 2. Empty origin must be blocked from /api/pair (403)
+	emptyReq := httptest.NewRequest("GET", "/api/pair", nil)
+	emptyRec := httptest.NewRecorder()
+	handler.ServeHTTP(emptyRec, emptyReq)
+	if emptyRec.Code != 403 {
+		t.Fatalf("Expected 403 Forbidden for empty origin on /api/pair, got %d", emptyRec.Code)
+	}
+
+	// 3. Browser extension origin must succeed on /api/pair (200)
+	extReq := httptest.NewRequest("GET", "/api/pair", nil)
+	extReq.Header.Set("Origin", "chrome-extension://abcdefghijklmnopabcdefghijklmnop")
+	extRec := httptest.NewRecorder()
+	handler.ServeHTTP(extRec, extReq)
+	if extRec.Code != 200 || !strings.Contains(extRec.Body.String(), cfg.GetToken()) {
+		t.Fatalf("Expected 200 OK with token for chrome-extension origin, got %d (%s)", extRec.Code, extRec.Body.String())
+	}
+
+	// 4. /api/show-window with token triggers native window callback
+	showReq := httptest.NewRequest("POST", "/api/show-window", nil)
+	showReq.Header.Set("X-Daemon-Token", cfg.GetToken())
+	showRec := httptest.NewRecorder()
+	handler.ServeHTTP(showRec, showReq)
+	if showRec.Code != 200 || !windowShown {
+		t.Fatalf("Expected /api/show-window to invoke callback and return 200, got %d (shown=%v)", showRec.Code, windowShown)
 	}
 }
