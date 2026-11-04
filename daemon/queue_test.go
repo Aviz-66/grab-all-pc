@@ -238,6 +238,27 @@ func TestExtensionAutoPairingAndShowWindow(t *testing.T) {
 		t.Fatalf("Expected 200 OK with token for chrome-extension origin, got %d (%s)", extRec.Code, extRec.Body.String())
 	}
 
+	// 4. MV3 service worker with <all_urls> (no Origin, Sec-Fetch-Site: none, X-GrabAll-Ext) must succeed
+	mv3Req := httptest.NewRequest("POST", "/api/pair", nil)
+	mv3Req.Header.Set("Sec-Fetch-Site", "none")
+	mv3Req.Header.Set("X-GrabAll-Ext", "abcdefghijklmnopabcdefghijklmnop")
+	mv3Rec := httptest.NewRecorder()
+	handler.ServeHTTP(mv3Rec, mv3Req)
+	if mv3Rec.Code != 200 {
+		t.Fatalf("Expected 200 OK for MV3 service worker X-GrabAll-Ext, got %d", mv3Rec.Code)
+	}
+
+	// 5. Web origin trying to spoof X-GrabAll-Ext must still be blocked (403)
+	spoofReq := httptest.NewRequest("POST", "/api/pair", nil)
+	spoofReq.Header.Set("Origin", "https://evil.example")
+	spoofReq.Header.Set("Sec-Fetch-Site", "cross-site")
+	spoofReq.Header.Set("X-GrabAll-Ext", "spoofed")
+	spoofRec := httptest.NewRecorder()
+	handler.ServeHTTP(spoofRec, spoofReq)
+	if spoofRec.Code != 403 {
+		t.Fatalf("Expected 403 Forbidden for cross-site web request with X-GrabAll-Ext, got %d", spoofRec.Code)
+	}
+
 	// 4. /api/show-window with token triggers native window callback
 	showReq := httptest.NewRequest("POST", "/api/show-window", nil)
 	showReq.Header.Set("X-Daemon-Token", cfg.GetToken())

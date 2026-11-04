@@ -199,7 +199,12 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
 // Auto-pair extension with local GrabAll app (zero manual token copy-pasting)
 async function autoPairToken(daemonUrl) {
   try {
-    const res = await fetch(`${daemonUrl}/api/pair`);
+    const res = await fetch(`${daemonUrl}/api/pair`, {
+      method: 'POST',
+      headers: {
+        'X-GrabAll-Ext': chrome.runtime.id || 'graball-mv3',
+      },
+    });
     if (res.ok) {
       const data = await res.json();
       if (data && data.token) {
@@ -257,6 +262,7 @@ async function sendToDaemon({ url, pageUrl, referer, title, fileName, engine = '
     headers: {
       'Content-Type': 'application/json',
       'X-Daemon-Token': token,
+      'X-GrabAll-Ext': chrome.runtime.id || 'graball-mv3',
     },
     body: JSON.stringify(payload),
   });
@@ -270,6 +276,7 @@ async function sendToDaemon({ url, pageUrl, referer, title, fileName, engine = '
         headers: {
           'Content-Type': 'application/json',
           'X-Daemon-Token': refreshed,
+          'X-GrabAll-Ext': chrome.runtime.id || 'graball-mv3',
         },
         body: JSON.stringify(payload),
       });

@@ -87,43 +87,67 @@
   }
 
   function sendDownloadRequest({ btn, defaultLabel, defaultBg = '#3b82f6', targetUrl, title, quality, playlist = false }) {
+    if (!chrome?.runtime?.id) {
+      btn.textContent = '↻ Refresh Tab (F5)';
+      btn.title = 'Extension was reloaded — press F5 once to reconnect this tab';
+      btn.style.backgroundColor = '#f59e0b';
+      return;
+    }
+
     btn.textContent = playlist ? '⏳ Scanning...' : '⏳ Sending...';
     btn.disabled = true;
 
-    chrome.runtime.sendMessage(
-      {
-        type: 'SEND_DOWNLOAD',
-        payload: {
-          url: targetUrl,
-          pageUrl: location.href,
-          referer: location.href,
-          title: title || document.title,
-          engine: 'ytdlp',
-          quality: quality || preferredQuality,
-          playlist: Boolean(playlist),
+    try {
+      chrome.runtime.sendMessage(
+        {
+          type: 'SEND_DOWNLOAD',
+          payload: {
+            url: targetUrl,
+            pageUrl: location.href,
+            referer: location.href,
+            title: title || document.title,
+            engine: 'ytdlp',
+            quality: quality || preferredQuality,
+            playlist: Boolean(playlist),
+          },
         },
-      },
-      (res) => {
-        if (chrome.runtime.lastError || !res || !res.success) {
-          btn.textContent = '❌ Error';
-          btn.style.backgroundColor = '#ef4444';
-          setTimeout(() => {
-            btn.textContent = defaultLabel;
-            btn.style.backgroundColor = defaultBg;
-            btn.disabled = false;
-          }, 2500);
-        } else {
-          const count = res.data?.count;
-          btn.textContent = playlist && count ? `✅ ${count} Queued!` : '✅ Queued!';
-          btn.style.backgroundColor = '#10b981';
-          setTimeout(() => {
-            btn.textContent = defaultLabel;
-            btn.style.backgroundColor = defaultBg;
-            btn.disabled = false;
-          }, 3000);
+        (res) => {
+          const runtimeErr = chrome.runtime.lastError?.message || '';
+          if (runtimeErr || !res || !res.success) {
+            const errMsg = res?.error || runtimeErr || 'Error';
+            if (errMsg.toLowerCase().includes('invalidated')) {
+              btn.textContent = '↻ Refresh Tab (F5)';
+            } else if (errMsg.toLowerCase().includes('unauthorized')) {
+              btn.textContent = '🔑 Paste Token';
+            } else if (errMsg.toLowerCase().includes('failed to fetch')) {
+              btn.textContent = '❌ Start graball.exe';
+            } else {
+              btn.textContent = '❌ Error';
+            }
+            btn.title = errMsg;
+            btn.style.backgroundColor = '#ef4444';
+            setTimeout(() => {
+              btn.textContent = defaultLabel;
+              btn.style.backgroundColor = defaultBg;
+              btn.disabled = false;
+            }, 3500);
+          } else {
+            const count = res.data?.count;
+            btn.textContent = playlist && count ? `✅ ${count} Queued!` : '✅ Queued!';
+            btn.style.backgroundColor = '#10b981';
+            setTimeout(() => {
+              btn.textContent = defaultLabel;
+              btn.style.backgroundColor = defaultBg;
+              btn.disabled = false;
+            }, 3000);
+          }
         }
-      }
-    );
+      );
+    } catch (e) {
+      btn.textContent = '↻ Refresh Tab (F5)';
+      btn.style.backgroundColor = '#f59e0b';
+      btn.disabled = false;
+    }
   }
 
   // ─── YouTube Helpers (Watch, Shorts, Playlists) ────────────────────

@@ -119,6 +119,29 @@ func isBrowserExtensionOrigin(origin string) bool {
 		strings.HasPrefix(lower, "safari-web-extension://")
 }
 
+// isTrustedExtensionRequest verifies requests coming from our MV3 browser extension.
+// Note: Chromium MV3 service workers with <all_urls> host_permissions omit Origin on GET
+// requests and send Sec-Fetch-Site: none, whereas regular websites ALWAYS send Origin
+// (http/https/null) + Sec-Fetch-Site: cross-site and cannot send X-GrabAll-Ext (blocked by CORS preflight).
+func isTrustedExtensionRequest(r *http.Request) bool {
+	origin := strings.ToLower(strings.TrimSpace(r.Header.Get("Origin")))
+	if isBrowserExtensionOrigin(origin) {
+		return true
+	}
+	// Block any web page origin immediately
+	if strings.HasPrefix(origin, "http://") || strings.HasPrefix(origin, "https://") || origin == "null" {
+		return false
+	}
+	secSite := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")))
+	if secSite == "cross-site" || secSite == "same-site" {
+		return false
+	}
+	if strings.TrimSpace(r.Header.Get("X-GrabAll-Ext")) != "" {
+		return true
+	}
+	return false
+}
+
 func (s *Server) corsAndAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Set CORS headers
@@ -164,7 +187,12 @@ func (s *Server) isAuthorized(r *http.Request) bool {
 		return true
 	}
 
-	// 4. Same-origin requests from the embedded web dashboard (Chrome/Brave always
+	// 4. Verified browser extension request (Origin: chrome-extension://... or CORS-protected X-GrabAll-Ext)
+	if isTrustedExtensionRequest(r) {
+		return true
+	}
+
+	// 5. Same-origin requests from the embedded web dashboard (Chrome/Brave always
 	// sets Sec-Fetch-Site: same-origin even when Brave Shields strips Referer)
 	if r.Header.Get("Sec-Fetch-Site") == "same-origin" {
 		return true
@@ -200,7 +228,7 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":          "ok",
-		"version":         "2.0.0",
+		"version":         "2.0.1",
 		"nativeGui":       s.onShowWindow != nil,
 		"downloadDir":     s.config.GetDownloadDir(),
 		"maxConcurrent":   s.config.GetMaxConcurrent(),
@@ -209,11 +237,10 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handlePair allows browser extensions (Origin: chrome-extension://... or moz-extension://...)
-// to pair automatically with zero manual token copy-pasting, while blocking regular web pages.
+// handlePair allows browser extensions to pair automatically with zero manual token copy-pasting,
+// while blocking regular web pages.
 func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
-	origin := r.Header.Get("Origin")
-	if !isBrowserExtensionOrigin(origin) {
+	if !isTrustedExtensionRequest(r) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Forbidden: pairing restricted to browser extensions"})
