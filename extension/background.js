@@ -18,6 +18,10 @@ chrome.runtime.onInstalled.addListener(async () => {
   setupContextMenus();
 });
 
+chrome.runtime.onStartup.addListener(() => {
+  setupContextMenus();
+});
+
 // Setup Context Menus
 function setupContextMenus() {
   chrome.contextMenus.removeAll(() => {
@@ -50,6 +54,12 @@ function setupContextMenus() {
       title: '🎵 Download Audio Only (MP3)',
       contexts: ['page', 'link', 'video', 'audio'],
     });
+
+    chrome.contextMenus.create({
+      id: 'graball-playlist',
+      title: '📑 Download Entire Playlist',
+      contexts: ['page', 'link'],
+    });
   });
 }
 
@@ -58,6 +68,12 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   let targetUrl = '';
   let engine = 'ytdlp';
   let quality = 'best';
+  let playlist = false;
+
+  const stored = await chrome.storage.local.get({ preferredQuality: 'best' });
+  if (stored.preferredQuality) {
+    quality = stored.preferredQuality;
+  }
 
   if (info.menuItemId === 'graball-link-direct') {
     targetUrl = info.linkUrl;
@@ -74,6 +90,9 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   } else if (info.menuItemId === 'graball-page-audio') {
     targetUrl = info.linkUrl || info.srcUrl || tab?.url;
     quality = 'audio-mp3';
+  } else if (info.menuItemId === 'graball-playlist') {
+    targetUrl = info.linkUrl || tab?.url;
+    playlist = true;
   }
 
   if (targetUrl) {
@@ -85,6 +104,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         title: tab?.title,
         engine: engine,
         quality: quality,
+        playlist: playlist,
       });
       showBadgeSuccess(tab?.id);
     } catch (err) {
@@ -177,7 +197,7 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
 });
 
 // Send request to local Go daemon
-async function sendToDaemon({ url, pageUrl, referer, title, fileName, engine = 'auto', quality = 'best' }) {
+async function sendToDaemon({ url, pageUrl, referer, title, fileName, engine = 'auto', quality = 'best', playlist = false }) {
   const config = await chrome.storage.local.get(DEFAULT_CONFIG);
   const daemonUrl = config.daemonUrl || 'http://127.0.0.1:17890';
   const token = config.authToken || '';
@@ -206,6 +226,7 @@ async function sendToDaemon({ url, pageUrl, referer, title, fileName, engine = '
     fileName: fileName || '',
     engine: engine,
     quality: quality || 'best',
+    playlist: Boolean(playlist),
     userAgent: navigator.userAgent,
     referer: referer || pageUrl || '',
     cookies: cookies,

@@ -41,7 +41,8 @@ type DownloadTask struct {
 	UpdatedAt       time.Time  `json:"updatedAt"`
 	CompletedAt     *time.Time `json:"completedAt,omitempty"`
 
-	Quality   string   `json:"quality,omitempty"` // "best", "1080", "720", "480", "360", "audio-best", "audio-mp3"
+	Quality   string   `json:"quality,omitempty"` // "best", "2160", "1080", "720", "480", "360", "audio-best", "audio-mp3"
+	SubDir    string   `json:"subDir,omitempty"`  // Optional subfolder inside DownloadDir (e.g. playlist title)
 	Cookies   []Cookie `json:"cookies,omitempty"`
 	UserAgent string   `json:"userAgent,omitempty"`
 	Referer   string   `json:"referer,omitempty"`
@@ -56,8 +57,10 @@ type AddRequest struct {
 	URL       string   `json:"url"`
 	Title     string   `json:"title,omitempty"`
 	FileName  string   `json:"fileName,omitempty"`
-	Engine    string   `json:"engine,omitempty"`  // "direct", "ytdlp", or "auto"
-	Quality   string   `json:"quality,omitempty"` // "best", "1080", "720", "480", "360", "audio-best", "audio-mp3"
+	Engine    string   `json:"engine,omitempty"`   // "direct", "ytdlp", or "auto"
+	Quality   string   `json:"quality,omitempty"`  // "best", "2160", "1080", "720", "480", "360", "audio-best", "audio-mp3"
+	Playlist  bool     `json:"playlist,omitempty"` // Expand full playlist into queue items
+	SubDir    string   `json:"subDir,omitempty"`
 	Cookies   []Cookie `json:"cookies,omitempty"`
 	UserAgent string   `json:"userAgent,omitempty"`
 	Referer   string   `json:"referer,omitempty"`
@@ -113,11 +116,47 @@ func (qm *QueueManager) load() {
 	}
 }
 
+func snapshotTask(t *DownloadTask, includeCookies bool) *DownloadTask {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	cp := &DownloadTask{
+		ID:              t.ID,
+		URL:             t.URL,
+		Title:           t.Title,
+		FileName:        t.FileName,
+		Engine:          t.Engine,
+		Status:          t.Status,
+		Progress:        t.Progress,
+		DownloadedBytes: t.DownloadedBytes,
+		TotalBytes:      t.TotalBytes,
+		Speed:           t.Speed,
+		ETA:             t.ETA,
+		ErrorMessage:    t.ErrorMessage,
+		CreatedAt:       t.CreatedAt,
+		UpdatedAt:       t.UpdatedAt,
+		CompletedAt:     t.CompletedAt,
+		Quality:         t.Quality,
+		SubDir:          t.SubDir,
+		UserAgent:       t.UserAgent,
+		Referer:         t.Referer,
+		SavePath:        t.SavePath,
+	}
+	if includeCookies {
+		cp.Cookies = t.Cookies
+	}
+	return cp
+}
+
 func (qm *QueueManager) save() {
 	qm.tasksMu.RLock()
-	data, err := json.MarshalIndent(qm.tasks, "", "  ")
+	snapshots := make([]*DownloadTask, len(qm.tasks))
+	for i, t := range qm.tasks {
+		snapshots[i] = snapshotTask(t, true)
+	}
 	qm.tasksMu.RUnlock()
 
+	data, err := json.MarshalIndent(snapshots, "", "  ")
 	if err != nil {
 		return
 	}
@@ -129,6 +168,7 @@ func (qm *QueueManager) save() {
 
 	tmp := qm.dataFile + ".tmp"
 	if err := os.WriteFile(tmp, data, 0600); err == nil {
+		_ = os.Remove(qm.dataFile) // Windows rename compatibility
 		_ = os.Rename(tmp, qm.dataFile)
 	}
 }
@@ -150,9 +190,10 @@ func (qm *QueueManager) GetAll() []*DownloadTask {
 	qm.tasksMu.RLock()
 	defer qm.tasksMu.RUnlock()
 
-	// Return shallow copy
 	res := make([]*DownloadTask, len(qm.tasks))
-	copy(res, qm.tasks)
+	for i, t := range qm.tasks {
+		res[i] = snapshotTask(t, false)
+	}
 	return res
 }
 
@@ -197,6 +238,7 @@ func (qm *QueueManager) AddTask(req AddRequest) (*DownloadTask, error) {
 		FileName:  req.FileName,
 		Engine:    engine,
 		Quality:   req.Quality,
+		SubDir:    req.SubDir,
 		Status:    StatusQueued,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -206,14 +248,94 @@ func (qm *QueueManager) AddTask(req AddRequest) (*DownloadTask, error) {
 	}
 
 	qm.tasksMu.Lock()
-	qm.tasks = append([]*DownloadTask{task}, qm.tasks...) // Add to top
+	qm.tasks = append([]*DownloadTask{snapshotTask(task, true)}, qm.tasks...) // Add to top
+	// Return pointer to actual stored task
+	stored := qm.tasks[0]
 	qm.tasksMu.Unlock()
 
 	qm.save()
 	qm.BroadcastUpdate()
 	qm.triggerLoop()
 
-	return task, nil
+	return snapshotTask(stored, false), nil
+}
+
+func isPurePlaylistURL(rawURL string) bool {
+	lower := strings.ToLower(rawURL)
+	return (strings.Contains(lower, "youtube.com/playlist?") || strings.Contains(lower, "music.youtube.com/playlist?")) &&
+		strings.Contains(lower, "list=")
+}
+
+// AddPlaylistTasks expands a playlist via yt-dlp --flat-playlist and queues all entries in order.
+func (qm *QueueManager) AddPlaylistTasks(ctx context.Context, req AddRequest) ([]*DownloadTask, string, error) {
+	req.URL = strings.TrimSpace(req.URL)
+	if req.URL == "" {
+		return nil, "", fmt.Errorf("URL cannot be empty")
+	}
+
+	playlistTitle, entries, err := ExpandYtDlpPlaylist(ctx, qm.config, req)
+	if err != nil {
+		return nil, "", err
+	}
+
+	if len(entries) == 0 {
+		// Fallback to single video task if not a multi-entry playlist
+		single, err := qm.AddTask(req)
+		if err != nil {
+			return nil, "", err
+		}
+		return []*DownloadTask{single}, "", nil
+	}
+
+	subDir := sanitizeFileName(playlistTitle)
+	if subDir == "" || subDir == "download.bin" {
+		subDir = "Playlist"
+	}
+
+	now := time.Now()
+	batch := make([]*DownloadTask, 0, len(entries))
+	publicSnapshots := make([]*DownloadTask, 0, len(entries))
+
+	for i, entry := range entries {
+		idxPrefix := fmt.Sprintf("%02d - ", i+1)
+		if len(entries) >= 100 {
+			idxPrefix = fmt.Sprintf("%03d - ", i+1)
+		}
+		entryTitle := entry.Title
+		if entryTitle == "" {
+			entryTitle = entry.URL
+		}
+		displayTitle := fmt.Sprintf("[%s] %s%s", playlistTitle, idxPrefix, entryTitle)
+		outputTemplate := fmt.Sprintf("%s%%(title)s [%%(id)s].%%(ext)s", idxPrefix)
+
+		task := &DownloadTask{
+			ID:        fmt.Sprintf("dl_%d_%s", now.Unix(), generateToken()[:6]),
+			URL:       entry.URL,
+			Title:     displayTitle,
+			FileName:  outputTemplate,
+			Engine:    EngineYtDlp,
+			Quality:   req.Quality,
+			SubDir:    subDir,
+			Status:    StatusQueued,
+			CreatedAt: now,
+			UpdatedAt: now,
+			Cookies:   req.Cookies,
+			UserAgent: req.UserAgent,
+			Referer:   req.Referer,
+		}
+		batch = append(batch, task)
+		publicSnapshots = append(publicSnapshots, snapshotTask(task, false))
+	}
+
+	qm.tasksMu.Lock()
+	qm.tasks = append(batch, qm.tasks...) // Entry #1 at top, processed first!
+	qm.tasksMu.Unlock()
+
+	qm.save()
+	qm.BroadcastUpdate()
+	qm.triggerLoop()
+
+	return publicSnapshots, playlistTitle, nil
 }
 
 func detectEngine(rawURL string) string {
@@ -282,9 +404,10 @@ func (qm *QueueManager) PauseTask(id string) bool {
 		return false
 	}
 
-	task.mu.Lock()
-	defer task.mu.Unlock()
+	var shouldSave bool
+	var shouldTrigger bool
 
+	task.mu.Lock()
 	if task.Status == StatusDownloading {
 		task.Status = StatusPaused
 		task.Speed = ""
@@ -294,15 +417,21 @@ func (qm *QueueManager) PauseTask(id string) bool {
 			task.cancelFunc()
 			task.cancelFunc = nil
 		}
-		qm.save()
-		qm.BroadcastUpdate()
-		qm.triggerLoop()
-		return true
+		shouldSave = true
+		shouldTrigger = true
 	} else if task.Status == StatusQueued {
 		task.Status = StatusPaused
 		task.UpdatedAt = time.Now()
+		shouldSave = true
+	}
+	task.mu.Unlock()
+
+	if shouldSave {
 		qm.save()
 		qm.BroadcastUpdate()
+		if shouldTrigger {
+			qm.triggerLoop()
+		}
 		return true
 	}
 
@@ -316,15 +445,19 @@ func (qm *QueueManager) ResumeTask(id string) bool {
 		return false
 	}
 
+	resumed := false
 	task.mu.Lock()
-	defer task.mu.Unlock()
-
 	if task.Status == StatusPaused || task.Status == StatusError || task.Status == StatusCanceled {
 		task.Status = StatusQueued
 		task.ErrorMessage = ""
 		task.Speed = ""
 		task.ETA = ""
 		task.UpdatedAt = time.Now()
+		resumed = true
+	}
+	task.mu.Unlock()
+
+	if resumed {
 		qm.save()
 		qm.BroadcastUpdate()
 		qm.triggerLoop()
@@ -342,8 +475,6 @@ func (qm *QueueManager) CancelTask(id string) bool {
 	}
 
 	task.mu.Lock()
-	defer task.mu.Unlock()
-
 	if task.Status == StatusDownloading {
 		task.Status = StatusCanceled
 		task.Speed = ""
@@ -357,6 +488,7 @@ func (qm *QueueManager) CancelTask(id string) bool {
 		task.Status = StatusCanceled
 		task.UpdatedAt = time.Now()
 	}
+	task.mu.Unlock()
 
 	qm.save()
 	qm.BroadcastUpdate()
@@ -376,13 +508,12 @@ func (qm *QueueManager) DeleteTask(id string, deleteFile bool) bool {
 		task.cancelFunc()
 		task.cancelFunc = nil
 	}
+	savePath := task.SavePath
 	task.mu.Unlock()
 
-	if deleteFile {
-		if task.SavePath != "" {
-			_ = os.Remove(task.SavePath)
-			_ = os.Remove(task.SavePath + ".part")
-		}
+	if deleteFile && savePath != "" {
+		_ = os.Remove(savePath)
+		_ = os.Remove(savePath + ".part")
 	}
 
 	qm.tasksMu.Lock()
@@ -413,7 +544,10 @@ func (qm *QueueManager) ClearCompleted() int {
 	newTasks := make([]*DownloadTask, 0, len(qm.tasks))
 	count := 0
 	for _, t := range qm.tasks {
-		if t.Status == StatusCompleted || t.Status == StatusCanceled || t.Status == StatusError {
+		t.mu.Lock()
+		st := t.Status
+		t.mu.Unlock()
+		if st == StatusCompleted || st == StatusCanceled || st == StatusError {
 			count++
 			continue
 		}
@@ -435,9 +569,11 @@ func (qm *QueueManager) countDownloading() int {
 
 	count := 0
 	for _, t := range qm.tasks {
+		t.mu.Lock()
 		if t.Status == StatusDownloading {
 			count++
 		}
+		t.mu.Unlock()
 	}
 	return count
 }
@@ -447,7 +583,10 @@ func (qm *QueueManager) getNextQueued() *DownloadTask {
 	defer qm.tasksMu.RUnlock()
 
 	for _, t := range qm.tasks {
-		if t.Status == StatusQueued {
+		t.mu.Lock()
+		queued := t.Status == StatusQueued
+		t.mu.Unlock()
+		if queued {
 			return t
 		}
 	}
@@ -508,8 +647,6 @@ func (qm *QueueManager) runDownload(ctx context.Context, task *DownloadTask) {
 	}
 
 	task.mu.Lock()
-	defer task.mu.Unlock()
-
 	task.cancelFunc = nil
 	now := time.Now()
 	task.UpdatedAt = now
@@ -529,6 +666,7 @@ func (qm *QueueManager) runDownload(ctx context.Context, task *DownloadTask) {
 		task.Progress = 100.0
 		task.CompletedAt = &now
 	}
+	task.mu.Unlock()
 
 	qm.save()
 	qm.BroadcastUpdate()

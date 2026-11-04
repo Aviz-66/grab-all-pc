@@ -33,6 +33,15 @@ document.addEventListener('DOMContentLoaded', () => {
   initSettings();
 });
 
+let fallbackPollTimer = null;
+
+function stopFallbackPolling() {
+  if (fallbackPollTimer) {
+    clearInterval(fallbackPollTimer);
+    fallbackPollTimer = null;
+  }
+}
+
 // SSE Real-time updates
 function initSSE() {
   if (sseConnection) {
@@ -42,6 +51,7 @@ function initSSE() {
   sseConnection = new EventSource('/api/events');
 
   sseConnection.addEventListener('queue_init', (e) => {
+    stopFallbackPolling();
     try {
       tasks = JSON.parse(e.data);
       renderQueue();
@@ -51,6 +61,7 @@ function initSSE() {
   });
 
   sseConnection.addEventListener('queue_update', (e) => {
+    stopFallbackPolling();
     try {
       tasks = JSON.parse(e.data);
       renderQueue();
@@ -60,8 +71,10 @@ function initSSE() {
   });
 
   sseConnection.onerror = () => {
-    // Fallback to fetch every 3 seconds if SSE fails
-    setTimeout(fetchQueue, 3000);
+    if (!fallbackPollTimer) {
+      fetchQueue();
+      fallbackPollTimer = setInterval(fetchQueue, 1000);
+    }
   };
 }
 
@@ -172,6 +185,7 @@ function createTaskCard(task) {
   const card = document.createElement('div');
   card.className = 'task-card';
   card.id = `task-${task.id}`;
+  card.dataset.status = task.status;
 
   const isAudio = task.quality && task.quality.startsWith('audio');
   const isVideo = !isAudio && (task.engine === 'ytdlp' || /\.(mp4|webm|mkv|m3u8|mpd)$/i.test(task.fileName || task.url));
@@ -269,10 +283,13 @@ function updateTaskCard(card, task) {
     statEta.textContent = task.eta ? `⏱️ ${task.eta}` : '';
   }
 
-  const actions = card.querySelector('.task-actions');
-  if (actions) {
-    actions.innerHTML = getTaskButtons(task);
-    attachTaskActionEvents(card, task);
+  if (card.dataset.status !== task.status) {
+    card.dataset.status = task.status;
+    const actions = card.querySelector('.task-actions');
+    if (actions) {
+      actions.innerHTML = getTaskButtons(task);
+      attachTaskActionEvents(card, task);
+    }
   }
 }
 
@@ -283,6 +300,8 @@ function getTaskButtons(task) {
     buttons += `<button class="btn btn-sm btn-secondary btn-action-cancel" title="Cancel">⏹️ Cancel</button>`;
   } else if (task.status === 'paused' || task.status === 'error' || task.status === 'canceled') {
     buttons += `<button class="btn btn-sm btn-primary btn-action-resume" title="Resume">▶️ Resume</button>`;
+  } else if (task.status === 'completed') {
+    buttons += `<button class="btn btn-sm btn-secondary btn-action-folder" title="Show in Folder">📂 Folder</button>`;
   }
 
   buttons += `<button class="btn btn-sm btn-ghost btn-action-delete" title="Delete">🗑️</button>`;
@@ -303,6 +322,11 @@ function attachTaskActionEvents(card, task) {
   const btnCancel = card.querySelector('.btn-action-cancel');
   if (btnCancel) {
     btnCancel.onclick = () => doAction('/api/cancel', { id: task.id });
+  }
+
+  const btnFolder = card.querySelector('.btn-action-folder');
+  if (btnFolder) {
+    btnFolder.onclick = () => doAction('/api/open-folder', { id: task.id });
   }
 
   const btnDelete = card.querySelector('.btn-action-delete');
@@ -349,18 +373,29 @@ function initModals() {
     const engine = document.getElementById('input-engine').value;
     const quality = document.getElementById('input-quality').value;
     const fileName = document.getElementById('input-filename').value.trim();
+    const playlist = document.getElementById('input-playlist')?.checked || false;
 
     if (!url) return;
+
+    const submitBtn = document.getElementById('btn-submit-add');
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = playlist ? 'Scanning Playlist...' : 'Adding...';
+    }
 
     try {
       const res = await fetch('/api/add', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, engine, quality, fileName }),
+        body: JSON.stringify({ url, engine, quality, fileName, playlist }),
       });
       const data = await res.json();
       if (res.ok) {
-        showToast('Download added!');
+        if (data.playlist) {
+          showToast(`Queued ${data.count} videos from "${data.playlistTitle || 'Playlist'}"!`);
+        } else {
+          showToast('Download added!');
+        }
         modalAdd.classList.add('hidden');
         formAdd.reset();
       } else {
@@ -368,6 +403,11 @@ function initModals() {
       }
     } catch (err) {
       showToast('Error adding download', true);
+    } finally {
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Start Download';
+      }
     }
   });
 }

@@ -3,9 +3,11 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -141,6 +143,162 @@ func resolveQuickJSBinary() string {
 	return ""
 }
 
+func parseOptionalInt64(s string) int64 {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "NA" || s == "None" {
+		return 0
+	}
+	if v, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return v
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil && f > 0 {
+		return int64(f)
+	}
+	return 0
+}
+
+type PlaylistEntry struct {
+	URL   string
+	Title string
+}
+
+func normalizePlaylistURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	host := strings.ToLower(u.Host)
+	if strings.Contains(host, "youtube.com") || strings.Contains(host, "youtu.be") {
+		listID := u.Query().Get("list")
+		if listID != "" {
+			return "https://www.youtube.com/playlist?list=" + url.QueryEscape(listID)
+		}
+	}
+	return rawURL
+}
+
+// ExpandYtDlpPlaylist uses yt-dlp --flat-playlist --dump-single-json to fetch playlist entries quickly.
+func ExpandYtDlpPlaylist(ctx context.Context, cfg *Config, req AddRequest) (string, []PlaylistEntry, error) {
+	binPath, err := resolveYtDlpBinary(cfg)
+	if err != nil {
+		return "", nil, err
+	}
+
+	var cookieFile string
+	if len(req.Cookies) > 0 {
+		cookieFile = filepath.Join(os.TempDir(), fmt.Sprintf("ytdlp_pl_cookies_%d.txt", time.Now().UnixNano()))
+		if err := WriteNetscapeCookiesFile(req.Cookies, cookieFile); err == nil {
+			defer func() { _ = os.Remove(cookieFile) }()
+		} else {
+			cookieFile = ""
+		}
+	}
+
+	targetURL := normalizePlaylistURL(req.URL)
+	title, entries, err := runFlatPlaylist(ctx, binPath, targetURL, cookieFile, req)
+	if err != nil && ctx.Err() == nil && cookieFile != "" && isYouTubeURL(targetURL) {
+		// Retry without cookies if YouTube rejected cookie session
+		title, entries, err = runFlatPlaylist(ctx, binPath, targetURL, "", req)
+	}
+	return title, entries, err
+}
+
+func runFlatPlaylist(ctx context.Context, binPath, targetURL, cookieFile string, req AddRequest) (string, []PlaylistEntry, error) {
+	scanCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+
+	args := []string{
+		"--flat-playlist",
+		"--dump-single-json",
+		"--no-warnings",
+		"--playlist-end", "200",
+		"--js-runtimes", "deno",
+		"--js-runtimes", "node",
+		"--js-runtimes", "bun",
+	}
+	if qjsPath := resolveQuickJSBinary(); qjsPath != "" {
+		args = append(args, "--js-runtimes", "quickjs:"+qjsPath)
+	} else {
+		args = append(args, "--js-runtimes", "quickjs")
+	}
+
+	if cookieFile != "" {
+		args = append(args, "--cookies", cookieFile)
+	}
+	if !isYouTubeURL(targetURL) {
+		if req.UserAgent != "" {
+			args = append(args, "--user-agent", req.UserAgent)
+		}
+		if req.Referer != "" {
+			args = append(args, "--referer", req.Referer)
+		}
+	}
+	args = append(args, targetURL)
+
+	cmd := exec.CommandContext(scanCtx, binPath, args...)
+	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1", "PYTHONIOENCODING=utf-8")
+
+	out, err := cmd.Output()
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to inspect playlist: %w", err)
+	}
+
+	var parsed struct {
+		Type    string `json:"_type"`
+		Title   string `json:"title"`
+		Entries []struct {
+			ID         string `json:"id"`
+			URL        string `json:"url"`
+			WebpageURL string `json:"webpage_url"`
+			Title      string `json:"title"`
+		} `json:"entries"`
+	}
+
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		return "", nil, fmt.Errorf("invalid playlist metadata: %w", err)
+	}
+
+	if len(parsed.Entries) == 0 {
+		return parsed.Title, nil, nil
+	}
+
+	entries := make([]PlaylistEntry, 0, len(parsed.Entries))
+	for _, e := range parsed.Entries {
+		// Skip deleted/private placeholder entries
+		if e.Title == "[Deleted video]" || e.Title == "[Private video]" {
+			continue
+		}
+		entryURL := strings.TrimSpace(e.WebpageURL)
+		if entryURL == "" {
+			entryURL = strings.TrimSpace(e.URL)
+		}
+		if !strings.HasPrefix(entryURL, "http://") && !strings.HasPrefix(entryURL, "https://") {
+			if e.ID != "" && isYouTubeURL(targetURL) {
+				entryURL = "https://www.youtube.com/watch?v=" + e.ID
+			} else if entryURL != "" && isYouTubeURL(targetURL) {
+				entryURL = "https://www.youtube.com/watch?v=" + entryURL
+			}
+		}
+		if entryURL == "" {
+			continue
+		}
+		entries = append(entries, PlaylistEntry{
+			URL:   entryURL,
+			Title: strings.TrimSpace(e.Title),
+		})
+	}
+
+	plTitle := strings.TrimSpace(parsed.Title)
+	if plTitle == "" {
+		plTitle = req.Title
+	}
+	if plTitle == "" {
+		plTitle = "Playlist"
+	}
+
+	return plTitle, entries, nil
+}
+
 func runYtDlpDownload(ctx context.Context, qm *QueueManager, task *DownloadTask) error {
 	binPath, err := resolveYtDlpBinary(qm.config)
 	if err != nil {
@@ -148,6 +306,9 @@ func runYtDlpDownload(ctx context.Context, qm *QueueManager, task *DownloadTask)
 	}
 
 	downloadDir := qm.config.GetDownloadDir()
+	if task.SubDir != "" {
+		downloadDir = filepath.Join(downloadDir, sanitizeFileName(task.SubDir))
+	}
 	if err := os.MkdirAll(downloadDir, 0755); err != nil {
 		return fmt.Errorf("failed to create download directory: %w", err)
 	}
@@ -182,9 +343,12 @@ func runYtDlpDownload(ctx context.Context, qm *QueueManager, task *DownloadTask)
 func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTask, binPath, downloadDir, cookieFile string) error {
 	args := []string{
 		"--newline",
+		"--progress",
+		"--progress-delta", "0.15",
 		"--no-warnings",
 		"--no-playlist",
-		"--progress-template", "DOWNLOAD_INFO:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress._total_bytes_str,progress._total_bytes_estimate_str)s|%(progress.filename)s",
+		"--progress-template", "download:DOWNLOAD_INFO:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes,progress.total_bytes_estimate)s|%(progress.fragment_index)s|%(progress.fragment_count)s|%(progress.filename)s",
+		"--progress-template", "postprocess:POSTPROCESS_INFO:%(progress.status)s|%(progress.postprocessor)s",
 		"--paths", fmt.Sprintf("home:%s", downloadDir),
 		"--concurrent-fragments", "2",
 		"--retries", "3",
@@ -285,6 +449,9 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 	args = append(args, task.URL)
 
 	cmd := exec.CommandContext(ctx, binPath, args...)
+	// Critical on Windows: force Python inside yt-dlp.exe to flush stdout on every newline
+	// instead of 4KB-8KB block-buffering when piped!
+	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1", "PYTHONIOENCODING=utf-8")
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -322,7 +489,7 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 	}()
 
 	scanner := bufio.NewScanner(stdout)
-	lastUpdate := time.Now()
+	var lastUpdate time.Time
 
 	for scanner.Scan() {
 		line := cleanOutput(scanner.Text())
@@ -330,26 +497,52 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 		if strings.HasPrefix(line, "DOWNLOAD_INFO:") {
 			payload := strings.TrimPrefix(line, "DOWNLOAD_INFO:")
 			parts := strings.Split(payload, "|")
-			if len(parts) >= 4 {
+			if len(parts) >= 7 {
 				percentStr := strings.TrimSpace(parts[0])
 				speedStr := strings.TrimSpace(parts[1])
 				etaStr := strings.TrimSpace(parts[2])
+				dlBytes := parseOptionalInt64(parts[3])
+				totBytes := parseOptionalInt64(parts[4])
+				fragIdx := parseOptionalInt64(parts[5])
+				fragCnt := parseOptionalInt64(parts[6])
 
 				var filename string
-				if len(parts) >= 5 {
-					filename = strings.TrimSpace(parts[4])
+				if len(parts) >= 8 {
+					filename = strings.TrimSpace(parts[7])
 				}
 
 				task.mu.Lock()
+				prevProgress := task.Progress
+				if dlBytes > 0 {
+					task.DownloadedBytes = dlBytes
+				}
+				if totBytes > 0 {
+					task.TotalBytes = totBytes
+				}
+
+				var pct float64 = -1
 				if match := percentRegex.FindStringSubmatch(percentStr); len(match) > 1 {
 					if p, err := strconv.ParseFloat(match[1], 64); err == nil {
-						task.Progress = p
+						pct = p
 					}
 				}
-				if speedStr != "NA" && speedStr != "" {
+				if pct < 0 && totBytes > 0 && dlBytes > 0 {
+					pct = float64(dlBytes) / float64(totBytes) * 100.0
+				}
+				if pct < 0 && fragCnt > 0 && fragIdx > 0 {
+					pct = float64(fragIdx) / float64(fragCnt) * 100.0
+				}
+				if pct >= 0 {
+					if pct > 100.0 {
+						pct = 100.0
+					}
+					task.Progress = pct
+				}
+
+				if speedStr != "NA" && speedStr != "Unknown B/s" && speedStr != "" {
 					task.Speed = speedStr
 				}
-				if etaStr != "NA" && etaStr != "" {
+				if etaStr != "NA" && etaStr != "Unknown" && etaStr != "" {
 					task.ETA = etaStr
 				}
 				if filename != "" && filename != "NA" {
@@ -359,13 +552,28 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 						task.Title = task.FileName
 					}
 				}
+				newProgress := task.Progress
 				task.mu.Unlock()
 
 				now := time.Now()
-				if now.Sub(lastUpdate) >= 400*time.Millisecond {
+				// Broadcast every 150ms, OR immediately when leaving 0%
+				if now.Sub(lastUpdate) >= 150*time.Millisecond || (prevProgress == 0 && newProgress > 0) {
 					qm.BroadcastUpdate()
 					lastUpdate = now
 				}
+			}
+		} else if strings.HasPrefix(line, "POSTPROCESS_INFO:") {
+			payload := strings.TrimPrefix(line, "POSTPROCESS_INFO:")
+			parts := strings.Split(payload, "|")
+			if len(parts) >= 1 && strings.TrimSpace(parts[0]) == "started" {
+				task.mu.Lock()
+				if task.Progress < 99.0 {
+					task.Progress = 99.0
+				}
+				task.Speed = "Merging / Converting..."
+				task.ETA = ""
+				task.mu.Unlock()
+				qm.BroadcastUpdate()
 			}
 		} else if strings.Contains(line, "[download] Destination:") {
 			dest := strings.TrimSpace(strings.TrimPrefix(line, "[download] Destination:"))
@@ -382,6 +590,7 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 			task.mu.Lock()
 			task.SavePath = dest
 			task.FileName = filepath.Base(dest)
+			task.Speed = "Extracting Audio..."
 			task.mu.Unlock()
 			qm.BroadcastUpdate()
 		} else if strings.Contains(line, "[Merger] Merging formats into") {
@@ -391,6 +600,7 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 				task.mu.Lock()
 				task.SavePath = mergedFile
 				task.FileName = filepath.Base(mergedFile)
+				task.Speed = "Merging Video + Audio..."
 				task.mu.Unlock()
 				qm.BroadcastUpdate()
 			}

@@ -24,6 +24,13 @@ async function loadConfig() {
   document.getElementById('input-token').value = cfg.authToken;
   document.getElementById('check-intercept').checked = cfg.interceptDownloads;
   document.getElementById('select-quality').value = cfg.preferredQuality || 'best';
+
+  if (activeTab && activeTab.url && activeTab.url.includes('/playlist?') && activeTab.url.includes('list=')) {
+    const plCheck = document.getElementById('check-playlist');
+    if (plCheck) plCheck.checked = true;
+    const dlBtn = document.getElementById('btn-download-page');
+    if (dlBtn) dlBtn.textContent = '📑 Download Entire Playlist';
+  }
 }
 
 async function checkDaemonStatus() {
@@ -91,7 +98,8 @@ function initListeners() {
   document.getElementById('btn-download-page').addEventListener('click', () => {
     if (!activeTab || !activeTab.url) return;
     const quality = document.getElementById('select-quality').value;
-    sendDownload(activeTab.url, activeTab.title, 'ytdlp', quality);
+    const playlist = document.getElementById('check-playlist')?.checked || false;
+    sendDownload(activeTab.url, activeTab.title, 'ytdlp', quality, playlist);
   });
 
   // Intercept downloads toggle
@@ -115,8 +123,8 @@ function initListeners() {
   });
 }
 
-function sendDownload(url, title, engine, quality) {
-  showAlert('Sending to GrabAll...', false);
+function sendDownload(url, title, engine, quality, playlist = false) {
+  showAlert(playlist ? 'Scanning playlist...' : 'Sending to GrabAll...', false);
 
   chrome.runtime.sendMessage(
     {
@@ -128,12 +136,15 @@ function sendDownload(url, title, engine, quality) {
         title: title || '',
         engine: engine || 'auto',
         quality: quality || 'best',
+        playlist: Boolean(playlist),
       },
     },
     (res) => {
       if (chrome.runtime.lastError || !res || !res.success) {
         const msg = res?.error || chrome.runtime.lastError?.message || 'Failed to connect to daemon';
         showAlert('Error: ' + msg, true);
+      } else if (res.data?.playlist) {
+        showAlert(`Queued ${res.data.count} videos from playlist!`, false);
       } else {
         showAlert('Download queued successfully!', false);
       }

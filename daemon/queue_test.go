@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 )
@@ -129,4 +130,69 @@ func TestYouTubeAndQuality(t *testing.T) {
 		t.Errorf("Expected quality audio-mp3, got %q", task.Quality)
 	}
 	qm.CancelTask(task.ID)
+}
+
+func TestPlaylistHelpersAndProgressParsing(t *testing.T) {
+	if !isPurePlaylistURL("https://www.youtube.com/playlist?list=PL12345") {
+		t.Errorf("Expected pure playlist URL to return true")
+	}
+	if isPurePlaylistURL("https://www.youtube.com/watch?v=abc&list=PL12345") {
+		t.Errorf("Expected watch URL with list= not to be treated as pure playlist automatically")
+	}
+
+	gotURL := normalizePlaylistURL("https://www.youtube.com/watch?v=abc123&list=PL_XYZ")
+	if gotURL != "https://www.youtube.com/playlist?list=PL_XYZ" {
+		t.Errorf("normalizePlaylistURL = %q, expected playlist URL", gotURL)
+	}
+
+	if v := parseOptionalInt64("123456.8"); v != 123456 {
+		t.Errorf("parseOptionalInt64 float = %d, expected 123456", v)
+	}
+	if v := parseOptionalInt64("NA"); v != 0 {
+		t.Errorf("parseOptionalInt64 NA = %d, expected 0", v)
+	}
+}
+
+func TestSameOriginAuthAndCookieSanitization(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &Config{
+		Port:          17890,
+		AuthToken:     "supersecret",
+		DownloadDir:   tmpDir,
+		MaxConcurrent: 1,
+	}
+	qm := NewQueueManager(cfg, filepath.Join(tmpDir, "queue.json"), NewSSEBroker())
+	defer qm.Stop()
+
+	srv := NewServer(cfg, qm, NewSSEBroker())
+
+	req := httptest.NewRequest("GET", "/api/events", nil)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	if !srv.isAuthorized(req) {
+		t.Errorf("Expected Sec-Fetch-Site: same-origin to be authorized for SSE")
+	}
+
+	crossReq := httptest.NewRequest("POST", "/api/add", nil)
+	crossReq.Header.Set("Sec-Fetch-Site", "cross-site")
+	crossReq.Header.Set("Origin", "https://evil.example.com")
+	if srv.isAuthorized(crossReq) {
+		t.Errorf("Expected cross-site request without token to be rejected")
+	}
+
+	task, err := qm.AddTask(AddRequest{
+		URL:     "https://example.com/file.zip",
+		Cookies: []Cookie{{Name: "SID", Value: "secretval", Domain: ".example.com"}},
+	})
+	if err != nil {
+		t.Fatalf("AddTask failed: %v", err)
+	}
+	if len(task.Cookies) != 0 {
+		t.Errorf("Expected returned public snapshot to strip cookies")
+	}
+	qm.CancelTask(task.ID)
+	for _, snap := range qm.GetAll() {
+		if len(snap.Cookies) != 0 {
+			t.Errorf("Expected GetAll() snapshot to strip cookies")
+		}
+	}
 }

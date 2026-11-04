@@ -17,6 +17,9 @@ import (
 
 func runDirectDownload(ctx context.Context, qm *QueueManager, task *DownloadTask) error {
 	downloadDir := qm.config.GetDownloadDir()
+	if task.SubDir != "" {
+		downloadDir = filepath.Join(downloadDir, sanitizeFileName(task.SubDir))
+	}
 	if err := os.MkdirAll(downloadDir, 0755); err != nil {
 		return fmt.Errorf("failed to create download directory: %w", err)
 	}
@@ -149,6 +152,7 @@ func runDirectDownload(ctx context.Context, qm *QueueManager, task *DownloadTask
 	// Stream transfer with rate calculation
 	buffer := make([]byte, 64*1024) // 64KB buffer
 	lastUpdate := time.Now()
+	firstChunk := true
 	var bytesSinceUpdate int64 = 0
 	downloaded := existingBytes
 
@@ -168,8 +172,13 @@ func runDirectDownload(ctx context.Context, qm *QueueManager, task *DownloadTask
 
 			now := time.Now()
 			elapsed := now.Sub(lastUpdate)
-			if elapsed >= 500*time.Millisecond {
-				speedBytesPerSec := float64(bytesSinceUpdate) / elapsed.Seconds()
+			if firstChunk || elapsed >= 150*time.Millisecond {
+				firstChunk = false
+				secs := elapsed.Seconds()
+				if secs <= 0.001 {
+					secs = 0.001
+				}
+				speedBytesPerSec := float64(bytesSinceUpdate) / secs
 				speedStr := formatBytes(int64(speedBytesPerSec)) + "/s"
 
 				var progress float64 = 0

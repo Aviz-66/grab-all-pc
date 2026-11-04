@@ -96,9 +96,13 @@
             <label for="input-filename">Custom Filename (Optional)</label>
             <input type="text" id="input-filename" placeholder="optional-name.mp4">
           </div>
+          <div class="form-group" style="flex-direction: row; align-items: center; gap: 8px;">
+            <input type="checkbox" id="input-playlist" style="width: 16px; height: 16px; cursor: pointer;">
+            <label for="input-playlist" style="cursor: pointer;">📑 Download entire playlist (queues each video into a playlist subfolder)</label>
+          </div>
           <div class="modal-actions">
             <button type="button" class="btn btn-secondary" data-close="modal-add">Cancel</button>
-            <button type="submit" class="btn btn-primary">Start Download</button>
+            <button type="submit" id="btn-submit-add" class="btn btn-primary">Start Download</button>
           </div>
         </form>
       </div>

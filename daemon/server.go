@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -98,6 +101,7 @@ func (s *Server) setupRoutes() http.Handler {
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/install-ytdlp", s.handleInstallYtDlp)
 	mux.HandleFunc("/api/install-ffmpeg", s.handleInstallFFmpeg)
+	mux.HandleFunc("/api/open-folder", s.handleOpenFolder)
 
 	return s.corsAndAuthMiddleware(mux)
 }
@@ -147,7 +151,13 @@ func (s *Server) isAuthorized(r *http.Request) bool {
 		return true
 	}
 
-	// 4. Local origin (requests from the dashboard itself on localhost)
+	// 4. Same-origin requests from the embedded web dashboard (Chrome/Brave always
+	// sets Sec-Fetch-Site: same-origin even when Brave Shields strips Referer)
+	if r.Header.Get("Sec-Fetch-Site") == "same-origin" {
+		return true
+	}
+
+	// 5. Local origin / referer
 	origin := r.Header.Get("Origin")
 	referer := r.Header.Get("Referer")
 	hostPort := fmt.Sprintf("127.0.0.1:%d", s.config.Port)
@@ -162,8 +172,6 @@ func (s *Server) isAuthorized(r *http.Request) bool {
 			return true
 		}
 	} else {
-		// Native client without Origin/Referer (e.g. curl or internal client on 127.0.0.1)
-		// Require token if it's external, but if token is empty allow
 		if expectedToken == "" {
 			return true
 		}
@@ -179,7 +187,7 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":          "ok",
-		"version":         "1.0.0",
+		"version":         "1.2.0",
 		"downloadDir":     s.config.GetDownloadDir(),
 		"maxConcurrent":   s.config.GetMaxConcurrent(),
 		"ytDlpAvailable":  hasYtDlp == nil,
@@ -197,8 +205,9 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 
-	clientChan := make(chan []byte, 10)
+	clientChan := make(chan []byte, 32)
 	s.broker.AddClient(clientChan)
 	defer s.broker.RemoveClient(clientChan)
 
@@ -240,22 +249,97 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req AddRequest
+	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error": "Invalid request JSON: %s"}`, err.Error()), http.StatusBadRequest)
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request JSON: " + err.Error()})
+		return
+	}
+
+	if req.Playlist || isPurePlaylistURL(req.URL) {
+		tasks, plTitle, err := s.queue.AddPlaylistTasks(r.Context(), req)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":       true,
+			"playlist":      true,
+			"playlistTitle": plTitle,
+			"count":         len(tasks),
+			"tasks":         tasks,
+		})
 		return
 	}
 
 	task, err := s.queue.AddTask(req)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error": "%s"}`, err.Error()), http.StatusBadRequest)
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"task":    task,
 	})
+}
+
+func (s *Server) handleOpenFolder(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	target := s.config.GetDownloadDir()
+	var filePath string
+	if req.ID != "" {
+		if task := s.queue.GetByID(req.ID); task != nil {
+			task.mu.Lock()
+			sp := task.SavePath
+			sub := task.SubDir
+			task.mu.Unlock()
+			if sp != "" {
+				if _, err := os.Stat(sp); err == nil {
+					filePath = sp
+					target = filepath.Dir(sp)
+				}
+			} else if sub != "" {
+				cand := filepath.Join(target, sanitizeFileName(sub))
+				if _, err := os.Stat(cand); err == nil {
+					target = cand
+				}
+			}
+		}
+	}
+
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		if filePath != "" {
+			cmd = exec.Command("explorer.exe", "/select,"+filepath.Clean(filePath))
+		} else {
+			cmd = exec.Command("explorer.exe", filepath.Clean(target))
+		}
+	case "darwin":
+		if filePath != "" {
+			cmd = exec.Command("open", "-R", filePath)
+		} else {
+			cmd = exec.Command("open", target)
+		}
+	default:
+		cmd = exec.Command("xdg-open", target)
+	}
+
+	_ = cmd.Start()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
 }
 
 func (s *Server) handlePause(w http.ResponseWriter, r *http.Request) {

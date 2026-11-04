@@ -88,10 +88,11 @@ You'll see:
 
 ### 5. Download stuff
 
-- **Right-click any link** → "⚡ Download Link with GrabAll"
-- **Right-click a video page** → "🎬 Download Current Page Video (yt-dlp)"
-- **Extension popup** shows detected `.m3u8` / `.mp4` streams with one-click download buttons
-- **Web Dashboard** at `http://127.0.0.1:17890` for queue management, progress, pause/resume/cancel
+- **Hover any `<video>`** (Facebook, TikTok, Instagram, X/Twitter, Reddit, HTML5 videos) → pick resolution/audio quality and click **⚡ Grab**
+- **YouTube pages & playlists** → injected **⚡ GrabAll** button under watch pages + **📑 Grab Playlist** button (auto-organizes playlist items into `Downloads/<Playlist Title>/01 - ...`)
+- **Right-click any link / page** → download link, current page video, or entire playlist
+- **Extension popup** shows detected `.m3u8` / `.mp4` streams with quality/audio selector (`Best`, `4K`, `1080p`, `720p`, `MP3`, `M4A`, etc.)
+- **Web Dashboard** at `http://127.0.0.1:17890` for live real-time progress, pause/resume/cancel, **📂 Folder** reveal, and 1-click **yt-dlp + QuickJS + FFmpeg** installers
 
 ## How It Works
 
