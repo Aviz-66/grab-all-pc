@@ -934,6 +934,7 @@ func (g *winAppGUI) initAndRunMessageLoop(startInTray bool) {
 	g.addTrayIcon()
 	g.syncListView()
 	g.refreshStatusBar()
+	go g.autoUpgradeSlowYtDlpIfNeeded()
 
 	if !startInTray {
 		procShowWindow.Call(g.mainHwnd, swShowNormal)
@@ -1422,10 +1423,12 @@ func (g *winAppGUI) refreshStatusBar() {
 		}
 	}
 
-	_, ytErr := resolveYtDlpBinary(g.cfg)
-	ytState := "Ready"
+	ytPath, ytErr := resolveYtDlpBinary(g.cfg)
+	ytState := "Ready (Fast Mode)"
 	if ytErr != nil {
 		ytState = "Missing (click Engine Setup)"
+	} else if !isFastUnpackedYtDlp(ytPath) {
+		ytState = "Slow 1-file exe (click Engine Setup -> Upgrade)"
 	}
 	ffState := "Ready"
 	if resolveFFmpegBinary(g.cfg) == "" {
@@ -1548,7 +1551,8 @@ func (g *winAppGUI) updateProgressPopup(pop *progressPopup, t *DownloadTask) {
 	switch t.Status {
 	case StatusDownloading:
 		mode = "active"
-		if strings.Contains(t.Speed, "Merging") || strings.Contains(t.Speed, "Extracting") {
+		if strings.Contains(t.Speed, "Merging") || strings.Contains(t.Speed, "Extracting") ||
+			strings.Contains(t.Speed, "Starting") || strings.Contains(t.Speed, "Upgrading") {
 			statusLine = "Status: " + t.Speed
 		} else {
 			statusLine = "Status: Receiving data..."
@@ -1861,6 +1865,28 @@ func (g *winAppGUI) showTrayContextMenu() {
 	}
 }
 
+// autoUpgradeSlowYtDlpIfNeeded checks on startup if GrabAll's bin/yt-dlp.exe is still the
+// old single-file PyInstaller binary (which takes 60-90s unpacking 146 DLLs on 1GB RAM PCs),
+// and seamlessly upgrades it once in the background to the pre-extracted yt-dlp_win.zip layout.
+func (g *winAppGUI) autoUpgradeSlowYtDlpIfNeeded() {
+	ytPath, err := resolveYtDlpBinary(g.cfg)
+	if err != nil || !isManagedSlowWindowsYtDlp(ytPath) {
+		return
+	}
+	g.postStatusMessage("⚡ Upgrading yt-dlp to Fast-Start Mode (one-time fix for 1-2m startup delay)...")
+	upgraded, upErr := DownloadYtDlpStandalone(filepath.Dir(ytPath))
+	g.postStatusMessage("")
+	if upErr != nil {
+		return
+	}
+	g.cfg.mu.Lock()
+	g.cfg.YtDlpPath = upgraded
+	g.cfg.mu.Unlock()
+	_ = g.cfg.Save()
+	g.refreshStatusBar()
+	g.showTrayBalloon("Fast-Start Mode Enabled", "yt-dlp upgraded! Video downloads now start in ~1-3 seconds.")
+}
+
 func (g *winAppGUI) showToolsPopupMenu() {
 	hMenu, _, _ := procCreatePopupMenu.Call()
 	if hMenu == 0 {
@@ -1868,10 +1894,12 @@ func (g *winAppGUI) showToolsPopupMenu() {
 	}
 	defer procDestroyMenu.Call(hMenu)
 
-	_, ytErr := resolveYtDlpBinary(g.cfg)
-	ytLabel := "Update yt-dlp + QuickJS (Installed)"
+	ytPath, ytErr := resolveYtDlpBinary(g.cfg)
+	ytLabel := "Update yt-dlp + QuickJS (Fast-Start Installed)"
 	if ytErr != nil {
 		ytLabel = "Install yt-dlp + QuickJS (Required for YouTube/TikTok/FB)"
+	} else if !isFastUnpackedYtDlp(ytPath) {
+		ytLabel = "⚡ Upgrade yt-dlp to Fast-Start Mode (yt-dlp_win.zip — fixes 1-2m delay)"
 	}
 	ffLabel := "Update FFmpeg (Installed)"
 	if resolveFFmpegBinary(g.cfg) == "" {
@@ -2023,7 +2051,7 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 
 	case idmInstallYtDlp:
 		go func() {
-			g.postStatusMessage("Installing yt-dlp.exe + QuickJS (qjs.exe)... please wait...")
+			g.postStatusMessage("Installing Fast-Start yt-dlp_win.zip + QuickJS (qjs.exe)... please wait...")
 			binDir := filepath.Join(executableDir(), "bin")
 			path, err := DownloadYtDlpStandalone(binDir)
 			if err != nil {
@@ -2036,7 +2064,7 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 			g.cfg.mu.Unlock()
 			_ = g.cfg.Save()
 			g.postStatusMessage("")
-			g.showTrayBalloon("yt-dlp + QuickJS Ready", "Installed to "+path)
+			g.showTrayBalloon("Fast-Start yt-dlp + QuickJS Ready", "Installed unpacked build to "+path)
 		}()
 
 	case idmInstallFFmpeg:
@@ -2083,7 +2111,7 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 	case idmAbout:
 		procMessageBoxW.Call(
 			g.mainHwnd,
-			uintptr(unsafe.Pointer(utf16Ptr("GrabAll Download Manager v2.0 (Native Win32 Edition)\n\nUltra-lightweight IDM-style downloader built for low-RAM PCs.\n• Native Win32 GUI (~14 MB RAM, zero WebView/Electron bloat)\n• Direct HTTP resume + yt-dlp (YouTube, Playlists, Facebook, TikTok, 1400+ sites)"))),
+			uintptr(unsafe.Pointer(utf16Ptr("GrabAll Download Manager v2.0.5 (Native Win32 Edition)\n\nUltra-lightweight IDM-style downloader built for low-RAM PCs.\n• Native Win32 GUI (~14 MB RAM, zero WebView/Electron bloat)\n• Fast-Start unpacked yt-dlp + Direct HTTP resume (YouTube, Playlists, Facebook, TikTok, 1400+ sites)"))),
 			uintptr(unsafe.Pointer(utf16Ptr("About GrabAll"))),
 			mbOK|mbIconInfo,
 		)

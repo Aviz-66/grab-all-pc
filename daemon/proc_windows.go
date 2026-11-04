@@ -7,14 +7,31 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
 const createNoWindow = 0x08000000
 
+// killProcessTree terminates a process AND all of its child processes (PyInstaller inner
+// yt-dlp.exe, qjs.exe, and ffmpeg.exe) immediately when Pause or Cancel is clicked.
+func killProcessTree(p *os.Process) error {
+	if p == nil || p.Pid <= 0 {
+		return nil
+	}
+	tk := exec.Command("taskkill.exe", "/F", "/T", "/PID", strconv.Itoa(p.Pid))
+	tk.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: createNoWindow,
+	}
+	_ = tk.Run()
+	return p.Kill()
+}
+
 // configureSubprocess prevents child console processes (yt-dlp.exe, ffmpeg.exe)
-// from flashing a black CMD window when GrabAll runs as a Windows GUI app.
+// from flashing a black CMD window AND ensures Pause/Cancel kills the full process tree.
 func configureSubprocess(cmd *exec.Cmd) {
 	if cmd == nil {
 		return
@@ -23,6 +40,10 @@ func configureSubprocess(cmd *exec.Cmd) {
 		HideWindow:    true,
 		CreationFlags: createNoWindow,
 	}
+	cmd.Cancel = func() error {
+		return killProcessTree(cmd.Process)
+	}
+	cmd.WaitDelay = 500 * time.Millisecond
 }
 
 func openFolderOrSelectFile(filePath, fallbackDir string) {

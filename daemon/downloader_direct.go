@@ -162,6 +162,9 @@ func runDirectDownload(ctx context.Context, qm *QueueManager, task *DownloadTask
 		}
 
 		n, readErr := resp.Body.Read(buffer)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if n > 0 {
 			if _, writeErr := file.Write(buffer[:n]); writeErr != nil {
 				return fmt.Errorf("write error: %w", writeErr)
@@ -198,14 +201,19 @@ func runDirectDownload(ctx context.Context, qm *QueueManager, task *DownloadTask
 				}
 
 				task.mu.Lock()
-				task.DownloadedBytes = downloaded
-				task.TotalBytes = totalBytes
-				task.Progress = progress
-				task.Speed = speedStr
-				task.ETA = etaStr
+				stillActive := task.Status == StatusDownloading
+				if stillActive {
+					task.DownloadedBytes = downloaded
+					task.TotalBytes = totalBytes
+					task.Progress = progress
+					task.Speed = speedStr
+					task.ETA = etaStr
+				}
 				task.mu.Unlock()
 
-				qm.BroadcastUpdate()
+				if stillActive {
+					qm.BroadcastUpdate()
+				}
 
 				bytesSinceUpdate = 0
 				lastUpdate = now

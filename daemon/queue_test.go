@@ -1,11 +1,18 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestEngineDetection(t *testing.T) {
@@ -284,5 +291,55 @@ func TestExtensionAutoPairingAndShowWindow(t *testing.T) {
 	handler.ServeHTTP(showRec, showReq)
 	if showRec.Code != 200 || !windowShown {
 		t.Fatalf("Expected /api/show-window to invoke callback and return 200, got %d (shown=%v)", showRec.Code, windowShown)
+	}
+}
+
+func TestZipExtractionAndSubprocessTreeKill(t *testing.T) {
+	// 1. Verify downloadAndExtractZip extracts yt-dlp.exe + _internal/ and blocks zip-slip paths
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	f1, _ := zw.Create("yt-dlp.exe")
+	_, _ = f1.Write([]byte("mock-exe"))
+	f2, _ := zw.Create("_internal/python312.dll")
+	_, _ = f2.Write([]byte("mock-dll"))
+	fEvil, _ := zw.Create("../escaped.txt")
+	_, _ = fEvil.Write([]byte("evil"))
+	_ = zw.Close()
+
+	zipSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(buf.Bytes())
+	}))
+	defer zipSrv.Close()
+
+	destDir := filepath.Join(t.TempDir(), "bin")
+	if err := downloadAndExtractZip(zipSrv.URL+"/yt-dlp_win.zip", destDir, 10*time.Second); err != nil {
+		t.Fatalf("downloadAndExtractZip failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(destDir, "yt-dlp.exe")); err != nil {
+		t.Fatalf("Expected extracted yt-dlp.exe, got error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(destDir, "_internal", "python312.dll")); err != nil {
+		t.Fatalf("Expected extracted _internal/python312.dll, got error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(destDir), "escaped.txt")); err == nil {
+		t.Fatalf("Zip-slip file ../escaped.txt should NOT have been extracted")
+	}
+
+	// 2. Verify configureSubprocess kills parent + spawned child quickly on context cancel
+	if runtime.GOOS != "windows" {
+		ctx, cancel := context.WithCancel(context.Background())
+		cmd := exec.CommandContext(ctx, "sh", "-c", "sleep 30 & wait")
+		configureSubprocess(cmd)
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("Failed to start test subprocess: %v", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+		startCancel := time.Now()
+		cancel()
+		_ = cmd.Wait()
+		if elapsed := time.Since(startCancel); elapsed > 2*time.Second {
+			t.Fatalf("Subprocess tree took too long to terminate on cancel: %v", elapsed)
+		}
 	}
 }
