@@ -605,3 +605,35 @@ func (s *slowReadSeeker) Seek(offset int64, whence int) (int64, error) {
 	}
 	return int64(s.pos), nil
 }
+
+func TestYtSizeTracker(t *testing.T) {
+	tracker := &ytSizeTracker{}
+
+	// Test 1: Even if reportedTotal wildly fluctuates (e.g. 5GB -> 2GB -> 800MB fragment estimate),
+	// exactStreamSize (YouTube's real content-length) locks the total size stable!
+	dl, tot := tracker.update("137", 10*1024*1024, 500*1024*1024, 5*1024*1024*1024)
+	if dl != 10*1024*1024 || tot != 500*1024*1024 {
+		t.Fatalf("Expected dl=10MB, tot=500MB; got dl=%d, tot=%d", dl, tot)
+	}
+
+	dl, tot = tracker.update("137", 80*1024*1024, 500*1024*1024, 2*1024*1024*1024)
+	if dl != 80*1024*1024 || tot != 500*1024*1024 {
+		t.Fatalf("Total size should stay locked at 500MB, got dl=%d, tot=%d", dl, tot)
+	}
+
+	// Test 2: Transition from video stream ("137") to audio stream ("140")
+	// Completed video stream (500MB) must roll over and sum seamlessly with audio stream (20MB)
+	dl, tot = tracker.update("140", 5*1024*1024, 20*1024*1024, 20*1024*1024)
+	if dl != 505*1024*1024 || tot != 520*1024*1024 {
+		t.Fatalf("Expected combined dl=505MB, tot=520MB; got dl=%d, tot=%d", dl, tot)
+	}
+
+	// Test 3: Sidecar size file with combined size
+	tmpFile := filepath.Join(t.TempDir(), "size.txt")
+	_ = os.WriteFile(tmpFile, []byte("550000000\n"), 0644)
+	tracker2 := &ytSizeTracker{}
+	tracker2.loadCombinedFromFile(tmpFile)
+	if !tracker2.combinedKnown() || tracker2.combined != 550000000 {
+		t.Fatalf("Failed to load combined size from file: %d", tracker2.combined)
+	}
+}

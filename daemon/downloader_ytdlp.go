@@ -674,7 +674,10 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 		"--progress-delta", "0.15",
 		"--no-warnings",
 		"--no-playlist",
-		"--progress-template", "download:DOWNLOAD_INFO:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes,progress.total_bytes_estimate)s|%(progress.fragment_index)s|%(progress.fragment_count)s|%(progress.filename)s",
+		// Fields: pct|speed|eta|downloaded|total(or estimate)|fragIdx|fragCnt|exactStreamSize|formatID|filename
+		// exactStreamSize comes from YouTube's real contentLength (info.filesize), so the shown size never
+		// "guesses" from fragment averages in Turbo (dashy) mode. Filename is kept LAST (may contain '|').
+		"--progress-template", "download:DOWNLOAD_INFO:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes,progress.total_bytes_estimate)s|%(progress.fragment_index)s|%(progress.fragment_count)s|%(info.filesize,info.filesize_approx)s|%(info.format_id)s|%(progress.filename)s",
 		"--progress-template", "postprocess:POSTPROCESS_INFO:%(progress.status)s|%(progress.postprocessor)s",
 		"--paths", fmt.Sprintf("home:%s", downloadDir),
 		"--concurrent-fragments", concFrags,
@@ -787,7 +790,16 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 		args = append(args, "--ffmpeg-location", ffmpegBin)
 	}
 
+	// Write the exact combined (video + audio) size to a tiny side file right before the download
+	// starts. --print-to-file (unlike --print) does NOT force quiet/simulate mode.
+	sizeFile := filepath.Join(os.TempDir(), fmt.Sprintf("graball_size_%s.txt", task.ID))
+	_ = os.Remove(sizeFile)
+	defer os.Remove(sizeFile)
+	args = append(args, "--print-to-file", "before_dl:%(filesize,filesize_approx)s", sizeFile)
+
 	args = append(args, task.URL)
+
+	sizes := &ytSizeTracker{}
 
 	cmd := exec.CommandContext(ctx, binPath, args...)
 	configureSubprocess(cmd)
@@ -869,10 +881,27 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 				fragIdx := parseOptionalInt64(parts[5])
 				fragCnt := parseOptionalInt64(parts[6])
 
-				var filename string
-				if len(parts) >= 8 {
+				var (
+					filename   string
+					streamSize int64
+					formatID   string
+				)
+				if len(parts) >= 10 {
+					streamSize = parseOptionalInt64(parts[7])
+					formatID = strings.TrimSpace(parts[8])
+					filename = strings.TrimSpace(strings.Join(parts[9:], "|"))
+				} else if len(parts) >= 8 {
 					filename = strings.TrimSpace(parts[7])
 				}
+
+				if !sizes.combinedKnown() {
+					sizes.loadCombinedFromFile(sizeFile)
+				}
+				streamKey := formatID
+				if streamKey == "" || streamKey == "NA" {
+					streamKey = filename
+				}
+				aggDownloaded, aggTotal := sizes.update(streamKey, dlBytes, streamSize, totBytes)
 
 				task.mu.Lock()
 				if task.Status != StatusDownloading {
@@ -880,21 +909,24 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 					break
 				}
 				prevProgress := task.Progress
-				if dlBytes > 0 {
-					task.DownloadedBytes = dlBytes
+				if aggDownloaded > 0 {
+					task.DownloadedBytes = aggDownloaded
 				}
-				if totBytes > 0 {
-					task.TotalBytes = totBytes
+				if aggTotal > 0 {
+					task.TotalBytes = aggTotal
 				}
 
 				var pct float64 = -1
-				if match := percentRegex.FindStringSubmatch(percentStr); len(match) > 1 {
-					if p, err := strconv.ParseFloat(match[1], 64); err == nil {
-						pct = p
-					}
+				if aggTotal > 0 && aggDownloaded > 0 {
+					// Exact overall progress across video + audio streams
+					pct = float64(aggDownloaded) / float64(aggTotal) * 100.0
 				}
-				if pct < 0 && totBytes > 0 && dlBytes > 0 {
-					pct = float64(dlBytes) / float64(totBytes) * 100.0
+				if pct < 0 {
+					if match := percentRegex.FindStringSubmatch(percentStr); len(match) > 1 {
+						if p, err := strconv.ParseFloat(match[1], 64); err == nil {
+							pct = p
+						}
+					}
 				}
 				if pct < 0 && fragCnt > 0 && fragIdx > 0 {
 					pct = float64(fragIdx) / float64(fragCnt) * 100.0
@@ -1048,7 +1080,93 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 		return fmt.Errorf("yt-dlp failed: %w", cmdErr)
 	}
 
+	// Lock in the true final size from disk (after merge / audio conversion)
+	task.mu.Lock()
+	finalPath := task.SavePath
+	task.mu.Unlock()
+	if finalPath != "" {
+		if fi, statErr := os.Stat(finalPath); statErr == nil && !fi.IsDir() && fi.Size() > 0 {
+			task.mu.Lock()
+			task.TotalBytes = fi.Size()
+			task.DownloadedBytes = fi.Size()
+			task.mu.Unlock()
+		}
+	}
+
 	return nil
+}
+
+// ytSizeTracker converts yt-dlp's per-stream progress into one stable overall size.
+// In Turbo (dashy fragment) mode yt-dlp only reports a fluctuating total_bytes_estimate,
+// so we prefer YouTube's exact per-format filesize and the exact combined video+audio size.
+type ytSizeTracker struct {
+	combined       int64 // exact video+audio total from --print-to-file (0 = unknown)
+	combinedTries  int
+	completedBytes int64 // bytes of streams already finished (e.g. video before audio)
+	curKey         string
+	curSize        int64
+	curDownloaded  int64
+	lastTotal      int64
+}
+
+func (s *ytSizeTracker) combinedKnown() bool {
+	return s.combined > 0 || s.combinedTries >= 40
+}
+
+func (s *ytSizeTracker) loadCombinedFromFile(path string) {
+	s.combinedTries++
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if v := parseOptionalInt64(strings.TrimSpace(line)); v > 0 {
+			s.combined = v
+			return
+		}
+	}
+}
+
+// update records a progress sample and returns (overallDownloaded, overallTotal).
+func (s *ytSizeTracker) update(key string, downloaded, exactStreamSize, reportedTotal int64) (int64, int64) {
+	if key != "" && s.curKey != "" && key != s.curKey {
+		// Moved on to the next stream (e.g. video finished, audio started)
+		done := s.curSize
+		if s.curDownloaded > done {
+			done = s.curDownloaded
+		}
+		s.completedBytes += done
+		s.curSize = 0
+		s.curDownloaded = 0
+	}
+	if key != "" {
+		s.curKey = key
+	}
+	if downloaded > 0 {
+		s.curDownloaded = downloaded
+	}
+	if exactStreamSize > 0 {
+		s.curSize = exactStreamSize
+	} else if reportedTotal > 0 {
+		// No exact size known for this stream; fall back to yt-dlp's own figure
+		s.curSize = reportedTotal
+	}
+
+	overallDownloaded := s.completedBytes + s.curDownloaded
+	overallTotal := int64(0)
+	if s.curSize > 0 {
+		overallTotal = s.completedBytes + s.curSize
+	}
+	if s.combined > 0 && s.combined >= overallTotal {
+		overallTotal = s.combined
+	}
+	if overallTotal > 0 && overallTotal < overallDownloaded {
+		overallTotal = overallDownloaded
+	}
+	if overallTotal > 0 {
+		s.lastTotal = overallTotal
+	}
+	return overallDownloaded, s.lastTotal
 }
 
 func downloadExecutableToDir(downloadURL, targetPath string, timeout time.Duration) error {
