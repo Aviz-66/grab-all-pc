@@ -373,50 +373,6 @@ func parseOptionalInt64(s string) int64 {
 	return 0
 }
 
-// ytDlpProgressInfo is one parsed DOWNLOAD_INFO progress line from yt-dlp.
-// total is the exact total size, present only when yt-dlp actually knows it
-// (e.g. progressive formats with a Content-Length). estimate is yt-dlp's
-// running total_bytes_estimate for fragmented (DASH) downloads: average
-// fragment size so far x fragment count. It starts far too high (the first
-// fragments are big) and shrinks as fragments arrive, so it must never be
-// stored as the task's total size — only total may do that.
-type ytDlpProgressInfo struct {
-	percentStr string
-	speedStr   string
-	etaStr     string
-	downloaded int64
-	total      int64
-	estimate   int64
-	fragIndex  int64
-	fragCount  int64
-	filename   string
-}
-
-// parseDownloadInfoLine parses a "DOWNLOAD_INFO:..." progress line.
-// Field order matches the --progress-template in executeYtDlpAttempt:
-// percent|speed|eta|downloaded|total_bytes|total_bytes_estimate|
-// fragment_index|fragment_count|filename.
-func parseDownloadInfoLine(line string) (ytDlpProgressInfo, bool) {
-	var info ytDlpProgressInfo
-	if !strings.HasPrefix(line, "DOWNLOAD_INFO:") {
-		return info, false
-	}
-	parts := strings.Split(strings.TrimPrefix(line, "DOWNLOAD_INFO:"), "|")
-	if len(parts) < 9 {
-		return info, false
-	}
-	info.percentStr = strings.TrimSpace(parts[0])
-	info.speedStr = strings.TrimSpace(parts[1])
-	info.etaStr = strings.TrimSpace(parts[2])
-	info.downloaded = parseOptionalInt64(parts[3])
-	info.total = parseOptionalInt64(parts[4])
-	info.estimate = parseOptionalInt64(parts[5])
-	info.fragIndex = parseOptionalInt64(parts[6])
-	info.fragCount = parseOptionalInt64(parts[7])
-	info.filename = strings.TrimSpace(parts[8])
-	return info, true
-}
-
 type PlaylistEntry struct {
 	Index int    `json:"index,omitempty"`
 	URL   string `json:"url"`
@@ -718,14 +674,7 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 		"--progress-delta", "0.15",
 		"--no-warnings",
 		"--no-playlist",
-		// NOTE: total_bytes and total_bytes_estimate are separate fields on purpose.
-		// For fragmented (DASH) downloads yt-dlp does not know the real total, so
-		// total_bytes_estimate is a moving guess (average fragment size so far x
-		// fragment count) that starts far too high and shrinks as fragments arrive.
-		// The two must never be merged into one field: the estimate must never be
-		// stored as the task's total size, or the Size column drifts during Turbo
-		// downloads (e.g. ~5 GB at the start, shrinking until it settles).
-		"--progress-template", "download:DOWNLOAD_INFO:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.fragment_index)s|%(progress.fragment_count)s|%(progress.filename)s",
+		"--progress-template", "download:DOWNLOAD_INFO:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes,progress.total_bytes_estimate)s|%(progress.fragment_index)s|%(progress.fragment_count)s|%(progress.filename)s",
 		"--progress-template", "postprocess:POSTPROCESS_INFO:%(progress.status)s|%(progress.postprocessor)s",
 		"--paths", fmt.Sprintf("home:%s", downloadDir),
 		"--concurrent-fragments", concFrags,
@@ -909,19 +858,21 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 		line := cleanOutput(scanner.Text())
 
 		if strings.HasPrefix(line, "DOWNLOAD_INFO:") {
-			info, ok := parseDownloadInfoLine(line)
-			if ok {
-				percentStr := info.percentStr
-				speedStr := info.speedStr
-				etaStr := info.etaStr
-				dlBytes := info.downloaded
-				// Exact total only. info.estimate is yt-dlp's moving DASH guess
-				// and must never become TotalBytes (see parseDownloadInfoLine).
-				totBytes := info.total
-				estBytes := info.estimate
-				fragIdx := info.fragIndex
-				fragCnt := info.fragCount
-				filename := info.filename
+			payload := strings.TrimPrefix(line, "DOWNLOAD_INFO:")
+			parts := strings.Split(payload, "|")
+			if len(parts) >= 7 {
+				percentStr := strings.TrimSpace(parts[0])
+				speedStr := strings.TrimSpace(parts[1])
+				etaStr := strings.TrimSpace(parts[2])
+				dlBytes := parseOptionalInt64(parts[3])
+				totBytes := parseOptionalInt64(parts[4])
+				fragIdx := parseOptionalInt64(parts[5])
+				fragCnt := parseOptionalInt64(parts[6])
+
+				var filename string
+				if len(parts) >= 8 {
+					filename = strings.TrimSpace(parts[7])
+				}
 
 				task.mu.Lock()
 				if task.Status != StatusDownloading {
@@ -935,9 +886,6 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 				if totBytes > 0 {
 					task.TotalBytes = totBytes
 				}
-				if estBytes > 0 {
-					task.TotalBytesEstimate = estBytes
-				}
 
 				var pct float64 = -1
 				if match := percentRegex.FindStringSubmatch(percentStr); len(match) > 1 {
@@ -950,9 +898,6 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 				}
 				if pct < 0 && fragCnt > 0 && fragIdx > 0 {
 					pct = float64(fragIdx) / float64(fragCnt) * 100.0
-				}
-				if pct < 0 && estBytes > 0 && dlBytes > 0 {
-					pct = float64(dlBytes) / float64(estBytes) * 100.0
 				}
 				if pct >= 0 {
 					if pct > 100.0 {
