@@ -231,7 +231,7 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":          "ok",
-		"version":         "2.2.1",
+		"version":         "2.2.2",
 		"nativeGui":       s.onShowWindow != nil,
 		"downloadDir":     s.config.GetDownloadDir(),
 		"maxConcurrent":   s.config.GetMaxConcurrent(),

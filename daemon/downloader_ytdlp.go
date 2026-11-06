@@ -1085,11 +1085,17 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 	finalPath := task.SavePath
 	task.mu.Unlock()
 	if finalPath != "" {
-		if fi, statErr := os.Stat(finalPath); statErr == nil && !fi.IsDir() && fi.Size() > 0 {
+		cand := finalPath
+		if !filepath.IsAbs(cand) {
+			cand = filepath.Join(downloadDir, cand)
+		}
+		if fi, statErr := os.Stat(cand); statErr == nil && !fi.IsDir() && fi.Size() > 0 {
 			task.mu.Lock()
+			task.SavePath = cand
 			task.TotalBytes = fi.Size()
 			task.DownloadedBytes = fi.Size()
 			task.mu.Unlock()
+			qm.BroadcastUpdate()
 		}
 	}
 

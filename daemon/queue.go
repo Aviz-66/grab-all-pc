@@ -886,6 +886,17 @@ func (qm *QueueManager) runDownload(ctx context.Context, task *DownloadTask, myR
 		task.Status = StatusCompleted
 		task.Progress = 100.0
 		task.CompletedAt = &now
+		if task.SavePath != "" {
+			cand := task.SavePath
+			if !filepath.IsAbs(cand) {
+				cand = filepath.Join(qm.config.GetDownloadDir(), cand)
+			}
+			if fi, sErr := os.Stat(cand); sErr == nil && !fi.IsDir() && fi.Size() > 0 {
+				task.SavePath = cand
+				task.DownloadedBytes = fi.Size()
+				task.TotalBytes = fi.Size()
+			}
+		}
 	}
 	task.mu.Unlock()
 
