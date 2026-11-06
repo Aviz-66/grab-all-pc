@@ -25,21 +25,26 @@ const (
 )
 
 type DownloadTask struct {
-	ID              string     `json:"id"`
-	URL             string     `json:"url"`
-	Title           string     `json:"title"`
-	FileName        string     `json:"fileName"`
-	Engine          string     `json:"engine"` // "direct" or "ytdlp"
-	Status          string     `json:"status"`
-	Progress        float64    `json:"progress"`
-	DownloadedBytes int64      `json:"downloadedBytes"`
-	TotalBytes      int64      `json:"totalBytes"`
-	Speed           string     `json:"speed"`
-	ETA             string     `json:"eta"`
-	ErrorMessage    string     `json:"errorMessage,omitempty"`
-	CreatedAt       time.Time  `json:"createdAt"`
-	UpdatedAt       time.Time  `json:"updatedAt"`
-	CompletedAt     *time.Time `json:"completedAt,omitempty"`
+	ID              string  `json:"id"`
+	URL             string  `json:"url"`
+	Title           string  `json:"title"`
+	FileName        string  `json:"fileName"`
+	Engine          string  `json:"engine"` // "direct" or "ytdlp"
+	Status          string  `json:"status"`
+	Progress        float64 `json:"progress"`
+	DownloadedBytes int64   `json:"downloadedBytes"`
+	TotalBytes      int64   `json:"totalBytes"`
+	// TotalBytesEstimate is yt-dlp's running total_bytes_estimate for fragmented
+	// (DASH) downloads. It is a moving guess, never the file's size: it must
+	// never be copied into TotalBytes or shown as the size. Kept in the task
+	// payload so the UI/API can show it as an approximate ("~") figure if wanted.
+	TotalBytesEstimate int64      `json:"totalBytesEstimate,omitempty"`
+	Speed              string     `json:"speed"`
+	ETA                string     `json:"eta"`
+	ErrorMessage       string     `json:"errorMessage,omitempty"`
+	CreatedAt          time.Time  `json:"createdAt"`
+	UpdatedAt          time.Time  `json:"updatedAt"`
+	CompletedAt        *time.Time `json:"completedAt,omitempty"`
 
 	Quality   string   `json:"quality,omitempty"`   // "best", "2160", "1080", "720", "480", "360", "audio-best", "audio-mp3"
 	SpeedMode string   `json:"speedMode,omitempty"` // "turbo" or "regular" (empty inherits config)
@@ -169,27 +174,28 @@ func snapshotTask(t *DownloadTask, includeCookies bool) *DownloadTask {
 	defer t.mu.Unlock()
 
 	cp := &DownloadTask{
-		ID:              t.ID,
-		URL:             t.URL,
-		Title:           t.Title,
-		FileName:        t.FileName,
-		Engine:          t.Engine,
-		Status:          t.Status,
-		Progress:        t.Progress,
-		DownloadedBytes: t.DownloadedBytes,
-		TotalBytes:      t.TotalBytes,
-		Speed:           t.Speed,
-		ETA:             t.ETA,
-		ErrorMessage:    t.ErrorMessage,
-		CreatedAt:       t.CreatedAt,
-		UpdatedAt:       t.UpdatedAt,
-		CompletedAt:     t.CompletedAt,
-		Quality:         t.Quality,
-		SpeedMode:       t.SpeedMode,
-		SubDir:          t.SubDir,
-		UserAgent:       t.UserAgent,
-		Referer:         t.Referer,
-		SavePath:        t.SavePath,
+		ID:                 t.ID,
+		URL:                t.URL,
+		Title:              t.Title,
+		FileName:           t.FileName,
+		Engine:             t.Engine,
+		Status:             t.Status,
+		Progress:           t.Progress,
+		DownloadedBytes:    t.DownloadedBytes,
+		TotalBytes:         t.TotalBytes,
+		TotalBytesEstimate: t.TotalBytesEstimate,
+		Speed:              t.Speed,
+		ETA:                t.ETA,
+		ErrorMessage:       t.ErrorMessage,
+		CreatedAt:          t.CreatedAt,
+		UpdatedAt:          t.UpdatedAt,
+		CompletedAt:        t.CompletedAt,
+		Quality:            t.Quality,
+		SpeedMode:          t.SpeedMode,
+		SubDir:             t.SubDir,
+		UserAgent:          t.UserAgent,
+		Referer:            t.Referer,
+		SavePath:           t.SavePath,
 	}
 	if includeCookies {
 		cp.Cookies = t.Cookies
@@ -886,6 +892,16 @@ func (qm *QueueManager) runDownload(ctx context.Context, task *DownloadTask, myR
 		task.Status = StatusCompleted
 		task.Progress = 100.0
 		task.CompletedAt = &now
+		// Final exact size from the file on disk. For fragmented (DASH)
+		// downloads yt-dlp never reports an exact total, so TotalBytes may
+		// still be 0 (or a stale exact value from an earlier stream) here;
+		// the finished file is the only exact source.
+		if task.SavePath != "" {
+			if fi, serr := os.Stat(task.SavePath); serr == nil {
+				task.TotalBytes = fi.Size()
+				task.DownloadedBytes = fi.Size()
+			}
+		}
 	}
 	task.mu.Unlock()
 
