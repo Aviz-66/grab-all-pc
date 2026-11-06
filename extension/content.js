@@ -1249,36 +1249,10 @@
       return;
     }
 
-    // 3. YouTube Watch page (/watch?v=... [&list=...])
-    // Prefer #owner (right next to Subscribe button) so YouTube's action-bar overflow never clips our Playlist button!
-    const ownerBar = document.querySelector('ytd-watch-metadata #owner');
-    const actionBar =
-      ownerBar ||
-      document.querySelector('ytd-watch-metadata #actions #top-level-buttons-computed') ||
-      document.querySelector('#actions #top-level-buttons-computed') ||
-      document.querySelector('ytd-watch-metadata #actions');
-
-    const singleLabel = hasPlaylist ? '⚡ Video' : '⚡ GrabAll';
-
-    if (actionBar) {
-      const widget = buildActionPill({
-        id: YT_WIDGET_ID,
-        singleLabel,
-        isFloating: false,
-        hasPlaylist,
-        titleFn: getYouTubeTitle,
-      });
-      actionBar.appendChild(widget);
-    } else if (document.querySelector('video')) {
-      const floating = buildActionPill({
-        id: YT_WIDGET_ID,
-        singleLabel,
-        isFloating: true,
-        hasPlaylist,
-        titleFn: getYouTubeTitle,
-      });
-      document.body.appendChild(floating);
-    }
+    // 3. YouTube Watch page: Remove redundant button near Like/Share.
+    // The top-right hover overlay on the video player + the playlist panel button handles this cleanly!
+    const redundant = document.getElementById(YT_WIDGET_ID);
+    if (redundant) redundant.remove();
   }
 
   function removeYouTubeWidget() {
@@ -1502,6 +1476,10 @@
     if (rect.bottom < 40 || rect.top > window.innerHeight - 40) return false;
 
     const widget = ensureHoverWidget();
+    const container = document.fullscreenElement || document.body;
+    if (widget.parentElement !== container) {
+      container.appendChild(widget);
+    }
     const showPlaylist = isYouTubeWatchOrShorts() && Boolean(getPlaylistId());
     if (hoverPlBtn && hoverSingleBtn) {
       hoverPlBtn.style.display = showPlaylist ? 'inline-flex' : 'none';
