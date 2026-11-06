@@ -24,9 +24,11 @@ import (
 var (
 	ansiRegex     = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 	percentRegex  = regexp.MustCompile(`([0-9.]+)%`)
-	ytInstallMu   sync.Mutex
-	ytInstallDone chan struct{}
-	prewarmMu     sync.Mutex
+	ytInstallMu       sync.Mutex
+	ytInstallDone     chan struct{}
+	ffmpegInstallMu   sync.Mutex
+	ffmpegInstallDone chan struct{}
+	prewarmMu         sync.Mutex
 )
 
 const graballFastEJSPluginPy = `import re
@@ -218,6 +220,82 @@ func waitForActiveYtDlpInstall(ctx context.Context, onWait func()) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// ensureYtDlpBinary resolves yt-dlp, or automatically installs yt-dlp + QuickJS
+// seamlessly on first use without failing the user's task.
+func ensureYtDlpBinary(ctx context.Context, cfg *Config, onWait func(msg string)) (string, error) {
+	if err := waitForActiveYtDlpInstall(ctx, func() {
+		if onWait != nil {
+			onWait("⚡ Waiting for yt-dlp engine setup to finish...")
+		}
+	}); err != nil {
+		return "", err
+	}
+
+	binPath, err := resolveYtDlpBinary(cfg)
+	if err == nil {
+		if isManagedSlowWindowsYtDlp(binPath) {
+			if onWait != nil {
+				onWait("⚡ Upgrading yt-dlp engine to Fast-Start mode (1-time)...")
+			}
+			if upgraded, upErr := DownloadYtDlpStandalone(filepath.Dir(binPath)); upErr == nil {
+				binPath = upgraded
+				cfg.mu.Lock()
+				cfg.YtDlpPath = upgraded
+				cfg.mu.Unlock()
+				_ = cfg.Save()
+			}
+		}
+		return binPath, nil
+	}
+
+	// Auto-install yt-dlp on first use!
+	if onWait != nil {
+		onWait("⚡ Auto-installing yt-dlp & QuickJS engine (1-time setup)...")
+	}
+
+	binDir := filepath.Join(executableDir(), "bin")
+	_ = os.MkdirAll(binDir, 0755)
+
+	installedPath, installErr := DownloadYtDlpStandalone(binDir)
+	if installErr != nil {
+		return "", fmt.Errorf("failed to auto-install yt-dlp: %w. Open Tools menu to install manually", installErr)
+	}
+
+	cfg.mu.Lock()
+	cfg.YtDlpPath = installedPath
+	cfg.mu.Unlock()
+	_ = cfg.Save()
+
+	return installedPath, nil
+}
+
+// ensureFFmpegBinary resolves ffmpeg, or automatically installs static FFmpeg
+// seamlessly when high-definition merging (1080p/4K) or MP3 transcoding is needed.
+func ensureFFmpegBinary(ctx context.Context, cfg *Config, onWait func(msg string)) (string, error) {
+	if ffmpegBin := resolveFFmpegBinary(cfg); ffmpegBin != "" {
+		return ffmpegBin, nil
+	}
+
+	if onWait != nil {
+		onWait("⚡ Auto-installing FFmpeg (1-time setup for 1080p/4K/MP3)...")
+	}
+
+	binDir := filepath.Join(executableDir(), "bin")
+	_ = os.MkdirAll(binDir, 0755)
+
+	installedPath, installErr := DownloadFFmpegStandalone(binDir)
+	if installErr != nil {
+		return "", fmt.Errorf("failed to auto-install FFmpeg: %w", installErr)
+	}
+
+	cfg.mu.Lock()
+	cfg.FFmpegPath = installedPath
+	cfg.mu.Unlock()
+	_ = cfg.Save()
+
+	return installedPath, nil
 }
 
 func cleanOutput(s string) string {
@@ -431,17 +509,9 @@ func normalizePlaylistURL(rawURL string) string {
 
 // ExpandYtDlpPlaylist uses yt-dlp --flat-playlist --dump-single-json to fetch playlist entries quickly.
 func ExpandYtDlpPlaylist(ctx context.Context, cfg *Config, req AddRequest) (string, []PlaylistEntry, error) {
-	if err := waitForActiveYtDlpInstall(ctx, nil); err != nil {
-		return "", nil, err
-	}
-	binPath, err := resolveYtDlpBinary(cfg)
+	binPath, err := ensureYtDlpBinary(ctx, cfg, nil)
 	if err != nil {
 		return "", nil, err
-	}
-	if isManagedSlowWindowsYtDlp(binPath) {
-		if upgraded, upErr := DownloadYtDlpStandalone(filepath.Dir(binPath)); upErr == nil {
-			binPath = upgraded
-		}
 	}
 
 	var cookieFile string
@@ -575,40 +645,19 @@ func runFlatPlaylist(ctx context.Context, binPath, targetURL, cookieFile string,
 }
 
 func runYtDlpDownload(ctx context.Context, qm *QueueManager, task *DownloadTask) error {
-	if err := waitForActiveYtDlpInstall(ctx, func() {
+	binPath, err := ensureYtDlpBinary(ctx, qm.config, func(msg string) {
 		task.mu.Lock()
 		if task.Status == StatusDownloading {
-			task.Speed = "Upgrading yt-dlp (1-time)..."
+			task.Speed = msg
 		}
 		task.mu.Unlock()
 		qm.BroadcastUpdate()
-	}); err != nil {
-		return err
-	}
-
-	binPath, err := resolveYtDlpBinary(qm.config)
+	})
 	if err != nil {
 		return err
 	}
-
-	// One-time auto-upgrade if GrabAll's own bin/yt-dlp.exe is still the slow 1-file PyInstaller build
-	if isManagedSlowWindowsYtDlp(binPath) {
-		task.mu.Lock()
-		if task.Status == StatusDownloading {
-			task.Speed = "Upgrading yt-dlp (1-time)..."
-		}
-		task.mu.Unlock()
-		qm.BroadcastUpdate()
-		if upgraded, upErr := DownloadYtDlpStandalone(filepath.Dir(binPath)); upErr == nil {
-			binPath = upgraded
-			qm.config.mu.Lock()
-			qm.config.YtDlpPath = upgraded
-			qm.config.mu.Unlock()
-			_ = qm.config.Save()
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 
 	downloadDir := resolveTaskDownloadDir(qm.config.GetDownloadDir(), task.SubDir)
@@ -705,13 +754,25 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 	}
 
 	// Format & Quality selection
-	ffmpegBin := resolveFFmpegBinary(qm.config)
-	hasFFmpeg := ffmpegBin != ""
-
 	quality := strings.ToLower(strings.TrimSpace(task.Quality))
 	if quality == "" {
 		quality = "best"
 	}
+
+	needsFFmpeg := quality == "2160" || quality == "4k" || quality == "1080" || quality == "audio-mp3"
+	if needsFFmpeg && resolveFFmpegBinary(qm.config) == "" {
+		_, _ = ensureFFmpegBinary(ctx, qm.config, func(msg string) {
+			task.mu.Lock()
+			if task.Status == StatusDownloading {
+				task.Speed = msg
+			}
+			task.mu.Unlock()
+			qm.BroadcastUpdate()
+		})
+	}
+
+	ffmpegBin := resolveFFmpegBinary(qm.config)
+	hasFFmpeg := ffmpegBin != ""
 
 	if strings.HasPrefix(quality, "audio") {
 		if ytDashySort != "" {
@@ -1395,6 +1456,23 @@ func DownloadQuickJSStandalone(destDir string) (string, error) {
 
 // DownloadFFmpegStandalone fetches a static single-file ffmpeg binary into destDir.
 func DownloadFFmpegStandalone(destDir string) (string, error) {
+	ffmpegInstallMu.Lock()
+	for ffmpegInstallDone != nil {
+		ch := ffmpegInstallDone
+		ffmpegInstallMu.Unlock()
+		<-ch
+		ffmpegInstallMu.Lock()
+	}
+	done := make(chan struct{})
+	ffmpegInstallDone = done
+	ffmpegInstallMu.Unlock()
+	defer func() {
+		ffmpegInstallMu.Lock()
+		ffmpegInstallDone = nil
+		close(done)
+		ffmpegInstallMu.Unlock()
+	}()
+
 	binName := "ffmpeg"
 	var asset string
 

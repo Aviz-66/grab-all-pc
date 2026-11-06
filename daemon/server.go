@@ -110,6 +110,7 @@ func (s *Server) setupRoutes() http.Handler {
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/install-ytdlp", s.handleInstallYtDlp)
 	mux.HandleFunc("/api/install-ffmpeg", s.handleInstallFFmpeg)
+	mux.HandleFunc("/api/install-all", s.handleInstallAll)
 	mux.HandleFunc("/api/open-folder", s.handleOpenFolder)
 
 	return s.corsAndAuthMiddleware(mux)
@@ -231,7 +232,7 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":          "ok",
-		"version":         "2.2.4",
+		"version":         "2.2.5",
 		"nativeGui":       s.onShowWindow != nil,
 		"downloadDir":     s.config.GetDownloadDir(),
 		"maxConcurrent":   s.config.GetMaxConcurrent(),
@@ -655,6 +656,47 @@ func (s *Server) handleInstallYtDlp(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"path":    installedPath,
+	})
+}
+
+func (s *Server) handleInstallAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	binDir := filepath.Join(executableDir(), "bin")
+	_ = os.MkdirAll(binDir, 0755)
+
+	ytPath, ytErr := DownloadYtDlpStandalone(binDir)
+	if ytErr == nil {
+		s.config.mu.Lock()
+		s.config.YtDlpPath = ytPath
+		s.config.mu.Unlock()
+	}
+
+	ffPath, ffErr := DownloadFFmpegStandalone(binDir)
+	if ffErr == nil {
+		s.config.mu.Lock()
+		s.config.FFmpegPath = ffPath
+		s.config.mu.Unlock()
+	}
+
+	_ = s.config.Save()
+
+	w.Header().Set("Content-Type", "application/json")
+	if ytErr != nil && ffErr != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": fmt.Sprintf("yt-dlp: %v; ffmpeg: %v", ytErr, ffErr),
+		})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":    true,
+		"ytDlpPath":  ytPath,
+		"ffmpegPath": ffPath,
 	})
 }
 

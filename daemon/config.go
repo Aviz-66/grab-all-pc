@@ -32,7 +32,8 @@ type Config struct {
 	FFmpegPath        string `json:"ffmpegPath"`
 	DefaultEngine     string `json:"defaultEngine"`       // "auto", "direct", "ytdlp"
 	SpeedMode         string `json:"speedMode,omitempty"` // "turbo" (default 6x) or "regular" (1x sequential watch-live)
-	ShowProgressPopup *bool  `json:"showProgressPopup,omitempty"`
+	ShowProgressPopup   *bool  `json:"showProgressPopup,omitempty"`
+	FirstRunPromptShown bool   `json:"firstRunPromptShown,omitempty"`
 
 	mu         sync.RWMutex `json:"-"`
 	configPath string       `json:"-"`

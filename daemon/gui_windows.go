@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -178,6 +179,7 @@ const (
 	mbIconInfo    = 0x00000040
 	mbIconWarning = 0x00000030
 	mbIconError   = 0x00000010
+	mbIconQuestion = 0x00000020
 	idYes         = 6
 
 	// Misc Constants
@@ -1056,6 +1058,7 @@ func (g *winAppGUI) initAndRunMessageLoop(startInTray bool) {
 		procShowWindow.Call(g.mainHwnd, swShowNormal)
 		procUpdateWindow.Call(g.mainHwnd)
 	}
+	go g.checkFirstRunEnginePrompt()
 
 	var msg winMsg
 	for {
@@ -2051,6 +2054,93 @@ func (g *winAppGUI) autoUpgradeSlowYtDlpIfNeeded() {
 	PrewarmYouTubeSolverCache(g.cfg)
 }
 
+// checkFirstRunEnginePrompt asks the user on the very first launch if they want to install
+// yt-dlp & FFmpeg. If they skip, it marks it as shown so it never nags again, and
+// just-in-time auto-download handles it automatically whenever they grab a video.
+func (g *winAppGUI) checkFirstRunEnginePrompt() {
+	g.cfg.mu.RLock()
+	shown := g.cfg.FirstRunPromptShown
+	g.cfg.mu.RUnlock()
+	if shown {
+		return
+	}
+
+	ytPath, ytErr := resolveYtDlpBinary(g.cfg)
+	ffmpegPath := resolveFFmpegBinary(g.cfg)
+
+	// If yt-dlp is already present, don't nag
+	if ytErr == nil && ytPath != "" {
+		g.cfg.mu.Lock()
+		g.cfg.FirstRunPromptShown = true
+		g.cfg.mu.Unlock()
+		_ = g.cfg.Save()
+		return
+	}
+
+	// Mark prompt shown so it only asks once on fresh launch
+	g.cfg.mu.Lock()
+	g.cfg.FirstRunPromptShown = true
+	g.cfg.mu.Unlock()
+	_ = g.cfg.Save()
+
+	time.Sleep(400 * time.Millisecond)
+
+	msg := "Welcome to GrabAll Download Manager!\n\n" +
+		"To enable 1-click video downloads from YouTube, TikTok, Facebook, and 1080p/4K audio merging, GrabAll needs its helper engines (yt-dlp & FFmpeg).\n\n" +
+		"Would you like to install them now?\n\n" +
+		"• Click 'Yes' to download and set them up now in the background.\n" +
+		"• Click 'No' to skip. GrabAll will auto-download them whenever you grab your first video."
+
+	res, _, _ := procMessageBoxW.Call(
+		g.mainHwnd,
+		uintptr(unsafe.Pointer(utf16Ptr(msg))),
+		uintptr(unsafe.Pointer(utf16Ptr("First-Time Setup — GrabAll"))),
+		mbYesNo|mbIconQuestion,
+	)
+
+	if res == idYes {
+		go g.installAllEnginesInBackground(ytErr != nil, ffmpegPath == "")
+	}
+}
+
+func (g *winAppGUI) installAllEnginesInBackground(needYtDlp, needFFmpeg bool) {
+	binDir := filepath.Join(executableDir(), "bin")
+	_ = os.MkdirAll(binDir, 0755)
+
+	g.postStatusMessage("⚡ Setting up video engines (yt-dlp & FFmpeg)... please wait...")
+
+	if needYtDlp {
+		g.postStatusMessage("⚡ Downloading yt-dlp & QuickJS engine...")
+		path, err := DownloadYtDlpStandalone(binDir)
+		if err != nil {
+			g.postStatusMessage("❌ Failed to download yt-dlp: " + err.Error())
+			return
+		}
+		g.cfg.mu.Lock()
+		g.cfg.YtDlpPath = path
+		g.cfg.mu.Unlock()
+		_ = g.cfg.Save()
+	}
+
+	if needFFmpeg {
+		g.postStatusMessage("⚡ Downloading FFmpeg media merger...")
+		path, err := DownloadFFmpegStandalone(binDir)
+		if err != nil {
+			g.postStatusMessage("❌ Failed to download FFmpeg: " + err.Error())
+			return
+		}
+		g.cfg.mu.Lock()
+		g.cfg.FFmpegPath = path
+		g.cfg.mu.Unlock()
+		_ = g.cfg.Save()
+	}
+
+	g.postStatusMessage("✅ All engines ready! YouTube, 1080p/4K & MP3 enabled.")
+	g.refreshStatusBar()
+	g.showTrayBalloon("GrabAll Engines Ready", "yt-dlp and FFmpeg are installed and ready. Click Grab in Chrome or Brave anytime!")
+	PrewarmYouTubeSolverCache(g.cfg)
+}
+
 func (g *winAppGUI) showToolsPopupMenu() {
 	hMenu, _, _ := procCreatePopupMenu.Call()
 	if hMenu == 0 {
@@ -2313,7 +2403,7 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 	case idmAbout:
 		procMessageBoxW.Call(
 			g.mainHwnd,
-			uintptr(unsafe.Pointer(utf16Ptr("GrabAll Download Manager v2.2.4 (Native Win32 Edition)\n\nUltra-lightweight IDM-style downloader built for low-RAM PCs.\n• Native Win32 GUI (~14 MB RAM, zero WebView/Electron bloat)\n• Turbo 6x Parallel Engine + Switchable Regular Watch-Live Mode\n• Clean Video Hover Grabber + Dedicated Playlist Downloader"))),
+			uintptr(unsafe.Pointer(utf16Ptr("GrabAll Download Manager v2.2.5 (Native Win32 Edition)\n\nUltra-lightweight IDM-style downloader built for low-RAM PCs.\n• Native Win32 GUI (~14 MB RAM, zero WebView/Electron bloat)\n• Turbo 6x Parallel Engine + Switchable Regular Watch-Live Mode\n• Clean Video Hover Grabber + Dedicated Playlist Downloader"))),
 			uintptr(unsafe.Pointer(utf16Ptr("About GrabAll"))),
 			mbOK|mbIconInfo,
 		)
