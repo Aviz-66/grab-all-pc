@@ -437,7 +437,7 @@ func (qm *QueueManager) AddPlaylistTasks(ctx context.Context, req AddRequest) ([
 		if entryTitle == "" {
 			entryTitle = entry.URL
 		}
-		displayTitle := fmt.Sprintf("[%s] %s%s", playlistTitle, idxPrefix, entryTitle)
+		displayTitle := fmt.Sprintf("%s%s", idxPrefix, entryTitle)
 		outputTemplate := fmt.Sprintf("%s%%(title)s [%%(id)s].%%(ext)s", idxPrefix)
 
 		task := &DownloadTask{
@@ -895,6 +895,12 @@ func (qm *QueueManager) runDownload(ctx context.Context, task *DownloadTask, myR
 				task.SavePath = cand
 				task.DownloadedBytes = fi.Size()
 				task.TotalBytes = fi.Size()
+			}
+		}
+		if task.FileName != "" {
+			cleanName := strings.TrimSuffix(task.FileName, filepath.Ext(task.FileName))
+			if task.Title == "" || task.Title == task.URL || strings.Contains(task.Title, "://") {
+				task.Title = cleanName
 			}
 		}
 	}

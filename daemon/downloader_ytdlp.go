@@ -953,8 +953,9 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 				if filename != "" && filename != "NA" {
 					task.FileName = filepath.Base(filename)
 					task.SavePath = filename
-					if task.Title == "" || task.Title == task.URL {
-						task.Title = task.FileName
+					cleanTitle := strings.TrimSuffix(task.FileName, filepath.Ext(task.FileName))
+					if task.Title == "" || task.Title == task.URL || strings.Contains(task.Title, "://") {
+						task.Title = cleanTitle
 					}
 				}
 				newProgress := task.Progress
@@ -1094,6 +1095,10 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 			task.SavePath = cand
 			task.TotalBytes = fi.Size()
 			task.DownloadedBytes = fi.Size()
+			cleanTitle := strings.TrimSuffix(filepath.Base(cand), filepath.Ext(cand))
+			if task.Title == "" || task.Title == task.URL || strings.Contains(task.Title, "://") {
+				task.Title = cleanTitle
+			}
 			task.mu.Unlock()
 			qm.BroadcastUpdate()
 		}

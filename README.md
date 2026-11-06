@@ -81,7 +81,7 @@ make ytdlp
 ### 5. Download stuff
 
 - **Hover any `<video>`** (Facebook, TikTok, Instagram, X/Twitter, Reddit, HTML5 videos) → pick resolution/audio quality and click **⚡ Grab**
-- **YouTube pages & playlists** → injected **⚡ GrabAll** button under watch pages + **📑 Grab Playlist** button (auto-organizes playlist items into `Downloads/<Playlist Title>/01 - ...`)
+- **YouTube pages & playlists** → injected **⚡ GrabAll** button under watch pages + **📑 Grab Playlist** button (auto-organizes playlist items into `Downloads/grabAll/<Playlist Title>/01 - ...`)
 - **Right-click any link / page** → download link, current page video, or entire playlist
 - **Extension popup** shows detected `.m3u8` / `.mp4` streams with quality/audio selector (`Best`, `4K`, `1080p`, `720p`, `MP3`, `M4A`, etc.)
 - **Native Win32 App (Windows) / Web Dashboard (`127.0.0.1:17890`)** for live progress, pause/resume/cancel, **Open Folder**, and 1-click **yt-dlp + QuickJS + FFmpeg** installers

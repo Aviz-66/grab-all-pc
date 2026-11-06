@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -42,14 +43,15 @@ func defaultDownloadDir() string {
 	if err == nil && usr.HomeDir != "" {
 		downloads := filepath.Join(usr.HomeDir, "Downloads")
 		if _, err := os.Stat(downloads); err == nil {
-			return downloads
+			return filepath.Join(downloads, "grabAll")
 		}
+		return filepath.Join(usr.HomeDir, "Downloads", "grabAll")
 	}
 	cwd, err := os.Getwd()
 	if err == nil {
-		return filepath.Join(cwd, "downloads")
+		return filepath.Join(cwd, "downloads", "grabAll")
 	}
-	return "downloads"
+	return filepath.Join("downloads", "grabAll")
 }
 
 func generateToken() string {
@@ -93,7 +95,11 @@ func LoadConfig(configPath string) (*Config, error) {
 		if cfg.DownloadDir == "" {
 			cfg.DownloadDir = defaultDownloadDir()
 			_ = cfg.Save()
+		} else if strings.EqualFold(filepath.Base(filepath.Clean(cfg.DownloadDir)), "downloads") {
+			cfg.DownloadDir = filepath.Join(cfg.DownloadDir, "grabAll")
+			_ = cfg.Save()
 		}
+		_ = os.MkdirAll(cfg.DownloadDir, 0755)
 		return cfg, nil
 	}
 

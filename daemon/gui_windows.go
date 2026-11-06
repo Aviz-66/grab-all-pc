@@ -5,6 +5,8 @@ package main
 import (
 	"bytes"
 	"context"
+	_ "embed"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"net/http"
@@ -18,6 +20,9 @@ import (
 	"time"
 	"unsafe"
 )
+
+//go:embed graball.ico
+var embeddedAppIcon []byte
 
 const (
 	// Window Styles
@@ -281,10 +286,13 @@ var (
 	procSetMenu              = modUser32.NewProc("SetMenu")
 	procSetMenuDefaultItem   = modUser32.NewProc("SetMenuDefaultItem")
 	procTrackPopupMenu       = modUser32.NewProc("TrackPopupMenu")
-	procGetCursorPos         = modUser32.NewProc("GetCursorPos")
-	procLoadCursorW          = modUser32.NewProc("LoadCursorW")
-	procCreateIconIndirect   = modUser32.NewProc("CreateIconIndirect")
-	procGetDC                = modUser32.NewProc("GetDC")
+	procGetCursorPos             = modUser32.NewProc("GetCursorPos")
+	procLoadCursorW              = modUser32.NewProc("LoadCursorW")
+	procLoadIconW                = modUser32.NewProc("LoadIconW")
+	procLoadImageW               = modUser32.NewProc("LoadImageW")
+	procCreateIconIndirect       = modUser32.NewProc("CreateIconIndirect")
+	procCreateIconFromResourceEx = modUser32.NewProc("CreateIconFromResourceEx")
+	procGetDC                    = modUser32.NewProc("GetDC")
 	procReleaseDC            = modUser32.NewProc("ReleaseDC")
 	procGetSysColorBrush     = modUser32.NewProc("GetSysColorBrush")
 	procOpenClipboard        = modUser32.NewProc("OpenClipboard")
@@ -835,6 +843,97 @@ func createBoltIcon(size int) uintptr {
 	return hIcon
 }
 
+const (
+	imageIcon      = 1
+	lrDefaultColor = 0x0000
+	lrShared       = 0x8000
+	iconSmallVal   = 0
+	iconBigVal     = 1
+)
+
+// loadAppIcon retrieves the highest fidelity native GrabAll icon:
+// 1. Attempts Win32 LoadImageW from the PE executable resource section (.rsrc via rsrc_windows_amd64.syso, RT_GROUP_ICON #1)
+// 2. Attempts Win32 LoadIconW
+// 3. Parses the embedded graball.ico and calls Win32 CreateIconFromResourceEx
+// 4. Falls back to procedural createBoltIcon
+func loadAppIcon(hInst uintptr, size int) uintptr {
+	if procLoadImageW.Find() == nil && hInst != 0 {
+		hIcon, _, _ := procLoadImageW.Call(
+			hInst,
+			1, // MAKEINTRESOURCE(1)
+			imageIcon,
+			uintptr(size),
+			uintptr(size),
+			lrDefaultColor|lrShared,
+		)
+		if hIcon != 0 {
+			return hIcon
+		}
+	}
+	if procLoadIconW.Find() == nil && hInst != 0 {
+		hIcon, _, _ := procLoadIconW.Call(hInst, 1)
+		if hIcon != 0 {
+			return hIcon
+		}
+	}
+	if hIcon := loadIconFromEmbeddedData(size); hIcon != 0 {
+		return hIcon
+	}
+	return createBoltIcon(size)
+}
+
+func loadIconFromEmbeddedData(size int) uintptr {
+	if len(embeddedAppIcon) < 6 || procCreateIconFromResourceEx.Find() != nil {
+		return 0
+	}
+	count := int(binary.LittleEndian.Uint16(embeddedAppIcon[4:6]))
+	if count <= 0 || len(embeddedAppIcon) < 6+count*16 {
+		return 0
+	}
+
+	bestOffset := -1
+	bestSize := 0
+	bestDiff := 999999
+
+	for i := 0; i < count; i++ {
+		entryOffset := 6 + i*16
+		w := int(embeddedAppIcon[entryOffset])
+		if w == 0 {
+			w = 256
+		}
+		bytesInRes := int(binary.LittleEndian.Uint32(embeddedAppIcon[entryOffset+8 : entryOffset+12]))
+		imgOffset := int(binary.LittleEndian.Uint32(embeddedAppIcon[entryOffset+12 : entryOffset+16]))
+		if imgOffset+bytesInRes > len(embeddedAppIcon) {
+			continue
+		}
+
+		diff := w - size
+		if diff < 0 {
+			diff = -diff * 2
+		}
+		if diff < bestDiff {
+			bestDiff = diff
+			bestOffset = imgOffset
+			bestSize = bytesInRes
+		}
+	}
+
+	if bestOffset < 0 || bestSize <= 0 {
+		return 0
+	}
+
+	hIcon, _, _ := procCreateIconFromResourceEx.Call(
+		uintptr(unsafe.Pointer(&embeddedAppIcon[bestOffset])),
+		uintptr(bestSize),
+		1,          // fIcon (TRUE)
+		0x00030000, // dwVersion
+		uintptr(size),
+		uintptr(size),
+		lrDefaultColor,
+	)
+	return hIcon
+}
+
 func (g *winAppGUI) initAndRunMessageLoop(startInTray bool) {
 	procSetProcessDPIAware.Call()
 	procCoInitializeEx.Call(0, coinitApartment)
@@ -854,8 +953,8 @@ func (g *winAppGUI) initAndRunMessageLoop(startInTray bool) {
 	procInitCommonControlsEx.Call(uintptr(unsafe.Pointer(&icc)))
 
 	g.hInst, _, _ = procGetModuleHandleW.Call(0)
-	g.iconBig = createBoltIcon(32)
-	g.iconSmall = createBoltIcon(16)
+	g.iconBig = loadAppIcon(g.hInst, 32)
+	g.iconSmall = loadAppIcon(g.hInst, 16)
 
 	fontFace := utf16Ptr("Segoe UI")
 	g.fontUI, _, _ = procCreateFontW.Call(
@@ -940,6 +1039,13 @@ func (g *winAppGUI) initAndRunMessageLoop(startInTray bool) {
 		g.hInst,
 		0,
 	)
+
+	if g.iconBig != 0 {
+		procSendMessageW.Call(g.mainHwnd, wmSetIcon, iconBigVal, g.iconBig)
+	}
+	if g.iconSmall != 0 {
+		procSendMessageW.Call(g.mainHwnd, wmSetIcon, iconSmallVal, g.iconSmall)
+	}
 
 	g.addTrayIcon()
 	g.syncListView()
@@ -1509,6 +1615,10 @@ func (g *winAppGUI) openOrFocusProgressPopup(taskID string, autoTriggered bool) 
 		return
 	}
 
+	if g.iconSmall != 0 {
+		procSendMessageW.Call(hwnd, wmSetIcon, iconSmallVal, g.iconSmall)
+	}
+
 	pad := g.scale(14)
 	contentW := w - pad*2 - g.scale(14)
 
@@ -1724,6 +1834,10 @@ func (g *winAppGUI) openAddURLDialog() {
 	)
 	if hwnd == 0 {
 		return
+	}
+
+	if g.iconSmall != 0 {
+		procSendMessageW.Call(hwnd, wmSetIcon, iconSmallVal, g.iconSmall)
 	}
 
 	pad := g.scale(14)
@@ -2199,7 +2313,7 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 	case idmAbout:
 		procMessageBoxW.Call(
 			g.mainHwnd,
-			uintptr(unsafe.Pointer(utf16Ptr("GrabAll Download Manager v2.2.3 (Native Win32 Edition)\n\nUltra-lightweight IDM-style downloader built for low-RAM PCs.\n• Native Win32 GUI (~14 MB RAM, zero WebView/Electron bloat)\n• Turbo 6x Parallel Engine + Switchable Regular Watch-Live Mode\n• Clean Video Hover Grabber + Dedicated Playlist Downloader"))),
+			uintptr(unsafe.Pointer(utf16Ptr("GrabAll Download Manager v2.2.4 (Native Win32 Edition)\n\nUltra-lightweight IDM-style downloader built for low-RAM PCs.\n• Native Win32 GUI (~14 MB RAM, zero WebView/Electron bloat)\n• Turbo 6x Parallel Engine + Switchable Regular Watch-Live Mode\n• Clean Video Hover Grabber + Dedicated Playlist Downloader"))),
 			uintptr(unsafe.Pointer(utf16Ptr("About GrabAll"))),
 			mbOK|mbIconInfo,
 		)
