@@ -1269,6 +1269,36 @@
   let hoverSingleBtn = null;
   let hoveredVideo = null;
   let hideHoverTimer = null;
+  let hoverIdleTimer = null;
+  let hoverDragOffset = null;
+  let isDraggingWidget = false;
+  let isMouseOverHoverWidget = false;
+
+  function revealHoverWidget() {
+    if (!hoverWidget) return;
+    hoverWidget.style.opacity = '0.96';
+    hoverWidget.style.pointerEvents = 'auto';
+  }
+
+  function fadeHoverWidget() {
+    if (!hoverWidget || isDraggingWidget || isMouseOverHoverWidget) return;
+    const popover = document.getElementById(PLAYLIST_POPOVER_ID);
+    if (popover && popover.style.display !== 'none') return;
+
+    hoverWidget.style.opacity = '0';
+    hoverWidget.style.pointerEvents = 'none';
+  }
+
+  function resetHoverIdleTimer() {
+    if (hoverIdleTimer) {
+      clearTimeout(hoverIdleTimer);
+      hoverIdleTimer = null;
+    }
+    // Auto-hide after 2.5 seconds of mouse inactivity (matches video player controls)
+    hoverIdleTimer = setTimeout(() => {
+      fadeHoverWidget();
+    }, 2500);
+  }
 
   function isSingleVideoPermalinkPage() {
     const p = location.pathname.toLowerCase();
@@ -1372,11 +1402,105 @@
         boxShadow: '0 4px 14px rgba(0, 0, 0, 0.55)',
         zIndex: '2147483646',
         opacity: '0.96',
+        transition: 'opacity 0.25s ease-in-out',
+        userSelect: 'none',
       },
       { id: HOVER_WIDGET_ID }
     );
 
+    const grip = dom(
+      'div',
+      {
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: '18px',
+        height: '30px',
+        backgroundColor: '#0f172a',
+        color: '#94a3b8',
+        fontSize: '12px',
+        lineHeight: '1',
+        cursor: 'grab',
+        userSelect: 'none',
+        borderRadius: '15px 0 0 15px',
+        borderRight: '1px solid rgba(255, 255, 255, 0.15)',
+        flexShrink: '0',
+      },
+      {
+        text: '⠿',
+        title: 'Click and drag to move this button anywhere on the video',
+      }
+    );
+
+    let dragStartX = 0;
+    let dragStartY = 0;
+    let widgetStartLeft = 0;
+    let widgetStartTop = 0;
+
+    const onPointerMove = (e) => {
+      if (!isDraggingWidget) return;
+      e.preventDefault();
+      const deltaX = e.clientX - dragStartX;
+      const deltaY = e.clientY - dragStartY;
+
+      let newLeft = widgetStartLeft + deltaX;
+      let newTop = widgetStartTop + deltaY;
+
+      const widgetWidth = wrapper.offsetWidth || 180;
+      const widgetHeight = wrapper.offsetHeight || 30;
+      newLeft = Math.max(6, Math.min(window.innerWidth - widgetWidth - 6, newLeft));
+      newTop = Math.max(6, Math.min(window.innerHeight - widgetHeight - 6, newTop));
+
+      wrapper.style.left = `${newLeft}px`;
+      wrapper.style.top = `${newTop}px`;
+
+      if (hoveredVideo) {
+        const vRect = hoveredVideo.getBoundingClientRect();
+        hoverDragOffset = {
+          dx: newLeft - vRect.left,
+          dy: newTop - vRect.top,
+        };
+      }
+    };
+
+    const onPointerUp = () => {
+      if (!isDraggingWidget) return;
+      isDraggingWidget = false;
+      grip.style.cursor = 'grab';
+      window.removeEventListener('pointermove', onPointerMove, true);
+      window.removeEventListener('pointerup', onPointerUp, true);
+      resetHoverIdleTimer();
+    };
+
+    grip.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      isDraggingWidget = true;
+      grip.style.cursor = 'grabbing';
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+      const b = wrapper.getBoundingClientRect();
+      widgetStartLeft = b.left;
+      widgetStartTop = b.top;
+      revealHoverWidget();
+      if (hoverIdleTimer) {
+        clearTimeout(hoverIdleTimer);
+        hoverIdleTimer = null;
+      }
+      window.addEventListener('pointermove', onPointerMove, true);
+      window.addEventListener('pointerup', onPointerUp, true);
+    });
+
     const select = createQualitySelect({ compact: true });
+    select.style.borderRadius = '0';
+    select.addEventListener('focus', () => {
+      isMouseOverHoverWidget = true;
+      revealHoverWidget();
+    });
+    select.addEventListener('blur', () => {
+      isMouseOverHoverWidget = false;
+      resetHoverIdleTimer();
+    });
 
     const btn = dom(
       'button',
@@ -1450,16 +1574,24 @@
     );
 
     wrapper.addEventListener('mouseenter', () => {
+      isMouseOverHoverWidget = true;
+      revealHoverWidget();
       if (hideHoverTimer) {
         clearTimeout(hideHoverTimer);
         hideHoverTimer = null;
       }
+      if (hoverIdleTimer) {
+        clearTimeout(hoverIdleTimer);
+        hoverIdleTimer = null;
+      }
     });
 
     wrapper.addEventListener('mouseleave', () => {
-      scheduleHideHover();
+      isMouseOverHoverWidget = false;
+      resetHoverIdleTimer();
     });
 
+    wrapper.appendChild(grip);
     wrapper.appendChild(select);
     wrapper.appendChild(btn);
     wrapper.appendChild(plBtn);
@@ -1492,10 +1624,24 @@
     }
 
     widget.style.display = 'inline-flex';
+    revealHoverWidget();
 
-    const top = Math.max(8, rect.top + 10);
-    const widgetWidth = widget.offsetWidth || (showPlaylist ? 245 : 155);
-    const left = Math.max(8, Math.min(window.innerWidth - widgetWidth - 12, rect.right - widgetWidth - 10));
+    if (isDraggingWidget) return true;
+
+    const widgetWidth = widget.offsetWidth || (showPlaylist ? 265 : 180);
+    const widgetHeight = widget.offsetHeight || 30;
+
+    let top, left;
+    if (hoverDragOffset) {
+      top = rect.top + hoverDragOffset.dy;
+      left = rect.left + hoverDragOffset.dx;
+    } else {
+      top = Math.max(8, rect.top + 10);
+      left = Math.max(8, Math.min(window.innerWidth - widgetWidth - 12, rect.right - widgetWidth - 10));
+    }
+
+    top = Math.max(6, Math.min(window.innerHeight - widgetHeight - 6, top));
+    left = Math.max(6, Math.min(window.innerWidth - widgetWidth - 6, left));
 
     widget.style.top = `${top}px`;
     widget.style.left = `${left}px`;
@@ -1503,13 +1649,16 @@
   }
 
   function scheduleHideHover() {
+    if (isDraggingWidget || isMouseOverHoverWidget) return;
     if (hideHoverTimer) clearTimeout(hideHoverTimer);
     hideHoverTimer = setTimeout(() => {
+      if (isDraggingWidget || isMouseOverHoverWidget) return;
       if (hoverWidget) {
         hoverWidget.style.display = 'none';
       }
       hoveredVideo = null;
-    }, 650);
+      hoverDragOffset = null;
+    }, 450);
   }
 
   let lastMouseCheck = 0;
@@ -1517,16 +1666,25 @@
     'mousemove',
     (e) => {
       const now = Date.now();
-      if (now - lastMouseCheck < 180) return;
+      if (now - lastMouseCheck < 75) return;
       lastMouseCheck = now;
 
+      if (isDraggingWidget) return;
+
       if (hoverWidget && hoverWidget.contains(e.target)) {
+        isMouseOverHoverWidget = true;
+        revealHoverWidget();
         if (hideHoverTimer) {
           clearTimeout(hideHoverTimer);
           hideHoverTimer = null;
         }
+        if (hoverIdleTimer) {
+          clearTimeout(hoverIdleTimer);
+          hoverIdleTimer = null;
+        }
         return;
       }
+      isMouseOverHoverWidget = false;
 
       // Skip hover on YouTube Shorts where controls occupy top-right
       if (isYouTubeHost() && location.pathname.startsWith('/shorts/')) return;
@@ -1549,8 +1707,13 @@
           clearTimeout(hideHoverTimer);
           hideHoverTimer = null;
         }
-        hoveredVideo = matched;
+        if (hoveredVideo !== matched) {
+          hoveredVideo = matched;
+          hoverDragOffset = null;
+        }
         positionHoverWidget(matched);
+        revealHoverWidget();
+        resetHoverIdleTimer();
       } else if (hoveredVideo) {
         scheduleHideHover();
       }
