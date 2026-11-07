@@ -66,9 +66,9 @@ make ytdlp
 ### 3. Run GrabAll
 
 - **On Windows (`graball.exe`)**: Just **double-click `graball.exe`**!
-  - Opens a real **Native Win32 IDM-style Desktop Window** (~14 MB RAM, **zero black CMD window**).
+  - Opens a real **Native Win32 Desktop Window** (~14 MB RAM, **zero black CMD window**).
   - Lives in the **Windows System Tray** (right-click tray icon or **Options → Start with Windows** to auto-launch silently on boot).
-  - Pops up a native **IDM Mini Progress Dialog** whenever a download starts (with `Open File` / `Open Folder` on completion).
+  - Pops up a native **Mini Progress Dialog** whenever a download starts (with `Open File` / `Open Folder` on completion).
 - **On Linux / macOS (`./graball`)**: Runs as a lightweight ~12 MB daemon serving the embedded Web Dashboard on `http://127.0.0.1:17890`.
 
 ### 4. Load the Brave/Chrome extension (Zero Token Copy-Paste!)

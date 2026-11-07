@@ -2,7 +2,7 @@
 // - YouTube Watch, Shorts & Playlist auto-capture with Resolution + Audio-Only selector
 // - Smart Playlist Popover Card: Quick Count (5/10/25/50/All), Custom Start # & Video Count,
 //   "Start from Current Video", and Interactive Video Checklist (instant DOM + yt-dlp preview)
-// - IDM-style per-video hover overlay for scrolling feeds & video players (TrustedHTML safe)
+// - Quick video hover overlay for scrolling feeds & video players (TrustedHTML safe)
 
 (function () {
   'use strict';
@@ -1262,7 +1262,7 @@
     if (panelBtn) panelBtn.remove();
   }
 
-  // ─── IDM-Style Per-Video Hover Overlay (Feeds + YouTube Player) ────
+  // ─── Video Hover Overlay (Feeds + YouTube Player) ────
 
   let hoverWidget = null;
   let hoverPlBtn = null;

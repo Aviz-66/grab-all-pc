@@ -161,7 +161,7 @@ func (c *Config) GetMaxConcurrent() int {
 	return c.MaxConcurrent
 }
 
-// GetShowProgressPopup returns whether the IDM-style mini progress window should appear on new downloads.
+// GetShowProgressPopup returns whether the mini progress window should appear on new downloads.
 func (c *Config) GetShowProgressPopup() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

@@ -197,36 +197,36 @@ const (
 	coinitApartment    = 0x2
 
 	// Command & Control IDs
-	idmAddURL        = 1001
-	idmResume        = 1002
-	idmPause         = 1003
-	idmCancel        = 1004
-	idmDelete        = 1005
-	idmDeleteDisk    = 1006
-	idmOpenFolder    = 1007
-	idmOpenFile      = 1008
-	idmShowProgress  = 1009
-	idmClearDone     = 1010
-	idmOpenDownloads = 1011
-	idmInstallYtDlp  = 1012
-	idmInstallFFmpeg = 1013
-	idmChangeDir     = 1014
-	idmCopyToken     = 1015
-	idmCopyURL       = 1016
-	idmToggleStartup     = 1017
-	idmTogglePopup       = 1018
-	idmToggleTurbo       = 1019
-	idmConc1             = 1021
-	idmConc2             = 1022
-	idmConc3             = 1023
-	idmConc4             = 1024
-	idmTaskSwitchRegular = 1025
-	idmTaskSwitchTurbo   = 1026
-	idmOpenWeb           = 1030
-	idmAbout             = 1031
-	idmShowMain          = 1040
-	idmToolsMenu         = 1041
-	idmExit              = 1099
+	cmdAddURL        = 1001
+	cmdResume        = 1002
+	cmdPause         = 1003
+	cmdCancel        = 1004
+	cmdDelete        = 1005
+	cmdDeleteDisk    = 1006
+	cmdOpenFolder    = 1007
+	cmdOpenFile      = 1008
+	cmdShowProgress  = 1009
+	cmdClearDone     = 1010
+	cmdOpenDownloads = 1011
+	cmdInstallYtDlp  = 1012
+	cmdInstallFFmpeg = 1013
+	cmdChangeDir     = 1014
+	cmdCopyToken     = 1015
+	cmdCopyURL       = 1016
+	cmdToggleStartup     = 1017
+	cmdTogglePopup       = 1018
+	cmdToggleTurbo       = 1019
+	cmdConc1             = 1021
+	cmdConc2             = 1022
+	cmdConc3             = 1023
+	cmdConc4             = 1024
+	cmdTaskSwitchRegular = 1025
+	cmdTaskSwitchTurbo   = 1026
+	cmdOpenWeb           = 1030
+	cmdAbout             = 1031
+	cmdShowMain          = 1040
+	cmdToolsMenu         = 1041
+	cmdExit              = 1099
 
 	idcListView = 2001
 	idcStatus   = 2002
@@ -1076,37 +1076,37 @@ func (g *winAppGUI) buildMainMenu() uintptr {
 
 	// Tasks Menu
 	hTasks, _, _ := procCreatePopupMenu.Call()
-	procAppendMenuW.Call(hTasks, mfString, idmAddURL, uintptr(unsafe.Pointer(utf16Ptr("Add New Download...	Ctrl+N"))))
-	procAppendMenuW.Call(hTasks, mfString, idmClearDone, uintptr(unsafe.Pointer(utf16Ptr("Clear Completed Downloads"))))
-	procAppendMenuW.Call(hTasks, mfString, idmOpenDownloads, uintptr(unsafe.Pointer(utf16Ptr("Open Downloads Folder"))))
+	procAppendMenuW.Call(hTasks, mfString, cmdAddURL, uintptr(unsafe.Pointer(utf16Ptr("Add New Download...	Ctrl+N"))))
+	procAppendMenuW.Call(hTasks, mfString, cmdClearDone, uintptr(unsafe.Pointer(utf16Ptr("Clear Completed Downloads"))))
+	procAppendMenuW.Call(hTasks, mfString, cmdOpenDownloads, uintptr(unsafe.Pointer(utf16Ptr("Open Downloads Folder"))))
 	procAppendMenuW.Call(hTasks, mfSeparator, 0, 0)
-	procAppendMenuW.Call(hTasks, mfString, idmExit, uintptr(unsafe.Pointer(utf16Ptr("Exit GrabAll"))))
+	procAppendMenuW.Call(hTasks, mfString, cmdExit, uintptr(unsafe.Pointer(utf16Ptr("Exit GrabAll"))))
 
 	// Tools Menu
 	hTools, _, _ := procCreatePopupMenu.Call()
-	procAppendMenuW.Call(hTools, mfString, idmInstallYtDlp, uintptr(unsafe.Pointer(utf16Ptr("Install / Update yt-dlp + QuickJS (YouTube Engine)"))))
-	procAppendMenuW.Call(hTools, mfString, idmInstallFFmpeg, uintptr(unsafe.Pointer(utf16Ptr("Install / Update FFmpeg (HD Audio+Video Merger)"))))
+	procAppendMenuW.Call(hTools, mfString, cmdInstallYtDlp, uintptr(unsafe.Pointer(utf16Ptr("Install / Update yt-dlp + QuickJS (YouTube Engine)"))))
+	procAppendMenuW.Call(hTools, mfString, cmdInstallFFmpeg, uintptr(unsafe.Pointer(utf16Ptr("Install / Update FFmpeg (HD Audio+Video Merger)"))))
 	procAppendMenuW.Call(hTools, mfSeparator, 0, 0)
-	procAppendMenuW.Call(hTools, mfString, idmChangeDir, uintptr(unsafe.Pointer(utf16Ptr("Change Default Save Folder..."))))
-	procAppendMenuW.Call(hTools, mfString, idmCopyToken, uintptr(unsafe.Pointer(utf16Ptr("Copy Extension Auth Token"))))
+	procAppendMenuW.Call(hTools, mfString, cmdChangeDir, uintptr(unsafe.Pointer(utf16Ptr("Change Default Save Folder..."))))
+	procAppendMenuW.Call(hTools, mfString, cmdCopyToken, uintptr(unsafe.Pointer(utf16Ptr("Copy Extension Auth Token"))))
 
 	// Options Menu
 	hOpt, _, _ := procCreatePopupMenu.Call()
 	g.hMenuOpt = hOpt
-	procAppendMenuW.Call(hOpt, mfString, idmToggleTurbo, uintptr(unsafe.Pointer(utf16Ptr("⚡ Turbo Multi-Connection Speed (6x Faster — uncheck for Watch-Live 1x)"))))
+	procAppendMenuW.Call(hOpt, mfString, cmdToggleTurbo, uintptr(unsafe.Pointer(utf16Ptr("⚡ Turbo Multi-Connection Speed (6x Faster — uncheck for Watch-Live 1x)"))))
 	procAppendMenuW.Call(hOpt, mfSeparator, 0, 0)
-	procAppendMenuW.Call(hOpt, mfString, idmToggleStartup, uintptr(unsafe.Pointer(utf16Ptr("Start GrabAll Automatically with Windows"))))
-	procAppendMenuW.Call(hOpt, mfString, idmTogglePopup, uintptr(unsafe.Pointer(utf16Ptr("Show IDM Progress Window on New Downloads"))))
+	procAppendMenuW.Call(hOpt, mfString, cmdToggleStartup, uintptr(unsafe.Pointer(utf16Ptr("Start GrabAll Automatically with Windows"))))
+	procAppendMenuW.Call(hOpt, mfString, cmdTogglePopup, uintptr(unsafe.Pointer(utf16Ptr("Show Download Progress Popup on New Downloads"))))
 	procAppendMenuW.Call(hOpt, mfSeparator, 0, 0)
-	procAppendMenuW.Call(hOpt, mfString, idmConc1, uintptr(unsafe.Pointer(utf16Ptr("Max Concurrent Downloads: 1"))))
-	procAppendMenuW.Call(hOpt, mfString, idmConc2, uintptr(unsafe.Pointer(utf16Ptr("Max Concurrent Downloads: 2"))))
-	procAppendMenuW.Call(hOpt, mfString, idmConc3, uintptr(unsafe.Pointer(utf16Ptr("Max Concurrent Downloads: 3"))))
-	procAppendMenuW.Call(hOpt, mfString, idmConc4, uintptr(unsafe.Pointer(utf16Ptr("Max Concurrent Downloads: 4"))))
+	procAppendMenuW.Call(hOpt, mfString, cmdConc1, uintptr(unsafe.Pointer(utf16Ptr("Max Concurrent Downloads: 1"))))
+	procAppendMenuW.Call(hOpt, mfString, cmdConc2, uintptr(unsafe.Pointer(utf16Ptr("Max Concurrent Downloads: 2"))))
+	procAppendMenuW.Call(hOpt, mfString, cmdConc3, uintptr(unsafe.Pointer(utf16Ptr("Max Concurrent Downloads: 3"))))
+	procAppendMenuW.Call(hOpt, mfString, cmdConc4, uintptr(unsafe.Pointer(utf16Ptr("Max Concurrent Downloads: 4"))))
 
 	// Help Menu
 	hHelp, _, _ := procCreatePopupMenu.Call()
-	procAppendMenuW.Call(hHelp, mfString, idmOpenWeb, uintptr(unsafe.Pointer(utf16Ptr("Open Web UI in Browser"))))
-	procAppendMenuW.Call(hHelp, mfString, idmAbout, uintptr(unsafe.Pointer(utf16Ptr("About GrabAll"))))
+	procAppendMenuW.Call(hHelp, mfString, cmdOpenWeb, uintptr(unsafe.Pointer(utf16Ptr("Open Web UI in Browser"))))
+	procAppendMenuW.Call(hHelp, mfString, cmdAbout, uintptr(unsafe.Pointer(utf16Ptr("About GrabAll"))))
 
 	procAppendMenuW.Call(hMain, mfPopup, hTasks, uintptr(unsafe.Pointer(utf16Ptr("&Tasks"))))
 	procAppendMenuW.Call(hMain, mfPopup, hTools, uintptr(unsafe.Pointer(utf16Ptr("T&ools"))))
@@ -1122,25 +1122,25 @@ func (g *winAppGUI) refreshOptionMenuChecks() {
 		return
 	}
 	if g.cfg.GetSpeedMode() == SpeedModeTurbo {
-		procCheckMenuItem.Call(g.hMenuOpt, idmToggleTurbo, mfByCommand|mfChecked)
+		procCheckMenuItem.Call(g.hMenuOpt, cmdToggleTurbo, mfByCommand|mfChecked)
 	} else {
-		procCheckMenuItem.Call(g.hMenuOpt, idmToggleTurbo, mfByCommand|mfUnchecked)
+		procCheckMenuItem.Call(g.hMenuOpt, cmdToggleTurbo, mfByCommand|mfUnchecked)
 	}
 
 	if isAutoStartEnabled() {
-		procCheckMenuItem.Call(g.hMenuOpt, idmToggleStartup, mfByCommand|mfChecked)
+		procCheckMenuItem.Call(g.hMenuOpt, cmdToggleStartup, mfByCommand|mfChecked)
 	} else {
-		procCheckMenuItem.Call(g.hMenuOpt, idmToggleStartup, mfByCommand|mfUnchecked)
+		procCheckMenuItem.Call(g.hMenuOpt, cmdToggleStartup, mfByCommand|mfUnchecked)
 	}
 
 	if g.cfg.GetShowProgressPopup() {
-		procCheckMenuItem.Call(g.hMenuOpt, idmTogglePopup, mfByCommand|mfChecked)
+		procCheckMenuItem.Call(g.hMenuOpt, cmdTogglePopup, mfByCommand|mfChecked)
 	} else {
-		procCheckMenuItem.Call(g.hMenuOpt, idmTogglePopup, mfByCommand|mfUnchecked)
+		procCheckMenuItem.Call(g.hMenuOpt, cmdTogglePopup, mfByCommand|mfUnchecked)
 	}
 
 	conc := g.cfg.GetMaxConcurrent()
-	for i, id := range []uintptr{idmConc1, idmConc2, idmConc3, idmConc4} {
+	for i, id := range []uintptr{cmdConc1, cmdConc2, cmdConc3, cmdConc4} {
 		if conc == i+1 {
 			procCheckMenuItem.Call(g.hMenuOpt, id, mfByCommand|mfChecked)
 		} else {
@@ -1173,14 +1173,14 @@ func (g *winAppGUI) createChildControl(className, text string, style, exStyle ui
 
 func (g *winAppGUI) onCreateMainWindow(hwnd uintptr) {
 	g.toolbar = []toolbarButtonDef{
-		{id: idmAddURL, label: "+ Add URL", width: 92},
-		{id: idmResume, label: "Resume", width: 78},
-		{id: idmPause, label: "Pause", width: 74},
-		{id: idmCancel, label: "Cancel", width: 74},
-		{id: idmDelete, label: "Delete", width: 74},
-		{id: idmOpenFolder, label: "Open Folder", width: 102},
-		{id: idmClearDone, label: "Clear Done", width: 92},
-		{id: idmToolsMenu, label: "Engine Setup", width: 108},
+		{id: cmdAddURL, label: "+ Add URL", width: 92},
+		{id: cmdResume, label: "Resume", width: 78},
+		{id: cmdPause, label: "Pause", width: 74},
+		{id: cmdCancel, label: "Cancel", width: 74},
+		{id: cmdDelete, label: "Delete", width: 74},
+		{id: cmdOpenFolder, label: "Open Folder", width: 102},
+		{id: cmdClearDone, label: "Clear Done", width: 92},
+		{id: cmdToolsMenu, label: "Engine Setup", width: 108},
 	}
 
 	x := g.scale(10)
@@ -1514,7 +1514,7 @@ func (g *winAppGUI) syncListView() {
 		g.selectRowIndex(newSelectedRow)
 	}
 
-	// Update any open IDM Mini Progress Windows
+	// Update any open Mini Progress Windows
 	for _, pop := range g.popups {
 		if t, ok := taskMap[pop.taskID]; ok {
 			g.updateProgressPopup(pop, t)
@@ -1577,7 +1577,7 @@ func (g *winAppGUI) refreshStatusBar() {
 	setWindowString(g.statusHwnd, status)
 }
 
-// openOrFocusProgressPopup creates or focuses the classic IDM mini progress dialog for a download task.
+// openOrFocusProgressPopup creates or focuses the mini progress dialog for a download task.
 func (g *winAppGUI) openOrFocusProgressPopup(taskID string, autoTriggered bool) {
 	if existingHwnd, ok := g.taskPop[taskID]; ok && existingHwnd != 0 {
 		procShowWindow.Call(existingHwnd, swShowNormal)
@@ -1811,7 +1811,7 @@ func (g *winAppGUI) findSnapshot(taskID string) *DownloadTask {
 	return nil
 }
 
-// openAddURLDialog opens the native IDM-style "Add New Download" window, auto-filling clipboard URLs.
+// openAddURLDialog opens the native "Add New Download" window, auto-filling clipboard URLs.
 func (g *winAppGUI) openAddURLDialog() {
 	if g.addDlg != nil && g.addDlg.hwnd != 0 {
 		procShowWindow.Call(g.addDlg.hwnd, swShowNormal)
@@ -1875,7 +1875,7 @@ func (g *winAppGUI) openAddURLDialog() {
 	g.createChildControl("BUTTON", "Start Download", wsChild|wsVisible|wsTabStop|bsDefPushButton, 0, pad+contentW-btnW*2-g.scale(8), btnY, btnW, btnH, hwnd, idcAddBtnStart, true)
 	g.createChildControl("BUTTON", "Cancel", wsChild|wsVisible|wsTabStop|bsPushButton, 0, pad+contentW-btnW, btnY, btnW, btnH, hwnd, idcAddBtnCancel, false)
 
-	// Auto-paste URL from clipboard if present (classic IDM touch!)
+	// Auto-paste URL from clipboard if present
 	if clip := readClipboardText(hwnd); strings.HasPrefix(clip, "http://") || strings.HasPrefix(clip, "https://") {
 		setWindowString(editURL, clip)
 		if isPurePlaylistURL(clip) || strings.Contains(strings.ToLower(clip), "list=") {
@@ -1992,32 +1992,32 @@ func (g *winAppGUI) showTrayContextMenu() {
 	}
 	defer procDestroyMenu.Call(hMenu)
 
-	procAppendMenuW.Call(hMenu, mfString, idmShowMain, uintptr(unsafe.Pointer(utf16Ptr("Open GrabAll Window"))))
-	procSetMenuDefaultItem.Call(hMenu, idmShowMain, 0)
-	procAppendMenuW.Call(hMenu, mfString, idmAddURL, uintptr(unsafe.Pointer(utf16Ptr("Add New Download..."))))
-	procAppendMenuW.Call(hMenu, mfString, idmOpenDownloads, uintptr(unsafe.Pointer(utf16Ptr("Open Downloads Folder"))))
+	procAppendMenuW.Call(hMenu, mfString, cmdShowMain, uintptr(unsafe.Pointer(utf16Ptr("Open GrabAll Window"))))
+	procSetMenuDefaultItem.Call(hMenu, cmdShowMain, 0)
+	procAppendMenuW.Call(hMenu, mfString, cmdAddURL, uintptr(unsafe.Pointer(utf16Ptr("Add New Download..."))))
+	procAppendMenuW.Call(hMenu, mfString, cmdOpenDownloads, uintptr(unsafe.Pointer(utf16Ptr("Open Downloads Folder"))))
 	procAppendMenuW.Call(hMenu, mfSeparator, 0, 0)
 
 	turboFlags := uintptr(mfString | mfUnchecked)
 	if g.cfg.GetSpeedMode() == SpeedModeTurbo {
 		turboFlags = uintptr(mfString | mfChecked)
 	}
-	procAppendMenuW.Call(hMenu, turboFlags, idmToggleTurbo, uintptr(unsafe.Pointer(utf16Ptr("⚡ Turbo Multi-Connection Speed (6x)"))))
+	procAppendMenuW.Call(hMenu, turboFlags, cmdToggleTurbo, uintptr(unsafe.Pointer(utf16Ptr("⚡ Turbo Multi-Connection Speed (6x)"))))
 
 	startFlags := uintptr(mfString | mfUnchecked)
 	if isAutoStartEnabled() {
 		startFlags = uintptr(mfString | mfChecked)
 	}
-	procAppendMenuW.Call(hMenu, startFlags, idmToggleStartup, uintptr(unsafe.Pointer(utf16Ptr("Start with Windows"))))
+	procAppendMenuW.Call(hMenu, startFlags, cmdToggleStartup, uintptr(unsafe.Pointer(utf16Ptr("Start with Windows"))))
 
 	popFlags := uintptr(mfString | mfUnchecked)
 	if g.cfg.GetShowProgressPopup() {
 		popFlags = uintptr(mfString | mfChecked)
 	}
-	procAppendMenuW.Call(hMenu, popFlags, idmTogglePopup, uintptr(unsafe.Pointer(utf16Ptr("Show Download Progress Popup"))))
+	procAppendMenuW.Call(hMenu, popFlags, cmdTogglePopup, uintptr(unsafe.Pointer(utf16Ptr("Show Download Progress Popup"))))
 
 	procAppendMenuW.Call(hMenu, mfSeparator, 0, 0)
-	procAppendMenuW.Call(hMenu, mfString, idmExit, uintptr(unsafe.Pointer(utf16Ptr("Exit GrabAll"))))
+	procAppendMenuW.Call(hMenu, mfString, cmdExit, uintptr(unsafe.Pointer(utf16Ptr("Exit GrabAll"))))
 
 	var pt winPoint
 	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
@@ -2160,11 +2160,11 @@ func (g *winAppGUI) showToolsPopupMenu() {
 		ffLabel = "Install FFmpeg (Needed for 1080p+ HD & MP3 Audio)"
 	}
 
-	procAppendMenuW.Call(hMenu, mfString, idmInstallYtDlp, uintptr(unsafe.Pointer(utf16Ptr(ytLabel))))
-	procAppendMenuW.Call(hMenu, mfString, idmInstallFFmpeg, uintptr(unsafe.Pointer(utf16Ptr(ffLabel))))
+	procAppendMenuW.Call(hMenu, mfString, cmdInstallYtDlp, uintptr(unsafe.Pointer(utf16Ptr(ytLabel))))
+	procAppendMenuW.Call(hMenu, mfString, cmdInstallFFmpeg, uintptr(unsafe.Pointer(utf16Ptr(ffLabel))))
 	procAppendMenuW.Call(hMenu, mfSeparator, 0, 0)
-	procAppendMenuW.Call(hMenu, mfString, idmChangeDir, uintptr(unsafe.Pointer(utf16Ptr("Change Default Save Folder..."))))
-	procAppendMenuW.Call(hMenu, mfString, idmOpenWeb, uintptr(unsafe.Pointer(utf16Ptr("Open Web UI in Browser"))))
+	procAppendMenuW.Call(hMenu, mfString, cmdChangeDir, uintptr(unsafe.Pointer(utf16Ptr("Change Default Save Folder..."))))
+	procAppendMenuW.Call(hMenu, mfString, cmdOpenWeb, uintptr(unsafe.Pointer(utf16Ptr("Open Web UI in Browser"))))
 
 	var pt winPoint
 	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
@@ -2194,9 +2194,9 @@ func (g *winAppGUI) showRowContextMenu(taskID string) {
 		openState = uintptr(mfString | mfEnabled)
 		openLabel = "🎬 Watch / Play While Downloading"
 	}
-	procAppendMenuW.Call(hMenu, openState, idmOpenFile, uintptr(unsafe.Pointer(utf16Ptr(openLabel))))
-	procAppendMenuW.Call(hMenu, mfString, idmOpenFolder, uintptr(unsafe.Pointer(utf16Ptr("Open Containing Folder"))))
-	procAppendMenuW.Call(hMenu, mfString, idmShowProgress, uintptr(unsafe.Pointer(utf16Ptr("Show Progress Window"))))
+	procAppendMenuW.Call(hMenu, openState, cmdOpenFile, uintptr(unsafe.Pointer(utf16Ptr(openLabel))))
+	procAppendMenuW.Call(hMenu, mfString, cmdOpenFolder, uintptr(unsafe.Pointer(utf16Ptr("Open Containing Folder"))))
+	procAppendMenuW.Call(hMenu, mfString, cmdShowProgress, uintptr(unsafe.Pointer(utf16Ptr("Show Progress Window"))))
 
 	if snap.Status != StatusCompleted {
 		effMode := snap.SpeedMode
@@ -2205,20 +2205,20 @@ func (g *winAppGUI) showRowContextMenu(taskID string) {
 		}
 		procAppendMenuW.Call(hMenu, mfSeparator, 0, 0)
 		if effMode == SpeedModeTurbo {
-			procAppendMenuW.Call(hMenu, mfString, idmTaskSwitchRegular, uintptr(unsafe.Pointer(utf16Ptr("🎬 Switch to Regular Mode (Watch While Downloading)"))))
+			procAppendMenuW.Call(hMenu, mfString, cmdTaskSwitchRegular, uintptr(unsafe.Pointer(utf16Ptr("🎬 Switch to Regular Mode (Watch While Downloading)"))))
 		} else {
-			procAppendMenuW.Call(hMenu, mfString, idmTaskSwitchTurbo, uintptr(unsafe.Pointer(utf16Ptr("⚡ Switch to Turbo Speed (6x Multi-Connection)"))))
+			procAppendMenuW.Call(hMenu, mfString, cmdTaskSwitchTurbo, uintptr(unsafe.Pointer(utf16Ptr("⚡ Switch to Turbo Speed (6x Multi-Connection)"))))
 		}
 	}
 
 	procAppendMenuW.Call(hMenu, mfSeparator, 0, 0)
-	procAppendMenuW.Call(hMenu, mfString, idmResume, uintptr(unsafe.Pointer(utf16Ptr("Resume / Retry"))))
-	procAppendMenuW.Call(hMenu, mfString, idmPause, uintptr(unsafe.Pointer(utf16Ptr("Pause"))))
-	procAppendMenuW.Call(hMenu, mfString, idmCancel, uintptr(unsafe.Pointer(utf16Ptr("Cancel"))))
+	procAppendMenuW.Call(hMenu, mfString, cmdResume, uintptr(unsafe.Pointer(utf16Ptr("Resume / Retry"))))
+	procAppendMenuW.Call(hMenu, mfString, cmdPause, uintptr(unsafe.Pointer(utf16Ptr("Pause"))))
+	procAppendMenuW.Call(hMenu, mfString, cmdCancel, uintptr(unsafe.Pointer(utf16Ptr("Cancel"))))
 	procAppendMenuW.Call(hMenu, mfSeparator, 0, 0)
-	procAppendMenuW.Call(hMenu, mfString, idmCopyURL, uintptr(unsafe.Pointer(utf16Ptr("Copy Download URL"))))
-	procAppendMenuW.Call(hMenu, mfString, idmDelete, uintptr(unsafe.Pointer(utf16Ptr("Remove from List"))))
-	procAppendMenuW.Call(hMenu, mfString, idmDeleteDisk, uintptr(unsafe.Pointer(utf16Ptr("Delete from List + Disk"))))
+	procAppendMenuW.Call(hMenu, mfString, cmdCopyURL, uintptr(unsafe.Pointer(utf16Ptr("Copy Download URL"))))
+	procAppendMenuW.Call(hMenu, mfString, cmdDelete, uintptr(unsafe.Pointer(utf16Ptr("Remove from List"))))
+	procAppendMenuW.Call(hMenu, mfString, cmdDeleteDisk, uintptr(unsafe.Pointer(utf16Ptr("Delete from List + Disk"))))
 
 	var pt winPoint
 	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
@@ -2232,37 +2232,37 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 	selID := g.getSelectedTaskID()
 
 	switch cmdID {
-	case idmShowMain:
+	case cmdShowMain:
 		g.showMainWindow()
 
-	case idmAddURL:
+	case cmdAddURL:
 		g.openAddURLDialog()
 
-	case idmToolsMenu:
+	case cmdToolsMenu:
 		g.showToolsPopupMenu()
 
-	case idmResume:
+	case cmdResume:
 		if selID != "" {
 			g.qm.ResumeTask(selID)
 		}
 
-	case idmPause:
+	case cmdPause:
 		if selID != "" {
 			g.qm.PauseTask(selID)
 		}
 
-	case idmCancel:
+	case cmdCancel:
 		if selID != "" {
 			g.qm.CancelTask(selID)
 		}
 
-	case idmDelete:
+	case cmdDelete:
 		if selID != "" {
 			g.qm.DeleteTask(selID, false)
 			g.syncListView()
 		}
 
-	case idmDeleteDisk:
+	case cmdDeleteDisk:
 		if selID != "" {
 			ret, _, _ := procMessageBoxW.Call(
 				g.mainHwnd,
@@ -2276,7 +2276,7 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 			}
 		}
 
-	case idmOpenFolder:
+	case cmdOpenFolder:
 		if selID != "" {
 			fp, dir := resolveTaskRevealPaths(g.cfg, g.qm, selID)
 			openFolderOrSelectFile(fp, dir)
@@ -2284,7 +2284,7 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 			openFolderOrSelectFile("", g.cfg.GetDownloadDir())
 		}
 
-	case idmOpenFile:
+	case cmdOpenFile:
 		if selID != "" {
 			fp, dir := resolveTaskRevealPaths(g.cfg, g.qm, selID)
 			if fp == "" || openFileDefault(fp) != nil {
@@ -2292,27 +2292,27 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 			}
 		}
 
-	case idmShowProgress:
+	case cmdShowProgress:
 		if selID != "" {
 			g.openOrFocusProgressPopup(selID, false)
 		}
 
-	case idmCopyURL:
+	case cmdCopyURL:
 		if snap := g.findSnapshot(selID); snap != nil {
 			writeClipboardText(g.mainHwnd, snap.URL)
 		}
 
-	case idmClearDone:
+	case cmdClearDone:
 		g.qm.ClearCompleted()
 		g.syncListView()
 
-	case idmOpenDownloads:
+	case cmdOpenDownloads:
 		openFolderOrSelectFile("", g.cfg.GetDownloadDir())
 
-	case idmChangeDir:
+	case cmdChangeDir:
 		g.browseDownloadFolder()
 
-	case idmCopyToken:
+	case cmdCopyToken:
 		writeClipboardText(g.mainHwnd, g.cfg.GetToken())
 		procMessageBoxW.Call(
 			g.mainHwnd,
@@ -2321,7 +2321,7 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 			mbOK|mbIconInfo,
 		)
 
-	case idmInstallYtDlp:
+	case cmdInstallYtDlp:
 		go func() {
 			g.postStatusMessage("Installing Fast-Start yt-dlp_win.zip + QuickJS (qjs.exe)... please wait...")
 			binDir := filepath.Join(executableDir(), "bin")
@@ -2340,7 +2340,7 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 			go PrewarmYouTubeSolverCache(g.cfg)
 		}()
 
-	case idmInstallFFmpeg:
+	case cmdInstallFFmpeg:
 		go func() {
 			g.postStatusMessage("Downloading static FFmpeg (ffmpeg.exe)... please wait...")
 			binDir := filepath.Join(executableDir(), "bin")
@@ -2358,7 +2358,7 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 			g.showTrayBalloon("FFmpeg Ready", "1080p+ HD merging & MP3 extraction enabled!")
 		}()
 
-	case idmToggleTurbo:
+	case cmdToggleTurbo:
 		if g.cfg.GetSpeedMode() == SpeedModeTurbo {
 			g.cfg.SetSpeedMode(SpeedModeRegular)
 		} else {
@@ -2367,29 +2367,29 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 		g.refreshOptionMenuChecks()
 		g.refreshStatusBar()
 
-	case idmTaskSwitchRegular:
+	case cmdTaskSwitchRegular:
 		if selID != "" {
 			g.qm.SetTaskSpeedMode(selID, SpeedModeRegular)
 		}
 
-	case idmTaskSwitchTurbo:
+	case cmdTaskSwitchTurbo:
 		if selID != "" {
 			g.qm.SetTaskSpeedMode(selID, SpeedModeTurbo)
 		}
 
-	case idmToggleStartup:
+	case cmdToggleStartup:
 		next := !isAutoStartEnabled()
 		if err := setAutoStartEnabled(next); err != nil {
 			procMessageBoxW.Call(g.mainHwnd, uintptr(unsafe.Pointer(utf16Ptr("Could not update startup setting:\n"+err.Error()))), uintptr(unsafe.Pointer(utf16Ptr("GrabAll"))), mbOK|mbIconError)
 		}
 		g.refreshOptionMenuChecks()
 
-	case idmTogglePopup:
+	case cmdTogglePopup:
 		g.cfg.SetShowProgressPopup(!g.cfg.GetShowProgressPopup())
 		g.refreshOptionMenuChecks()
 
-	case idmConc1, idmConc2, idmConc3, idmConc4:
-		n := int(cmdID-idmConc1) + 1
+	case cmdConc1, cmdConc2, cmdConc3, cmdConc4:
+		n := int(cmdID-cmdConc1) + 1
 		g.cfg.mu.Lock()
 		g.cfg.MaxConcurrent = n
 		g.cfg.mu.Unlock()
@@ -2397,18 +2397,18 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 		g.refreshOptionMenuChecks()
 		g.qm.triggerLoop()
 
-	case idmOpenWeb:
+	case cmdOpenWeb:
 		openURLDefault(fmt.Sprintf("http://127.0.0.1:%d", g.cfg.Port))
 
-	case idmAbout:
+	case cmdAbout:
 		procMessageBoxW.Call(
 			g.mainHwnd,
-			uintptr(unsafe.Pointer(utf16Ptr("GrabAll Download Manager v2.2.6 (Native Win32 Edition)\n\nUltra-lightweight IDM-style downloader built for low-RAM PCs.\n• Native Win32 GUI (~14 MB RAM, zero WebView/Electron bloat)\n• Turbo 6x Parallel Engine + Switchable Regular Watch-Live Mode\n• Clean Video Hover Grabber + Dedicated Playlist Downloader"))),
+			uintptr(unsafe.Pointer(utf16Ptr("GrabAll Download Manager v2.2.6 (Native Win32 Edition)\n\nUltra-lightweight high-speed downloader built for low-RAM PCs.\n• Native Win32 GUI (~14 MB RAM, zero WebView/Electron bloat)\n• Turbo 6x Parallel Engine + Switchable Regular Watch-Live Mode\n• Clean Video Hover Grabber + Dedicated Playlist Downloader"))),
 			uintptr(unsafe.Pointer(utf16Ptr("About GrabAll"))),
 			mbOK|mbIconInfo,
 		)
 
-	case idmExit:
+	case cmdExit:
 		g.quitting = true
 		for hwnd := range g.popups {
 			procDestroyWindow.Call(hwnd)
