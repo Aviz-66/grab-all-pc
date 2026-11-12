@@ -427,21 +427,46 @@ func resolveTaskRevealPaths(cfg *Config, qm *QueueManager, taskID string) (fileP
 	if task := qm.GetByID(taskID); task != nil {
 		task.mu.Lock()
 		sp := task.SavePath
+		fn := task.FileName
+		title := task.Title
 		sub := task.SubDir
 		task.mu.Unlock()
+
+		taskDir := resolveTaskDownloadDir(dirPath, sub)
+		if cand := resolveExistingMediaFile(taskDir, sp, fn, title); cand != "" {
+			return cand, filepath.Dir(cand)
+		}
 		if sp != "" {
+			if !filepath.IsAbs(sp) {
+				sp = filepath.Join(taskDir, sp)
+			}
 			if _, err := os.Stat(sp); err == nil {
 				return sp, filepath.Dir(sp)
 			}
 			if _, err := os.Stat(sp + ".part"); err == nil {
 				return sp + ".part", filepath.Dir(sp)
 			}
-		}
-		if sub != "" {
-			cand := resolveTaskDownloadDir(dirPath, sub)
-			if _, err := os.Stat(cand); err == nil {
-				dirPath = cand
+			if strings.HasSuffix(strings.ToLower(sp), ".part") {
+				trimmed := sp[:len(sp)-5]
+				if _, err := os.Stat(trimmed); err == nil {
+					return trimmed, filepath.Dir(trimmed)
+				}
 			}
+		}
+		if fn != "" {
+			candFn := filepath.Join(taskDir, fn)
+			if _, err := os.Stat(candFn); err == nil {
+				return candFn, taskDir
+			}
+			if strings.HasSuffix(strings.ToLower(candFn), ".part") {
+				trimmed := candFn[:len(candFn)-5]
+				if _, err := os.Stat(trimmed); err == nil {
+					return trimmed, taskDir
+				}
+			}
+		}
+		if _, err := os.Stat(taskDir); err == nil {
+			dirPath = taskDir
 		}
 	}
 	return "", dirPath

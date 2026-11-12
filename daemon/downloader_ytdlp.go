@@ -1012,8 +1012,18 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 					task.ETA = etaStr
 				}
 				if filename != "" && filename != "NA" {
-					task.FileName = filepath.Base(filename)
-					task.SavePath = filename
+					cleanFile := filename
+					for strings.HasSuffix(strings.ToLower(cleanFile), ".part") {
+						cleanFile = cleanFile[:len(cleanFile)-5]
+					}
+					ext := filepath.Ext(cleanFile)
+					if isKnownYtMediaExt(ext) {
+						stem := strings.TrimSuffix(cleanFile, ext)
+						stem = ytFormatCodeExtRe.ReplaceAllString(stem, "")
+						cleanFile = stem + ext
+					}
+					task.FileName = filepath.Base(cleanFile)
+					task.SavePath = cleanFile
 					cleanTitle := strings.TrimSuffix(task.FileName, filepath.Ext(task.FileName))
 					if task.Title == "" || task.Title == task.URL || strings.Contains(task.Title, "://") {
 						task.Title = cleanTitle
@@ -1146,17 +1156,19 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 	task.mu.Lock()
 	finalPath := task.SavePath
 	task.mu.Unlock()
-	if finalPath != "" {
-		cand := finalPath
-		if !filepath.IsAbs(cand) {
-			cand = filepath.Join(downloadDir, cand)
-		}
-		if fi, statErr := os.Stat(cand); statErr == nil && !fi.IsDir() && fi.Size() > 0 {
+	cand := finalPath
+	if cand != "" && !filepath.IsAbs(cand) {
+		cand = filepath.Join(downloadDir, cand)
+	}
+
+	if resolved := resolveExistingMediaFile(downloadDir, cand, task.FileName, task.Title); resolved != "" {
+		if fi, statErr := os.Stat(resolved); statErr == nil && !fi.IsDir() && fi.Size() > 0 {
 			task.mu.Lock()
-			task.SavePath = cand
+			task.SavePath = resolved
+			task.FileName = filepath.Base(resolved)
 			task.TotalBytes = fi.Size()
 			task.DownloadedBytes = fi.Size()
-			cleanTitle := strings.TrimSuffix(filepath.Base(cand), filepath.Ext(cand))
+			cleanTitle := strings.TrimSuffix(task.FileName, filepath.Ext(task.FileName))
 			if task.Title == "" || task.Title == task.URL || strings.Contains(task.Title, "://") {
 				task.Title = cleanTitle
 			}
@@ -1164,6 +1176,9 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 			qm.BroadcastUpdate()
 		}
 	}
+
+	// Purge any lingering temporary/partial files or DASH fragments left by yt-dlp
+	qm.cleanTaskArtifacts(task, false)
 
 	return nil
 }

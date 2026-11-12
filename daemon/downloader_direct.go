@@ -164,6 +164,9 @@ func runDirectDownload(ctx context.Context, qm *QueueManager, task *DownloadTask
 	if fileName == "" || fileName == "." || fileName == "/" {
 		fileName = defaultTitleFromURL(task.URL)
 	}
+	for strings.HasSuffix(strings.ToLower(fileName), ".part") {
+		fileName = strings.TrimSuffix(fileName, fileName[len(fileName)-5:])
+	}
 	fileName = fitDirectFileName(downloadDir, sanitizeFileName(fileName))
 
 	speedMode := qm.ResolveTaskSpeedMode(task)
@@ -364,9 +367,10 @@ func streamResponseSequentially(ctx context.Context, qm *QueueManager, task *Dow
 }
 
 func finalizeDirectDownload(task *DownloadTask, downloadDir, fileName, partPath string, downloaded, totalBytes int64) error {
-	_ = os.Remove(partPath + ".turbo")
+	_ = removeFileWithRetry(partPath+".turbo", 5, 50*time.Millisecond)
+	_ = removeFileWithRetry(partPath+".turbo.tmp", 5, 50*time.Millisecond)
 	finalPath := getUniqueFilename(filepath.Join(downloadDir, fileName))
-	if err := os.Rename(partPath, finalPath); err != nil {
+	if err := renameFileWithRetry(partPath, finalPath, 10, 100*time.Millisecond); err != nil {
 		return fmt.Errorf("failed to finalize file: %w", err)
 	}
 
@@ -963,7 +967,7 @@ func fitYtDlpOutputTemplate(downloadDir, tmpl string) string {
 
 	// Literal filename case (e.g. custom filename, or a task persisted after an earlier failed attempt)
 	stem := tmpl
-	if strings.HasSuffix(strings.ToLower(stem), ".part") {
+	for strings.HasSuffix(strings.ToLower(stem), ".part") {
 		stem = stem[:len(stem)-5]
 	}
 	if ext := filepath.Ext(stem); isKnownYtMediaExt(ext) {

@@ -637,3 +637,200 @@ func TestYtSizeTracker(t *testing.T) {
 		t.Fatalf("Failed to load combined size from file: %d", tracker2.combined)
 	}
 }
+
+func TestCancelAndCleanupArtifacts(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &Config{
+		DownloadDir:   tmpDir,
+		MaxConcurrent: 1,
+	}
+	qm := NewQueueManager(cfg, filepath.Join(tmpDir, "queue.json"), NewSSEBroker())
+
+	task, err := qm.AddTask(AddRequest{
+		URL:      "https://www.youtube.com/watch?v=aqz-KE-bpKQ",
+		Title:    "Test Video [aqz-KE-bpKQ]",
+		FileName: "Test Video [aqz-KE-bpKQ].mp4",
+		Engine:   EngineYtDlp,
+	})
+	if err != nil {
+		t.Fatalf("AddTask failed: %v", err)
+	}
+
+	// Simulate stray partial files created during Turbo DASH or interrupted attempts
+	partFile1 := filepath.Join(tmpDir, "Test Video [aqz-KE-bpKQ].f137.mp4.part")
+	partFile2 := filepath.Join(tmpDir, "Test Video [aqz-KE-bpKQ].f251.webm.part")
+	fragFile := filepath.Join(tmpDir, "Test Video [aqz-KE-bpKQ].f137.mp4.part-Frag0.part")
+	ytdlFile := filepath.Join(tmpDir, "Test Video [aqz-KE-bpKQ].mp4.ytdl")
+	turboMeta := filepath.Join(tmpDir, "Test Video [aqz-KE-bpKQ].mp4.part.turbo")
+
+	for _, p := range []string{partFile1, partFile2, fragFile, ytdlFile, turboMeta} {
+		if err := os.WriteFile(p, []byte("partial content"), 0644); err != nil {
+			t.Fatalf("Failed to create test artifact %s: %v", p, err)
+		}
+	}
+
+	qm.CancelTask(task.ID)
+	// Give asynchronous cleanup a moment
+	time.Sleep(350 * time.Millisecond)
+
+	for _, p := range []string{partFile1, partFile2, fragFile, ytdlFile, turboMeta} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("Expected artifact %s to be cleaned up on cancel, but it still exists", filepath.Base(p))
+		}
+	}
+}
+
+func TestDeleteTaskCleanup(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &Config{
+		DownloadDir:   tmpDir,
+		MaxConcurrent: 1,
+	}
+	qm := NewQueueManager(cfg, filepath.Join(tmpDir, "queue.json"), NewSSEBroker())
+
+	// 1. Incomplete task deleted with deleteFile = false: partial files MUST be purged!
+	t1, err := qm.AddTask(AddRequest{
+		URL:      "https://example.com/test.bin",
+		Title:    "Test Unfinished",
+		FileName: "test_unfinished.bin",
+		Engine:   EngineDirect,
+	})
+	if err != nil {
+		t.Fatalf("AddTask failed: %v", err)
+	}
+	part1 := filepath.Join(tmpDir, "test_unfinished.bin.part")
+	turbo1 := filepath.Join(tmpDir, "test_unfinished.bin.part.turbo")
+	_ = os.WriteFile(part1, []byte("incomplete data"), 0644)
+	_ = os.WriteFile(turbo1, []byte("{}"), 0644)
+
+	qm.DeleteTask(t1.ID, false)
+	time.Sleep(350 * time.Millisecond)
+
+	if _, err := os.Stat(part1); !os.IsNotExist(err) {
+		t.Errorf("Expected partial file %s to be purged when incomplete task deleted", part1)
+	}
+	if _, err := os.Stat(turbo1); !os.IsNotExist(err) {
+		t.Errorf("Expected turbo file %s to be purged when incomplete task deleted", turbo1)
+	}
+
+	// 2. Completed task: deleteFile = false retains completed file; deleteFile = true deletes it.
+	t2, err := qm.AddTask(AddRequest{
+		URL:      "https://example.com/done.mp4",
+		Title:    "Finished Video",
+		FileName: "done.mp4",
+		Engine:   EngineDirect,
+	})
+	if err != nil {
+		t.Fatalf("AddTask failed: %v", err)
+	}
+	final2 := filepath.Join(tmpDir, "done.mp4")
+	_ = os.WriteFile(final2, []byte("final video content"), 0644)
+	t2.mu.Lock()
+	t2.Status = StatusCompleted
+	t2.SavePath = final2
+	t2.mu.Unlock()
+
+	qm.DeleteTask(t2.ID, false)
+	time.Sleep(350 * time.Millisecond)
+	if _, err := os.Stat(final2); os.IsNotExist(err) {
+		t.Errorf("Completed file %s should NOT be removed when deleteFile is false", final2)
+	}
+
+	// Now add again and delete with deleteFile = true
+	t3, _ := qm.AddTask(AddRequest{
+		URL:      "https://example.com/done.mp4",
+		Title:    "Finished Video 3",
+		FileName: "done.mp4",
+		Engine:   EngineDirect,
+	})
+	t3.mu.Lock()
+	t3.Status = StatusCompleted
+	t3.SavePath = final2
+	t3.mu.Unlock()
+
+	qm.DeleteTask(t3.ID, true)
+	time.Sleep(350 * time.Millisecond)
+	if _, err := os.Stat(final2); !os.IsNotExist(err) {
+		t.Errorf("Completed file %s SHOULD be removed when deleteFile is true", final2)
+	}
+}
+
+func TestCompletionPurgesTurboArtifactsAndResolvesRealFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &Config{
+		DownloadDir: tmpDir,
+	}
+	qm := NewQueueManager(cfg, filepath.Join(tmpDir, "queue.json"), NewSSEBroker())
+
+	task, _ := qm.AddTask(AddRequest{
+		URL:      "https://www.youtube.com/watch?v=2euX0MvU-Wo",
+		Title:    "Alan Walker - Faded [2euX0MvU-Wo]",
+		FileName: "Alan Walker - Faded [2euX0MvU-Wo].mp4.part",
+		Engine:   EngineYtDlp,
+	})
+
+	// Simulate final merged video file exists on disk
+	finalVideo := filepath.Join(tmpDir, "Alan Walker - Faded [2euX0MvU-Wo].mp4")
+	_ = os.WriteFile(finalVideo, []byte("final merged 1080p mp4 bytes"), 0644)
+
+	// Simulate stray leftover DASH fragment and intermediate streams from earlier Turbo attempt
+	strayPart := filepath.Join(tmpDir, "Alan Walker - Faded [2euX0MvU-Wo].f616.webm.part")
+	strayFrag := filepath.Join(tmpDir, "Alan Walker - Faded [2euX0MvU-Wo].f616.webm.part-Frag0.part")
+	strayYtdl := filepath.Join(tmpDir, "Alan Walker - Faded [2euX0MvU-Wo].mp4.ytdl")
+	_ = os.WriteFile(strayPart, []byte("stray chunk"), 0644)
+	_ = os.WriteFile(strayFrag, []byte("stray frag"), 0644)
+	_ = os.WriteFile(strayYtdl, []byte("ytdl temp"), 0644)
+
+	// Test resolveExistingMediaFile properly resolves finalVideo even though cand ended in .part
+	resolved := resolveExistingMediaFile(tmpDir, task.SavePath, task.FileName, task.Title)
+	if resolved != finalVideo {
+		t.Fatalf("resolveExistingMediaFile failed: expected %s, got %s", finalVideo, resolved)
+	}
+
+	// Purge artifacts as done on completion
+	qm.cleanTaskArtifacts(task, false)
+
+	// Final video must be preserved
+	if _, err := os.Stat(finalVideo); os.IsNotExist(err) {
+		t.Fatalf("Final completed video was accidentally deleted!")
+	}
+
+	// All stray artifacts must be purged
+	for _, stray := range []string{strayPart, strayFrag, strayYtdl} {
+		if _, err := os.Stat(stray); !os.IsNotExist(err) {
+			t.Errorf("Expected stray turbo artifact %s to be purged, but it remains", filepath.Base(stray))
+		}
+	}
+}
+
+func TestResolveTaskRevealPathsWithAndWithoutPart(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &Config{
+		DownloadDir: tmpDir,
+	}
+	qm := NewQueueManager(cfg, filepath.Join(tmpDir, "queue.json"), NewSSEBroker())
+
+	task, _ := qm.AddTask(AddRequest{
+		URL:      "https://example.com/clip.mp4",
+		Title:    "Music Clip",
+		FileName: "clip.mp4",
+		Engine:   EngineDirect,
+	})
+
+	finalFile := filepath.Join(tmpDir, "clip.mp4")
+	_ = os.WriteFile(finalFile, []byte("clip data"), 0644)
+
+	// Even if task.SavePath points to clip.mp4.part (as during active downloads),
+	// resolveTaskRevealPaths must accurately return the existing clip.mp4!
+	task.mu.Lock()
+	task.SavePath = filepath.Join(tmpDir, "clip.mp4.part")
+	task.mu.Unlock()
+
+	fp, dir := resolveTaskRevealPaths(cfg, qm, task.ID)
+	if fp != finalFile {
+		t.Errorf("Expected revealed file path %s, got %s", finalFile, fp)
+	}
+	if dir != tmpDir {
+		t.Errorf("Expected revealed dir %s, got %s", tmpDir, dir)
+	}
+}

@@ -614,7 +614,7 @@ func (qm *QueueManager) ResumeTask(id string) bool {
 	return false
 }
 
-// CancelTask cancels an active or queued task.
+// CancelTask cancels an active or queued task and cleans up any partial/fragment files.
 func (qm *QueueManager) CancelTask(id string) bool {
 	task := qm.GetByID(id)
 	if task == nil {
@@ -642,6 +642,12 @@ func (qm *QueueManager) CancelTask(id string) bool {
 	qm.save()
 	qm.BroadcastUpdate()
 	qm.triggerLoop()
+
+	go func(t *DownloadTask) {
+		time.Sleep(200 * time.Millisecond)
+		qm.cleanTaskArtifacts(t, false)
+	}(task)
+
 	return true
 }
 
@@ -695,7 +701,10 @@ func (qm *QueueManager) SetTaskSpeedMode(id, mode string) bool {
 	return true
 }
 
-// DeleteTask removes a task from the list and cleans up partial files if requested.
+// DeleteTask removes a task from the list and cleans up partial or completed files.
+// If deleteFile is true, all files (including completed) are deleted.
+// If deleteFile is false, but the task was NOT completed (e.g. canceled, errored, paused),
+// partial files are still cleaned up so unfinished artifacts are never abandoned on disk.
 func (qm *QueueManager) DeleteTask(id string, deleteFile bool) bool {
 	task := qm.GetByID(id)
 	if task == nil {
@@ -707,14 +716,17 @@ func (qm *QueueManager) DeleteTask(id string, deleteFile bool) bool {
 		task.cancelFunc()
 		task.cancelFunc = nil
 	}
-	savePath := task.SavePath
+	isCompleted := task.Status == StatusCompleted
 	task.mu.Unlock()
 
-	if deleteFile && savePath != "" {
-		_ = os.Remove(savePath)
-		_ = os.Remove(savePath + ".part")
-		_ = os.Remove(savePath + ".part.turbo")
-	}
+	go func(t *DownloadTask, delAll, completed bool) {
+		time.Sleep(200 * time.Millisecond)
+		if delAll {
+			qm.cleanTaskArtifacts(t, true)
+		} else if !completed {
+			qm.cleanTaskArtifacts(t, false)
+		}
+	}(task, deleteFile, isCompleted)
 
 	qm.tasksMu.Lock()
 	newTasks := make([]*DownloadTask, 0, len(qm.tasks))
@@ -738,23 +750,31 @@ func (qm *QueueManager) DeleteTask(id string, deleteFile bool) bool {
 	return found
 }
 
-// ClearCompleted removes all completed, errored, or canceled tasks.
+// ClearCompleted removes all completed, errored, or canceled tasks and cleans up incomplete parts.
 func (qm *QueueManager) ClearCompleted() int {
 	qm.tasksMu.Lock()
 	newTasks := make([]*DownloadTask, 0, len(qm.tasks))
 	count := 0
+	var toClean []*DownloadTask
 	for _, t := range qm.tasks {
 		t.mu.Lock()
 		st := t.Status
 		t.mu.Unlock()
 		if st == StatusCompleted || st == StatusCanceled || st == StatusError {
 			count++
+			if st == StatusCanceled || st == StatusError {
+				toClean = append(toClean, t)
+			}
 			continue
 		}
 		newTasks = append(newTasks, t)
 	}
 	qm.tasks = newTasks
 	qm.tasksMu.Unlock()
+
+	for _, t := range toClean {
+		go qm.cleanTaskArtifacts(t, false)
+	}
 
 	if count > 0 {
 		qm.save()
@@ -886,13 +906,15 @@ func (qm *QueueManager) runDownload(ctx context.Context, task *DownloadTask, myR
 		task.Status = StatusCompleted
 		task.Progress = 100.0
 		task.CompletedAt = &now
-		if task.SavePath != "" {
-			cand := task.SavePath
-			if !filepath.IsAbs(cand) {
-				cand = filepath.Join(qm.config.GetDownloadDir(), cand)
-			}
-			if fi, sErr := os.Stat(cand); sErr == nil && !fi.IsDir() && fi.Size() > 0 {
-				task.SavePath = cand
+		downloadDir := resolveTaskDownloadDir(qm.config.GetDownloadDir(), task.SubDir)
+		cand := task.SavePath
+		if cand != "" && !filepath.IsAbs(cand) {
+			cand = filepath.Join(downloadDir, cand)
+		}
+		if resolved := resolveExistingMediaFile(downloadDir, cand, task.FileName, task.Title); resolved != "" {
+			if fi, sErr := os.Stat(resolved); sErr == nil && !fi.IsDir() && fi.Size() > 0 {
+				task.SavePath = resolved
+				task.FileName = filepath.Base(resolved)
 				task.DownloadedBytes = fi.Size()
 				task.TotalBytes = fi.Size()
 			}
@@ -903,9 +925,15 @@ func (qm *QueueManager) runDownload(ctx context.Context, task *DownloadTask, myR
 				task.Title = cleanName
 			}
 		}
+		task.mu.Unlock()
+
+		// Purge any lingering temporary/partial files belonging to this task
+		qm.cleanTaskArtifacts(task, false)
+		goto broadcastEnd
 	}
 	task.mu.Unlock()
 
+broadcastEnd:
 	qm.save()
 	qm.BroadcastUpdate()
 	qm.triggerLoop()
@@ -926,4 +954,277 @@ func (qm *QueueManager) Stop() {
 		qm.tasksMu.RUnlock()
 	})
 	qm.wg.Wait()
+}
+
+// removeFileWithRetry attempts to remove a file with retries to handle temporary Windows file locks.
+func removeFileWithRetry(path string, maxAttempts int, delay time.Duration) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	var err error
+	for i := 0; i < maxAttempts; i++ {
+		err = os.Remove(path)
+		if err == nil || os.IsNotExist(err) {
+			return nil
+		}
+		time.Sleep(delay)
+	}
+	return err
+}
+
+// renameFileWithRetry attempts to rename a file with retries to handle temporary Windows file locks.
+func renameFileWithRetry(oldPath, newPath string, maxAttempts int, delay time.Duration) error {
+	var err error
+	for i := 0; i < maxAttempts; i++ {
+		err = os.Rename(oldPath, newPath)
+		if err == nil {
+			return nil
+		}
+		time.Sleep(delay)
+	}
+	return err
+}
+
+// isPartialOrTempPath returns true if a filename corresponds to an incomplete, fragment, or temp file.
+func isPartialOrTempPath(name string) bool {
+	lower := strings.ToLower(filepath.Base(name))
+	if strings.HasSuffix(lower, ".part") ||
+		strings.Contains(lower, ".part.") ||
+		strings.Contains(lower, ".part-frag") ||
+		strings.HasSuffix(lower, ".ytdl") ||
+		strings.HasSuffix(lower, ".temp") ||
+		strings.HasSuffix(lower, ".tmp") {
+		return true
+	}
+	ext := filepath.Ext(lower)
+	if isKnownYtMediaExt(ext) {
+		stem := strings.TrimSuffix(lower, ext)
+		if ytFormatCodeExtRe.MatchString(stem) {
+			return true
+		}
+	}
+	return false
+}
+
+// extractCandidateStems extracts cleaned base name stems and unique identifiers from task inputs.
+func extractCandidateStems(inputs ...string) []string {
+	var stems []string
+	seen := make(map[string]bool)
+
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" || len(s) < 2 {
+			return
+		}
+		lower := strings.ToLower(s)
+		if !seen[lower] {
+			seen[lower] = true
+			stems = append(stems, s)
+		}
+	}
+
+	for _, inp := range inputs {
+		if inp == "" {
+			continue
+		}
+		base := filepath.Base(inp)
+		for strings.HasSuffix(strings.ToLower(base), ".part") {
+			base = base[:len(base)-5]
+		}
+		base = strings.TrimSuffix(base, ".turbo")
+		base = strings.TrimSuffix(base, ".tmp")
+		base = strings.TrimSuffix(base, ".ytdl")
+
+		ext := filepath.Ext(base)
+		if isKnownYtMediaExt(ext) {
+			base = strings.TrimSuffix(base, ext)
+		}
+		base = ytFormatCodeExtRe.ReplaceAllString(base, "")
+		base = strings.TrimSpace(base)
+		add(base)
+
+		if match := trailingBracketIDRe.FindStringSubmatch(base); len(match) > 1 {
+			add("[" + match[1] + "]")
+			prefix := strings.TrimSpace(strings.TrimSuffix(base, match[0]))
+			add(prefix)
+		}
+	}
+
+	return stems
+}
+
+// resolveExistingMediaFile looks for the true completed media file on disk for a task.
+func resolveExistingMediaFile(downloadDir, cand, fileName, title string) string {
+	cand = strings.TrimSpace(cand)
+	if cand != "" {
+		if !filepath.IsAbs(cand) && downloadDir != "" {
+			cand = filepath.Join(downloadDir, cand)
+		}
+		if fi, err := os.Stat(cand); err == nil && !fi.IsDir() && fi.Size() > 0 {
+			if !strings.HasSuffix(strings.ToLower(cand), ".part") {
+				return cand
+			}
+			trimmed := cand[:len(cand)-5]
+			if fi2, err2 := os.Stat(trimmed); err2 == nil && !fi2.IsDir() && fi2.Size() > 0 {
+				return trimmed
+			}
+		} else if strings.HasSuffix(strings.ToLower(cand), ".part") {
+			trimmed := cand[:len(cand)-5]
+			if fi2, err2 := os.Stat(trimmed); err2 == nil && !fi2.IsDir() && fi2.Size() > 0 {
+				return trimmed
+			}
+		}
+	}
+
+	if downloadDir == "" {
+		return ""
+	}
+
+	if fileName != "" {
+		cleanName := fileName
+		for strings.HasSuffix(strings.ToLower(cleanName), ".part") {
+			cleanName = cleanName[:len(cleanName)-5]
+		}
+		fPath := filepath.Join(downloadDir, cleanName)
+		if fi, err := os.Stat(fPath); err == nil && !fi.IsDir() && fi.Size() > 0 {
+			return fPath
+		}
+	}
+
+	stems := extractCandidateStems(cand, fileName, title)
+	entries, err := os.ReadDir(downloadDir)
+	if err != nil {
+		return ""
+	}
+
+	var bestMatch string
+	var bestSize int64
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		eName := entry.Name()
+		if isPartialOrTempPath(eName) {
+			continue
+		}
+		ext := filepath.Ext(eName)
+		if !isKnownYtMediaExt(ext) {
+			continue
+		}
+		lowerName := strings.ToLower(eName)
+		matched := false
+		for _, stem := range stems {
+			if stem == "" {
+				continue
+			}
+			if strings.Contains(lowerName, strings.ToLower(stem)) {
+				matched = true
+				break
+			}
+		}
+		if matched {
+			if fi, err := entry.Info(); err == nil && fi.Size() > bestSize {
+				bestMatch = filepath.Join(downloadDir, eName)
+				bestSize = fi.Size()
+			}
+		}
+	}
+
+	return bestMatch
+}
+
+// cleanTaskArtifacts purges any partial, fragment, or temp files associated with a task.
+// If removeCompleted is true, it also deletes the final completed video/audio file.
+func (qm *QueueManager) cleanTaskArtifacts(task *DownloadTask, removeCompleted bool) {
+	if task == nil {
+		return
+	}
+
+	task.mu.Lock()
+	sp := task.SavePath
+	fn := task.FileName
+	title := task.Title
+	sub := task.SubDir
+	task.mu.Unlock()
+
+	downloadDir := resolveTaskDownloadDir(qm.config.GetDownloadDir(), sub)
+	stems := extractCandidateStems(sp, fn, title)
+
+	directTargets := []string{
+		sp,
+		sp + ".part",
+		sp + ".part.turbo",
+		sp + ".part.tmp",
+		sp + ".ytdl",
+		filepath.Join(downloadDir, fn),
+		filepath.Join(downloadDir, fn+".part"),
+		filepath.Join(downloadDir, fn+".part.turbo"),
+	}
+
+	if strings.HasSuffix(strings.ToLower(sp), ".part") {
+		trimmed := sp[:len(sp)-5]
+		directTargets = append(directTargets,
+			trimmed+".part",
+			trimmed+".part.turbo",
+			trimmed+".part.tmp",
+			trimmed+".ytdl",
+		)
+		if removeCompleted {
+			directTargets = append(directTargets, trimmed)
+		}
+	}
+
+	for _, target := range directTargets {
+		if target == "" {
+			continue
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(downloadDir, target)
+		}
+		if !removeCompleted && !isPartialOrTempPath(target) {
+			continue
+		}
+		_ = removeFileWithRetry(target, 4, 60*time.Millisecond)
+	}
+
+	if len(stems) == 0 {
+		return
+	}
+
+	entries, err := os.ReadDir(downloadDir)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		eName := entry.Name()
+		lowerName := strings.ToLower(eName)
+
+		matched := false
+		for _, stem := range stems {
+			if stem == "" {
+				continue
+			}
+			if strings.Contains(lowerName, strings.ToLower(stem)) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+
+		fullPath := filepath.Join(downloadDir, eName)
+		isPartial := isPartialOrTempPath(eName)
+
+		if isPartial {
+			_ = removeFileWithRetry(fullPath, 4, 60*time.Millisecond)
+		} else if removeCompleted {
+			_ = removeFileWithRetry(fullPath, 4, 60*time.Millisecond)
+		}
+	}
 }
