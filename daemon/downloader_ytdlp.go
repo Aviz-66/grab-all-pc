@@ -826,11 +826,15 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 	}
 
 	task.mu.Lock()
+	customFile := task.CustomFileName
 	origFileName := task.FileName
 	task.mu.Unlock()
 
-	// Force Windows-safe characters and dynamically fit %(title)s below Windows MAX_PATH (260)
-	args = append(args, "--windows-filenames", "-o", fitYtDlpOutputTemplate(downloadDir, origFileName))
+	// Always enforce --continue so yt-dlp resumes partially downloaded files/fragments.
+	// Use task.CustomFileName: if empty (standard YouTube grab), fitYtDlpOutputTemplate generates
+	// the exact same "%(title).95s [%(id)s].%(ext)s" template on first run AND every resume,
+	// guaranteeing the target .part file is always found and resumed seamlessly!
+	args = append(args, "--continue", "--windows-filenames", "-o", fitYtDlpOutputTemplate(downloadDir, customFile))
 
 	if cookieFile != "" {
 		args = append(args, "--cookies", cookieFile)
@@ -879,7 +883,11 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 
 	task.mu.Lock()
 	if task.Status == StatusDownloading && (task.Speed == "" || strings.Contains(task.Speed, "Upgrading")) {
-		task.Speed = "Starting yt-dlp..."
+		if task.DownloadedBytes > 0 {
+			task.Speed = "Resuming download..."
+		} else {
+			task.Speed = "Starting yt-dlp..."
+		}
 	}
 	task.mu.Unlock()
 	qm.BroadcastUpdate()
@@ -1101,6 +1109,41 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 					qm.BroadcastUpdate()
 				}
 			}
+		} else if strings.Contains(line, "has already been downloaded") {
+			// A stream (e.g. video) was already fully downloaded before Pause!
+			// Credit its file size to completedBytes so overall progress stays accurate on resume!
+			sub := strings.TrimPrefix(line, "[download]")
+			sub = strings.TrimSpace(strings.TrimSuffix(sub, "has already been downloaded"))
+			if !filepath.IsAbs(sub) {
+				sub = filepath.Join(downloadDir, sub)
+			}
+			if fi, err := os.Stat(sub); err == nil && !fi.IsDir() && fi.Size() > 0 {
+				sizes.addCompletedStream(sub, fi.Size())
+				task.mu.Lock()
+				if sizes.completedBytes > task.DownloadedBytes {
+					task.DownloadedBytes = sizes.completedBytes
+				}
+				if task.TotalBytes > 0 && task.DownloadedBytes > 0 {
+					task.Progress = float64(task.DownloadedBytes) / float64(task.TotalBytes) * 100.0
+				}
+				task.mu.Unlock()
+				qm.BroadcastUpdate()
+			}
+		} else if strings.Contains(line, "Resuming download at byte") {
+			parts := strings.Split(line, "byte")
+			if len(parts) >= 2 {
+				if byteOffset, err := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64); err == nil && byteOffset > 0 {
+					task.mu.Lock()
+					if byteOffset > task.DownloadedBytes {
+						task.DownloadedBytes = byteOffset
+						if task.TotalBytes > 0 {
+							task.Progress = float64(byteOffset) / float64(task.TotalBytes) * 100.0
+						}
+					}
+					task.mu.Unlock()
+					qm.BroadcastUpdate()
+				}
+			}
 		} else if strings.HasPrefix(line, "[") && strings.Contains(line, "] ") {
 			// Show granular live extraction phase before bytes start flowing
 			phase := "Extracting video stream..."
@@ -1211,6 +1254,12 @@ func (s *ytSizeTracker) loadCombinedFromFile(path string) {
 			s.combined = v
 			return
 		}
+	}
+}
+
+func (s *ytSizeTracker) addCompletedStream(path string, size int64) {
+	if path != "" && size > 0 && path != s.curKey {
+		s.completedBytes += size
 	}
 }
 

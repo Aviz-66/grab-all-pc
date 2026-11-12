@@ -834,3 +834,86 @@ func TestResolveTaskRevealPathsWithAndWithoutPart(t *testing.T) {
 		t.Errorf("Expected revealed dir %s, got %s", tmpDir, dir)
 	}
 }
+
+func TestYtDlpResumeTemplateConsistency(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &Config{
+		DownloadDir: tmpDir,
+	}
+	qm := NewQueueManager(cfg, filepath.Join(tmpDir, "queue.json"), NewSSEBroker())
+	defer qm.Stop()
+
+	// 1. Standard grab without custom file name
+	task1, err := qm.AddTask(AddRequest{
+		URL:    "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+		Engine: EngineYtDlp,
+	})
+	if err != nil {
+		t.Fatalf("AddTask failed: %v", err)
+	}
+
+	tmplRun1 := fitYtDlpOutputTemplate(tmpDir, task1.CustomFileName)
+
+	// Simulate first download run setting task.FileName to resolved video title
+	task1.mu.Lock()
+	task1.FileName = "Rick Astley - Never Gonna Give You Up (Official Music Video) [dQw4w9WgXcQ].mp4"
+	task1.mu.Unlock()
+
+	// On Resume, the template generated must be 100% IDENTICAL so yt-dlp finds the existing .part file!
+	tmplResume := fitYtDlpOutputTemplate(tmpDir, task1.CustomFileName)
+	if tmplResume != tmplRun1 {
+		t.Fatalf("Resume template mismatch! Run 1: %q, Resume: %q", tmplRun1, tmplResume)
+	}
+
+	if !strings.Contains(tmplResume, "%(title)") || !strings.Contains(tmplResume, "%(id)s") {
+		t.Errorf("Expected template to contain %%(title) and %%(id)s tokens, got: %s", tmplResume)
+	}
+
+	// 2. Custom filename grab
+	task2, err := qm.AddTask(AddRequest{
+		URL:      "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+		FileName: "custom_video.mp4",
+		Engine:   EngineYtDlp,
+	})
+	if err != nil {
+		t.Fatalf("AddTask failed: %v", err)
+	}
+
+	tmplCustom1 := fitYtDlpOutputTemplate(tmpDir, task2.CustomFileName)
+	task2.mu.Lock()
+	task2.FileName = "custom_video.mp4"
+	task2.mu.Unlock()
+	tmplCustomResume := fitYtDlpOutputTemplate(tmpDir, task2.CustomFileName)
+	if tmplCustomResume != tmplCustom1 {
+		t.Fatalf("Custom resume template mismatch! Run 1: %q, Resume: %q", tmplCustom1, tmplCustomResume)
+	}
+}
+
+func TestYtSizeTrackerResumeWithCompletedStream(t *testing.T) {
+	tracker := &ytSizeTracker{}
+
+	// Simulate Stream 1 (video, 100MB) was already downloaded in Run 1 before Pause.
+	videoFile := "/downloads/sample.f137.mp4"
+	tracker.addCompletedStream(videoFile, 100*1024*1024)
+
+	// Now in Run 2 (Resume), yt-dlp starts downloading Stream 2 (audio, 20MB).
+	// Currently 5MB of audio has been downloaded so far.
+	audioFile := "/downloads/sample.f140.m4a"
+	dl, total := tracker.update(audioFile, 5*1024*1024, 20*1024*1024, 20*1024*1024)
+
+	expectedDl := int64(105 * 1024 * 1024) // 100MB video + 5MB audio
+	expectedTotal := int64(120 * 1024 * 1024)
+
+	if dl != expectedDl {
+		t.Errorf("Expected downloaded bytes %d, got %d", expectedDl, dl)
+	}
+	if total != expectedTotal {
+		t.Errorf("Expected total bytes %d, got %d", expectedTotal, total)
+	}
+
+	pct := float64(dl) / float64(total) * 100.0
+	if pct < 85.0 || pct > 90.0 {
+		t.Errorf("Expected progress around 87.5%%, got %.2f%%", pct)
+	}
+}
+

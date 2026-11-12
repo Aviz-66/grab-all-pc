@@ -29,6 +29,7 @@ type DownloadTask struct {
 	URL             string     `json:"url"`
 	Title           string     `json:"title"`
 	FileName        string     `json:"fileName"`
+	CustomFileName  string     `json:"customFileName,omitempty"`
 	Engine          string     `json:"engine"` // "direct" or "ytdlp"
 	Status          string     `json:"status"`
 	Progress        float64    `json:"progress"`
@@ -303,11 +304,12 @@ func (qm *QueueManager) AddTask(req AddRequest) (*DownloadTask, error) {
 	}
 
 	task := &DownloadTask{
-		ID:        taskID,
-		URL:       req.URL,
-		Title:     title,
-		FileName:  req.FileName,
-		Engine:    engine,
+		ID:             taskID,
+		URL:            req.URL,
+		Title:          title,
+		FileName:       req.FileName,
+		CustomFileName: strings.TrimSpace(req.FileName),
+		Engine:         engine,
 		Quality:   req.Quality,
 		SpeedMode: reqSpeedMode,
 		SubDir:    req.SubDir,
