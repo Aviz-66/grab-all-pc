@@ -1388,6 +1388,24 @@
       return hoverWidget;
     }
 
+    // Dedupe: a pill may already exist in the page even when our variable
+    // lost track of it — e.g. orphaned by a fullscreen re-parent, or left
+    // behind when the extension reloaded while this tab stayed open.
+    // Reuse the first one and drop any extras, so only one pill ever exists.
+    // (Without this, every drag could spawn another pill, and the orphans
+    // never auto-hide because no timer references them.)
+    const existingPills = document.querySelectorAll('#' + HOVER_WIDGET_ID);
+    if (existingPills.length > 0) {
+      hoverWidget = existingPills[0];
+      for (let i = 1; i < existingPills.length; i++) {
+        existingPills[i].remove();
+      }
+      const pillBtns = hoverWidget.querySelectorAll(':scope > button');
+      hoverSingleBtn = pillBtns[0] || null;
+      hoverPlBtn = pillBtns[1] || null;
+      return hoverWidget;
+    }
+
     const wrapper = dom(
       'div',
       {
