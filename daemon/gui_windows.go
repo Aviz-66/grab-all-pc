@@ -2403,7 +2403,7 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 	case cmdAbout:
 		procMessageBoxW.Call(
 			g.mainHwnd,
-			uintptr(unsafe.Pointer(utf16Ptr("GrabAll Download Manager v2.2.7 (Native Win32 Edition)\n\nUltra-lightweight high-speed downloader built for low-RAM PCs.\n• Native Win32 GUI (~14 MB RAM, zero WebView/Electron bloat)\n• Turbo 6x Parallel Engine + Switchable Regular Watch-Live Mode\n• Clean Video Hover Grabber + Dedicated Playlist Downloader"))),
+			uintptr(unsafe.Pointer(utf16Ptr("GrabAll Download Manager v2.2.8 (Native Win32 Edition)\n\nUltra-lightweight high-speed downloader built for low-RAM PCs.\n• Native Win32 GUI (~14 MB RAM, zero WebView/Electron bloat)\n• Turbo 6x Parallel Engine + Switchable Regular Watch-Live Mode\n• Clean Video Hover Grabber + Dedicated Playlist Downloader"))),
 			uintptr(unsafe.Pointer(utf16Ptr("About GrabAll"))),
 			mbOK|mbIconInfo,
 		)
