@@ -645,6 +645,7 @@ func TestCancelAndCleanupArtifacts(t *testing.T) {
 		MaxConcurrent: 1,
 	}
 	qm := NewQueueManager(cfg, filepath.Join(tmpDir, "queue.json"), NewSSEBroker())
+	defer qm.Stop()
 
 	task, err := qm.AddTask(AddRequest{
 		URL:      "https://www.youtube.com/watch?v=aqz-KE-bpKQ",
@@ -687,6 +688,7 @@ func TestDeleteTaskCleanup(t *testing.T) {
 		MaxConcurrent: 1,
 	}
 	qm := NewQueueManager(cfg, filepath.Join(tmpDir, "queue.json"), NewSSEBroker())
+	defer qm.Stop()
 
 	// 1. Incomplete task deleted with deleteFile = false: partial files MUST be purged!
 	t1, err := qm.AddTask(AddRequest{
@@ -761,6 +763,7 @@ func TestCompletionPurgesTurboArtifactsAndResolvesRealFile(t *testing.T) {
 		DownloadDir: tmpDir,
 	}
 	qm := NewQueueManager(cfg, filepath.Join(tmpDir, "queue.json"), NewSSEBroker())
+	defer qm.Stop()
 
 	task, _ := qm.AddTask(AddRequest{
 		URL:      "https://www.youtube.com/watch?v=2euX0MvU-Wo",
@@ -809,6 +812,7 @@ func TestResolveTaskRevealPathsWithAndWithoutPart(t *testing.T) {
 		DownloadDir: tmpDir,
 	}
 	qm := NewQueueManager(cfg, filepath.Join(tmpDir, "queue.json"), NewSSEBroker())
+	defer qm.Stop()
 
 	task, _ := qm.AddTask(AddRequest{
 		URL:      "https://example.com/clip.mp4",
@@ -916,4 +920,74 @@ func TestYtSizeTrackerResumeWithCompletedStream(t *testing.T) {
 		t.Errorf("Expected progress around 87.5%%, got %.2f%%", pct)
 	}
 }
+
+func TestVideoCodecNormalizationAndSortOrder(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"", VideoCodecH264},
+		{"h264", VideoCodecH264},
+		{"H-264", VideoCodecH264},
+		{"avc1", VideoCodecH264},
+		{"264", VideoCodecH264},
+		{"vp9", VideoCodecVP9},
+		{"VP09", VideoCodecVP9},
+		{"av1", VideoCodecAV1},
+		{"av01", VideoCodecAV1},
+		{"auto", VideoCodecAuto},
+	}
+	for _, tc := range cases {
+		if got := normalizeVideoCodec(tc.input); got != tc.want {
+			t.Errorf("normalizeVideoCodec(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+
+	if got := buildYtDlpSortOrder("1080", VideoCodecH264, ",proto:http_dash_segments"); got != "res:1080,vcodec:h264,ext:mp4:m4a,proto:http_dash_segments" {
+		t.Errorf("unexpected 1080 h264 sort order: %q", got)
+	}
+	if got := buildYtDlpSortOrder("2160", VideoCodecVP9, ""); got != "res:2160,vcodec:vp9,ext:mp4:m4a" {
+		t.Errorf("unexpected 4k vp9 sort order: %q", got)
+	}
+	if got := buildYtDlpSortOrder("best", VideoCodecAV1, ""); got != "vcodec:av01,ext:mp4:m4a" {
+		t.Errorf("unexpected best av1 sort order: %q", got)
+	}
+	if got := buildYtDlpSortOrder("720", VideoCodecAuto, ""); got != "res:720,ext:mp4:m4a" {
+		t.Errorf("unexpected 720 auto sort order: %q", got)
+	}
+
+	tmpDir := t.TempDir()
+	cfg := &Config{
+		DownloadDir: tmpDir,
+		VideoCodec:  VideoCodecH264,
+	}
+	qm := NewQueueManager(cfg, filepath.Join(tmpDir, "queue.json"), NewSSEBroker())
+	defer qm.Stop()
+
+	// Default task inherits H.264
+	t1, err := qm.AddTask(AddRequest{
+		URL:    "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+		Engine: EngineYtDlp,
+	})
+	if err != nil {
+		t.Fatalf("AddTask failed: %v", err)
+	}
+	if snapshotTask(t1, false).VideoCodec != VideoCodecH264 {
+		t.Errorf("Expected default task VideoCodec %q, got %q", VideoCodecH264, t1.VideoCodec)
+	}
+
+	// Explicit override uses requested codec
+	t2, err := qm.AddTask(AddRequest{
+		URL:        "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+		Engine:     EngineYtDlp,
+		VideoCodec: "av1",
+	})
+	if err != nil {
+		t.Fatalf("AddTask failed: %v", err)
+	}
+	if snapshotTask(t2, false).VideoCodec != VideoCodecAV1 {
+		t.Errorf("Expected explicit task VideoCodec %q, got %q", VideoCodecAV1, t2.VideoCodec)
+	}
+}
+
 

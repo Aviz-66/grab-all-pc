@@ -3,6 +3,7 @@
 let tasks = [];
 let currentFilter = 'all';
 let sseConnection = null;
+let defaultVideoCodec = 'h264';
 
 // DOM Elements
 const queueListEl = document.getElementById('queue-list');
@@ -31,6 +32,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initFilters();
   initModals();
   initSettings();
+  loadSettings();
 });
 
 let fallbackPollTimer = null;
@@ -200,6 +202,7 @@ function createTaskCard(task) {
           <div class="task-meta">
             <span class="engine-tag">${escapeHtml(task.engine)}</span>
             ${task.quality && task.quality !== 'best' ? `<span class="engine-tag">${escapeHtml(qualityLabel(task.quality))}</span>` : ''}
+            ${task.engine === 'ytdlp' && !isAudio && task.videoCodec ? `<span class="engine-tag">${escapeHtml(codecLabel(task.videoCodec))}</span>` : ''}
             <span class="task-url" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(task.url)}</span>
           </div>
         </div>
@@ -372,6 +375,10 @@ async function doAction(url, body) {
 // Modals Setup
 function initModals() {
   document.getElementById('btn-add-modal').addEventListener('click', () => {
+    const codecSelect = document.getElementById('input-video-codec');
+    if (codecSelect) {
+      codecSelect.value = defaultVideoCodec || 'h264';
+    }
     modalAdd.classList.remove('hidden');
     document.getElementById('input-url').focus();
   });
@@ -388,6 +395,7 @@ function initModals() {
     const url = document.getElementById('input-url').value.trim();
     const engine = document.getElementById('input-engine').value;
     const quality = document.getElementById('input-quality').value;
+    const videoCodec = document.getElementById('input-video-codec')?.value || defaultVideoCodec || 'h264';
     const fileName = document.getElementById('input-filename').value.trim();
     const playlist = document.getElementById('input-playlist')?.checked || false;
 
@@ -403,7 +411,7 @@ function initModals() {
       const res = await fetch('/api/add', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, engine, quality, fileName, playlist }),
+        body: JSON.stringify({ url, engine, quality, videoCodec, fileName, playlist }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -441,14 +449,16 @@ function initSettings() {
     const downloadDir = document.getElementById('setting-download-dir').value.trim();
     const maxConcurrent = parseInt(document.getElementById('setting-max-concurrent').value, 10);
     const defaultEngine = document.getElementById('setting-default-engine').value;
+    const videoCodec = document.getElementById('setting-video-codec')?.value || 'h264';
 
     try {
       const res = await fetch('/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ downloadDir, maxConcurrent, defaultEngine }),
+        body: JSON.stringify({ downloadDir, maxConcurrent, defaultEngine, videoCodec }),
       });
       if (res.ok) {
+        defaultVideoCodec = videoCodec;
         showToast('Settings saved successfully');
         modalSettings.classList.add('hidden');
       } else {
@@ -520,6 +530,15 @@ async function loadSettings() {
     document.getElementById('setting-download-dir').value = cfg.downloadDir || '';
     document.getElementById('setting-max-concurrent').value = cfg.maxConcurrent || 2;
     document.getElementById('setting-default-engine').value = cfg.defaultEngine || 'auto';
+    defaultVideoCodec = cfg.videoCodec || 'h264';
+    const codecEl = document.getElementById('setting-video-codec');
+    if (codecEl) {
+      codecEl.value = defaultVideoCodec;
+    }
+    const addCodecEl = document.getElementById('input-video-codec');
+    if (addCodecEl) {
+      addCodecEl.value = defaultVideoCodec;
+    }
     document.getElementById('setting-token').value = cfg.authToken || '';
 
     const statusEl = document.getElementById('ytdlp-status-text');
@@ -583,4 +602,14 @@ function qualityLabel(q) {
     'audio-opus': '🎵 Opus',
   };
   return labels[q] || q;
+}
+
+function codecLabel(c) {
+  const labels = {
+    'h264': 'H.264',
+    'vp9': 'VP9',
+    'av1': 'AV1',
+    'auto': 'Auto Codec',
+  };
+  return labels[String(c || '').toLowerCase()] || c;
 }

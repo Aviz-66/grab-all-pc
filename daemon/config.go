@@ -14,6 +14,11 @@ import (
 const (
 	SpeedModeTurbo   = "turbo"
 	SpeedModeRegular = "regular"
+
+	VideoCodecH264 = "h264"
+	VideoCodecVP9  = "vp9"
+	VideoCodecAV1  = "av1"
+	VideoCodecAuto = "auto"
 )
 
 func normalizeSpeedMode(mode string) string {
@@ -21,6 +26,21 @@ func normalizeSpeedMode(mode string) string {
 		return SpeedModeRegular
 	}
 	return SpeedModeTurbo
+}
+
+func normalizeVideoCodec(codec string) string {
+	switch strings.ToLower(strings.TrimSpace(codec)) {
+	case "vp9", "vp09":
+		return VideoCodecVP9
+	case "av1", "av01":
+		return VideoCodecAV1
+	case "auto", "best", "any":
+		return VideoCodecAuto
+	case "h264", "h-264", "h.264", "avc", "avc1", "264", "":
+		return VideoCodecH264
+	default:
+		return VideoCodecH264
+	}
 }
 
 type Config struct {
@@ -32,6 +52,7 @@ type Config struct {
 	FFmpegPath        string `json:"ffmpegPath"`
 	DefaultEngine     string `json:"defaultEngine"`       // "auto", "direct", "ytdlp"
 	SpeedMode         string `json:"speedMode,omitempty"` // "turbo" (default 6x) or "regular" (1x sequential watch-live)
+	VideoCodec        string `json:"videoCodec,omitempty"` // "h264" (default), "vp9", "av1", "auto"
 	ShowProgressPopup   *bool  `json:"showProgressPopup,omitempty"`
 	FirstRunPromptShown bool   `json:"firstRunPromptShown,omitempty"`
 
@@ -74,6 +95,7 @@ func LoadConfig(configPath string) (*Config, error) {
 		FFmpegPath:    "ffmpeg",
 		DefaultEngine: "auto",
 		SpeedMode:     SpeedModeTurbo,
+		VideoCodec:    VideoCodecH264,
 		configPath:    configPath,
 	}
 
@@ -83,6 +105,7 @@ func LoadConfig(configPath string) (*Config, error) {
 			return nil, err
 		}
 		cfg.configPath = configPath
+		cfg.VideoCodec = normalizeVideoCodec(cfg.VideoCodec)
 		if cfg.Port <= 0 {
 			cfg.Port = 17890
 		}

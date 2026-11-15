@@ -605,6 +605,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			"ffmpegPath":      s.config.FFmpegPath,
 			"defaultEngine":   s.config.DefaultEngine,
 			"speedMode":       normalizeSpeedMode(s.config.SpeedMode),
+			"videoCodec":      normalizeVideoCodec(s.config.VideoCodec),
 			"ytDlpAvailable":  hasYtDlp == nil,
 			"ffmpegAvailable": hasFFmpeg,
 		}
@@ -619,6 +620,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			MaxConcurrent int    `json:"maxConcurrent"`
 			DefaultEngine string `json:"defaultEngine"`
 			SpeedMode     string `json:"speedMode"`
+			VideoCodec    string `json:"videoCodec"`
 			YtDlpPath     string `json:"ytDlpPath"`
 			FFmpegPath    string `json:"ffmpegPath"`
 		}
@@ -639,6 +641,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.SpeedMode != "" {
 			s.config.SpeedMode = normalizeSpeedMode(strings.ToLower(strings.TrimSpace(req.SpeedMode)))
+		}
+		if req.VideoCodec != "" {
+			s.config.VideoCodec = normalizeVideoCodec(req.VideoCodec)
 		}
 		if req.YtDlpPath != "" {
 			s.config.YtDlpPath = req.YtDlpPath

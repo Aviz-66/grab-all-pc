@@ -774,6 +774,19 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 	ffmpegBin := resolveFFmpegBinary(qm.config)
 	hasFFmpeg := ffmpegBin != ""
 
+	task.mu.Lock()
+	customFile := task.CustomFileName
+	origFileName := task.FileName
+	taskCodec := task.VideoCodec
+	task.mu.Unlock()
+
+	if strings.TrimSpace(taskCodec) == "" && qm.config != nil {
+		qm.config.mu.RLock()
+		taskCodec = qm.config.VideoCodec
+		qm.config.mu.RUnlock()
+	}
+	videoCodec := normalizeVideoCodec(taskCodec)
+
 	if strings.HasPrefix(quality, "audio") {
 		if ytDashySort != "" {
 			args = append(args, "-S", "proto:http_dash_segments")
@@ -802,33 +815,15 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 		}
 	} else {
 		// Video mode: use -f with -S (--format-sort) so vertical Shorts & missing exact
-		// heights never trigger "Requested format is not available"
+		// heights/codecs never trigger "Requested format is not available"
 		if hasFFmpeg {
 			args = append(args, "-f", "bv*+ba/b", "--merge-output-format", "mp4")
 		} else {
 			args = append(args, "-f", "b/bv*+ba/bv*")
 		}
 
-		switch quality {
-		case "2160", "4k":
-			args = append(args, "-S", "res:2160,ext:mp4:m4a"+ytDashySort)
-		case "1080":
-			args = append(args, "-S", "res:1080,ext:mp4:m4a"+ytDashySort)
-		case "720":
-			args = append(args, "-S", "res:720,ext:mp4:m4a"+ytDashySort)
-		case "480":
-			args = append(args, "-S", "res:480,ext:mp4:m4a"+ytDashySort)
-		case "360":
-			args = append(args, "-S", "res:360,ext:mp4:m4a"+ytDashySort)
-		default: // "best"
-			args = append(args, "-S", "ext:mp4:m4a"+ytDashySort)
-		}
+		args = append(args, "-S", buildYtDlpSortOrder(quality, videoCodec, ytDashySort))
 	}
-
-	task.mu.Lock()
-	customFile := task.CustomFileName
-	origFileName := task.FileName
-	task.mu.Unlock()
 
 	// Always enforce --continue so yt-dlp resumes partially downloaded files/fragments.
 	// Use task.CustomFileName: if empty (standard YouTube grab), fitYtDlpOutputTemplate generates
@@ -1564,4 +1559,40 @@ func DownloadFFmpegStandalone(destDir string) (string, error) {
 		return "", err
 	}
 	return targetPath, nil
+}
+
+// buildYtDlpSortOrder constructs yt-dlp's -S (--format-sort) argument combining
+// target resolution, preferred video codec (h264/vp9/av01), container preference, and dashy mode.
+func buildYtDlpSortOrder(quality, videoCodec, ytDashySort string) string {
+	var parts []string
+
+	switch strings.ToLower(strings.TrimSpace(quality)) {
+	case "2160", "4k":
+		parts = append(parts, "res:2160")
+	case "1080":
+		parts = append(parts, "res:1080")
+	case "720":
+		parts = append(parts, "res:720")
+	case "480":
+		parts = append(parts, "res:480")
+	case "360":
+		parts = append(parts, "res:360")
+	}
+
+	switch normalizeVideoCodec(videoCodec) {
+	case VideoCodecH264:
+		parts = append(parts, "vcodec:h264")
+	case VideoCodecVP9:
+		parts = append(parts, "vcodec:vp9")
+	case VideoCodecAV1:
+		parts = append(parts, "vcodec:av01")
+	}
+
+	parts = append(parts, "ext:mp4:m4a")
+
+	if dashy := strings.TrimPrefix(strings.TrimSpace(ytDashySort), ","); dashy != "" {
+		parts = append(parts, dashy)
+	}
+
+	return strings.Join(parts, ",")
 }

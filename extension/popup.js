@@ -19,12 +19,17 @@ async function loadConfig() {
     interceptDownloads: false,
     daemonUrl: 'http://127.0.0.1:17890',
     preferredQuality: 'best',
+    preferredVideoCodec: 'h264',
     preferredSpeedMode: 'turbo',
   });
 
   document.getElementById('input-token').value = cfg.authToken;
   document.getElementById('check-intercept').checked = cfg.interceptDownloads;
   document.getElementById('select-quality').value = cfg.preferredQuality || 'best';
+  const codecSel = document.getElementById('select-video-codec');
+  if (codecSel) {
+    codecSel.value = cfg.preferredVideoCodec || 'h264';
+  }
   const speedSel = document.getElementById('select-speed-mode');
   if (speedSel) {
     speedSel.value = cfg.preferredSpeedMode === 'regular' ? 'regular' : 'turbo';
@@ -97,8 +102,9 @@ async function loadDetectedMedia() {
 
         div.querySelector('.btn-dl-stream').addEventListener('click', () => {
           const quality = document.getElementById('select-quality').value;
+          const videoCodec = document.getElementById('select-video-codec')?.value || 'h264';
           const speedMode = document.getElementById('select-speed-mode')?.value || 'turbo';
-          sendDownload(item.url, activeTab.title, engine, quality, false, 1, 0, speedMode);
+          sendDownload(item.url, activeTab.title, engine, quality, false, 1, 0, speedMode, videoCodec);
         });
 
         container.appendChild(div);
@@ -112,6 +118,14 @@ function initListeners() {
   document.getElementById('select-quality').addEventListener('change', async (e) => {
     await chrome.storage.local.set({ preferredQuality: e.target.value });
   });
+
+  // Persist video codec selection
+  const codecSel = document.getElementById('select-video-codec');
+  if (codecSel) {
+    codecSel.addEventListener('change', async (e) => {
+      await chrome.storage.local.set({ preferredVideoCodec: e.target.value });
+    });
+  }
 
   // Persist speed mode selection (Turbo 6x vs Watch Live 1x)
   const speedSel = document.getElementById('select-speed-mode');
@@ -137,11 +151,12 @@ function initListeners() {
   document.getElementById('btn-download-page').addEventListener('click', () => {
     if (!activeTab || !activeTab.url) return;
     const quality = document.getElementById('select-quality').value;
+    const videoCodec = document.getElementById('select-video-codec')?.value || 'h264';
     const speedMode = document.getElementById('select-speed-mode')?.value || 'turbo';
     const playlist = document.getElementById('check-playlist')?.checked || false;
     const plStart = parseInt(document.getElementById('input-pl-start')?.value || '1', 10) || 1;
     const plCount = parseInt(document.getElementById('input-pl-count')?.value || '0', 10) || 0;
-    sendDownload(activeTab.url, activeTab.title, 'ytdlp', quality, playlist, plStart, plCount, speedMode);
+    sendDownload(activeTab.url, activeTab.title, 'ytdlp', quality, playlist, plStart, plCount, speedMode, videoCodec);
   });
 
   // Intercept downloads toggle
@@ -171,7 +186,7 @@ function initListeners() {
   });
 }
 
-function sendDownload(url, title, engine, quality, playlist = false, playlistStart = 1, playlistCount = 0, speedMode = 'turbo') {
+function sendDownload(url, title, engine, quality, playlist = false, playlistStart = 1, playlistCount = 0, speedMode = 'turbo', videoCodec = 'h264') {
   showAlert(playlist ? 'Scanning playlist...' : 'Sending to GrabAll...', false);
 
   chrome.runtime.sendMessage(
@@ -184,6 +199,7 @@ function sendDownload(url, title, engine, quality, playlist = false, playlistSta
         title: title || '',
         engine: engine || 'auto',
         quality: quality || 'best',
+        videoCodec: videoCodec || 'h264',
         speedMode: speedMode || 'turbo',
         playlist: Boolean(playlist),
         playlistStart: playlist ? playlistStart : 0,

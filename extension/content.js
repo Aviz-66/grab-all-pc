@@ -25,8 +25,16 @@
     { value: 'audio-opus', short: '🎵 Opus', full: '🎵 Audio Only — Opus', badge: 'Opus' },
   ];
 
+  const CODEC_OPTIONS = [
+    { value: 'h264', label: 'H.264' },
+    { value: 'vp9', label: 'VP9' },
+    { value: 'av1', label: 'AV1' },
+    { value: 'auto', label: 'Auto' },
+  ];
+
   let lastUrl = '';
   let preferredQuality = 'best';
+  let preferredVideoCodec = 'h264';
 
   // TrustedHTML-safe DOM builder (never uses innerHTML, 100% YouTube CSP safe)
   function dom(tag, styles = {}, attrs = {}, children = []) {
@@ -54,10 +62,14 @@
     return found ? found.badge : 'Best';
   }
 
-  chrome.storage.local.get({ preferredQuality: 'best' }, (cfg) => {
+  chrome.storage.local.get({ preferredQuality: 'best', preferredVideoCodec: 'h264' }, (cfg) => {
     if (cfg && cfg.preferredQuality) {
       preferredQuality = cfg.preferredQuality;
       syncQualitySelects(preferredQuality);
+    }
+    if (cfg && cfg.preferredVideoCodec) {
+      preferredVideoCodec = cfg.preferredVideoCodec;
+      syncCodecSelects(preferredVideoCodec);
     }
   });
 
@@ -66,10 +78,20 @@
       preferredQuality = changes.preferredQuality.newValue;
       syncQualitySelects(preferredQuality);
     }
+    if (changes.preferredVideoCodec && changes.preferredVideoCodec.newValue) {
+      preferredVideoCodec = changes.preferredVideoCodec.newValue;
+      syncCodecSelects(preferredVideoCodec);
+    }
   });
 
   function syncQualitySelects(val) {
     document.querySelectorAll('.graball-quality-select').forEach((sel) => {
+      sel.value = val;
+    });
+  }
+
+  function syncCodecSelects(val) {
+    document.querySelectorAll('.graball-codec-select').forEach((sel) => {
       sel.value = val;
     });
   }
@@ -133,6 +155,49 @@
     return select;
   }
 
+  function createCodecSelect({ compact = false } = {}) {
+    const select = document.createElement('select');
+    select.className = 'graball-codec-select';
+    select.title = 'Select Video Encode Format (H.264 default)';
+
+    CODEC_OPTIONS.forEach((opt) => {
+      const el = document.createElement('option');
+      el.value = opt.value;
+      el.textContent = opt.label;
+      el.style.backgroundColor = '#0f172a';
+      el.style.color = '#f8fafc';
+      select.appendChild(el);
+    });
+
+    select.value = preferredVideoCodec;
+
+    const h = compact ? '30px' : '36px';
+    Object.assign(select.style, {
+      backgroundColor: '#1e293b',
+      color: '#e2e8f0',
+      border: 'none',
+      borderRight: '1px solid rgba(255, 255, 255, 0.2)',
+      borderRadius: '0',
+      padding: compact ? '0 5px' : '0 8px',
+      fontSize: compact ? '11.5px' : '12.5px',
+      fontWeight: '600',
+      fontFamily: '"Roboto", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+      cursor: 'pointer',
+      height: h,
+      outline: 'none',
+    });
+
+    select.addEventListener('click', (e) => e.stopPropagation());
+    select.addEventListener('mousedown', (e) => e.stopPropagation());
+    select.addEventListener('change', (e) => {
+      e.stopPropagation();
+      preferredVideoCodec = select.value;
+      chrome.storage.local.set({ preferredVideoCodec });
+    });
+
+    return select;
+  }
+
   function stripPlaylistFromWatchUrl(rawUrl) {
     try {
       const u = new URL(rawUrl);
@@ -152,6 +217,7 @@
     targetUrl,
     title,
     quality,
+    videoCodec,
     playlist = false,
     playlistStart = 0,
     playlistEnd = 0,
@@ -181,6 +247,7 @@
             title: title || document.title,
             engine: 'ytdlp',
             quality: quality || preferredQuality,
+            videoCodec: videoCodec || preferredVideoCodec || 'h264',
             playlist: Boolean(playlist),
             playlistStart: playlist ? Number(playlistStart) || 0 : 0,
             playlistEnd: playlist ? Number(playlistEnd) || 0 : 0,
@@ -1057,7 +1124,9 @@
     }
 
     const select = createQualitySelect({ compact: false });
+    const codecSelect = createCodecSelect({ compact: false });
     wrapper.appendChild(select);
+    wrapper.appendChild(codecSelect);
 
     if (!purePlaylistPage) {
       const btn = dom(
@@ -1520,6 +1589,16 @@
       resetHoverIdleTimer();
     });
 
+    const codecSelect = createCodecSelect({ compact: true });
+    codecSelect.addEventListener('focus', () => {
+      isMouseOverHoverWidget = true;
+      revealHoverWidget();
+    });
+    codecSelect.addEventListener('blur', () => {
+      isMouseOverHoverWidget = false;
+      resetHoverIdleTimer();
+    });
+
     const btn = dom(
       'button',
       {
@@ -1556,6 +1635,7 @@
             targetUrl: target.url,
             title: target.title,
             quality: select.value,
+            videoCodec: codecSelect.value,
             playlist: false,
           });
         },
@@ -1611,6 +1691,7 @@
 
     wrapper.appendChild(grip);
     wrapper.appendChild(select);
+    wrapper.appendChild(codecSelect);
     wrapper.appendChild(btn);
     wrapper.appendChild(plBtn);
     document.body.appendChild(wrapper);

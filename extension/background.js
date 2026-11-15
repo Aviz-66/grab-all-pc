@@ -293,6 +293,7 @@ async function sendToDaemon({
   fileName,
   engine = 'auto',
   quality = 'best',
+  videoCodec = '',
   speedMode = '',
   playlist = false,
   playlistStart = 0,
@@ -301,7 +302,7 @@ async function sendToDaemon({
   playlistItems = null,
   storeId = null,
 }) {
-  const config = await chrome.storage.local.get({ ...DEFAULT_CONFIG, preferredSpeedMode: '' });
+  const config = await chrome.storage.local.get({ ...DEFAULT_CONFIG, preferredSpeedMode: '', preferredVideoCodec: 'h264' });
   const daemonUrl = config.daemonUrl || 'http://127.0.0.1:17890';
   let token = config.authToken || '';
   if (!token) {
@@ -317,6 +318,7 @@ async function sendToDaemon({
     fileName: fileName || '',
     engine: engine,
     quality: quality || 'best',
+    videoCodec: videoCodec || config.preferredVideoCodec || 'h264',
     speedMode: speedMode || config.preferredSpeedMode || '',
     playlist: Boolean(playlist),
     playlistStart: Number(playlistStart) || 0,

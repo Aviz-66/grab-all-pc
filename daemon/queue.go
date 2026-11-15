@@ -42,8 +42,9 @@ type DownloadTask struct {
 	UpdatedAt       time.Time  `json:"updatedAt"`
 	CompletedAt     *time.Time `json:"completedAt,omitempty"`
 
-	Quality   string   `json:"quality,omitempty"`   // "best", "2160", "1080", "720", "480", "360", "audio-best", "audio-mp3"
-	SpeedMode string   `json:"speedMode,omitempty"` // "turbo" or "regular" (empty inherits config)
+	Quality    string   `json:"quality,omitempty"`    // "best", "2160", "1080", "720", "480", "360", "audio-best", "audio-mp3"
+	VideoCodec string   `json:"videoCodec,omitempty"` // "h264" (default), "vp9", "av1", "auto"
+	SpeedMode  string   `json:"speedMode,omitempty"`  // "turbo" or "regular" (empty inherits config)
 	SubDir    string   `json:"subDir,omitempty"`    // Optional subfolder inside DownloadDir (e.g. playlist title)
 	Cookies   []Cookie `json:"cookies,omitempty"`
 	UserAgent string   `json:"userAgent,omitempty"`
@@ -63,6 +64,7 @@ type AddRequest struct {
 	FileName      string          `json:"fileName,omitempty"`
 	Engine        string          `json:"engine,omitempty"`        // "direct", "ytdlp", or "auto"
 	Quality       string          `json:"quality,omitempty"`       // "best", "2160", "1080", "720", "480", "360", "audio-best", "audio-mp3"
+	VideoCodec    string          `json:"videoCodec,omitempty"`    // "h264" (default), "vp9", "av1", "auto"
 	SpeedMode     string          `json:"speedMode,omitempty"`     // "turbo" or "regular"
 	Playlist      bool            `json:"playlist,omitempty"`      // Expand playlist into queue items
 	PlaylistStart int             `json:"playlistStart,omitempty"` // 1-based start index (default 1)
@@ -186,6 +188,7 @@ func snapshotTask(t *DownloadTask, includeCookies bool) *DownloadTask {
 		UpdatedAt:       t.UpdatedAt,
 		CompletedAt:     t.CompletedAt,
 		Quality:         t.Quality,
+		VideoCodec:      t.VideoCodec,
 		SpeedMode:       t.SpeedMode,
 		SubDir:          t.SubDir,
 		UserAgent:       t.UserAgent,
@@ -303,6 +306,15 @@ func (qm *QueueManager) AddTask(req AddRequest) (*DownloadTask, error) {
 		reqSpeedMode = normalizeSpeedMode(strings.ToLower(strings.TrimSpace(req.SpeedMode)))
 	}
 
+	reqVideoCodec := VideoCodecH264
+	if strings.TrimSpace(req.VideoCodec) != "" {
+		reqVideoCodec = normalizeVideoCodec(req.VideoCodec)
+	} else if qm.config != nil {
+		qm.config.mu.RLock()
+		reqVideoCodec = normalizeVideoCodec(qm.config.VideoCodec)
+		qm.config.mu.RUnlock()
+	}
+
 	task := &DownloadTask{
 		ID:             taskID,
 		URL:            req.URL,
@@ -310,8 +322,9 @@ func (qm *QueueManager) AddTask(req AddRequest) (*DownloadTask, error) {
 		FileName:       req.FileName,
 		CustomFileName: strings.TrimSpace(req.FileName),
 		Engine:         engine,
-		Quality:   req.Quality,
-		SpeedMode: reqSpeedMode,
+		Quality:        req.Quality,
+		VideoCodec:     reqVideoCodec,
+		SpeedMode:      reqSpeedMode,
 		SubDir:    req.SubDir,
 		Status:    StatusQueued,
 		CreatedAt: time.Now(),
@@ -442,14 +455,24 @@ func (qm *QueueManager) AddPlaylistTasks(ctx context.Context, req AddRequest) ([
 		displayTitle := fmt.Sprintf("%s%s", idxPrefix, entryTitle)
 		outputTemplate := fmt.Sprintf("%s%%(title)s [%%(id)s].%%(ext)s", idxPrefix)
 
+		reqVideoCodec := VideoCodecH264
+		if strings.TrimSpace(req.VideoCodec) != "" {
+			reqVideoCodec = normalizeVideoCodec(req.VideoCodec)
+		} else if qm.config != nil {
+			qm.config.mu.RLock()
+			reqVideoCodec = normalizeVideoCodec(qm.config.VideoCodec)
+			qm.config.mu.RUnlock()
+		}
+
 		task := &DownloadTask{
-			ID:        fmt.Sprintf("dl_%d_%s", now.Unix(), generateToken()[:6]),
-			URL:       entry.URL,
-			Title:     displayTitle,
-			FileName:  outputTemplate,
-			Engine:    EngineYtDlp,
-			Quality:   req.Quality,
-			SpeedMode: reqSpeedMode,
+			ID:         fmt.Sprintf("dl_%d_%s", now.Unix(), generateToken()[:6]),
+			URL:        entry.URL,
+			Title:      displayTitle,
+			FileName:   outputTemplate,
+			Engine:     EngineYtDlp,
+			Quality:    req.Quality,
+			VideoCodec: reqVideoCodec,
+			SpeedMode:  reqSpeedMode,
 			SubDir:    subDir,
 			Status:    StatusQueued,
 			CreatedAt: now,
