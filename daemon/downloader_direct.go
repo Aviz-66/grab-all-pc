@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unicode/utf16"
 )
@@ -48,51 +47,46 @@ var (
 )
 
 type turboStateMeta struct {
-	TotalBytes int64  `json:"totalBytes"`
-	BlockSize  int64  `json:"blockSize"`
-	DoneBlocks []bool `json:"doneBlocks"`
+	TotalBytes      int64       `json:"totalBytes"`
+	BlockSize       int64       `json:"blockSize,omitempty"`
+	DoneBlocks      []bool      `json:"doneBlocks,omitempty"`
+	CompletedRanges []byteRange `json:"completedRanges,omitempty"`
+}
+
+func (m *turboStateMeta) normalizeCompletedRanges() []byteRange {
+	if m == nil || m.TotalBytes <= 0 {
+		return nil
+	}
+	all := make([]byteRange, 0, len(m.CompletedRanges)+len(m.DoneBlocks))
+	all = append(all, m.CompletedRanges...)
+	if m.BlockSize > 0 {
+		for i, done := range m.DoneBlocks {
+			if !done {
+				continue
+			}
+			start := int64(i) * m.BlockSize
+			end := start + m.BlockSize - 1
+			if end >= m.TotalBytes {
+				end = m.TotalBytes - 1
+			}
+			if start <= end {
+				all = append(all, byteRange{Start: start, End: end})
+			}
+		}
+	}
+	return mergeByteRanges(all, m.TotalBytes)
 }
 
 func (m *turboStateMeta) completedBytes() int64 {
-	if m == nil || m.BlockSize <= 0 {
-		return 0
-	}
-	var sum int64
-	for i, done := range m.DoneBlocks {
-		if !done {
-			continue
-		}
-		start := int64(i) * m.BlockSize
-		ln := m.BlockSize
-		if start+ln > m.TotalBytes {
-			ln = m.TotalBytes - start
-		}
-		if ln > 0 {
-			sum += ln
-		}
-	}
-	return sum
+	return countRangeBytes(m.normalizeCompletedRanges())
 }
 
 func (m *turboStateMeta) contiguousPrefixBytes() int64 {
-	if m == nil || m.BlockSize <= 0 {
-		return 0
+	ranges := m.normalizeCompletedRanges()
+	if len(ranges) > 0 && ranges[0].Start == 0 {
+		return ranges[0].End + 1
 	}
-	var sum int64
-	for i, done := range m.DoneBlocks {
-		if !done {
-			break
-		}
-		start := int64(i) * m.BlockSize
-		ln := m.BlockSize
-		if start+ln > m.TotalBytes {
-			ln = m.TotalBytes - start
-		}
-		if ln > 0 {
-			sum += ln
-		}
-	}
-	return sum
+	return 0
 }
 
 func loadTurboMeta(metaPath string) (*turboStateMeta, error) {
@@ -104,7 +98,7 @@ func loadTurboMeta(metaPath string) (*turboStateMeta, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, err
 	}
-	if m.TotalBytes <= 0 || m.BlockSize <= 0 || len(m.DoneBlocks) == 0 {
+	if m.TotalBytes <= 0 || (len(m.CompletedRanges) == 0 && (m.BlockSize <= 0 || len(m.DoneBlocks) == 0)) {
 		return nil, fmt.Errorf("invalid turbo metadata")
 	}
 	return &m, nil
@@ -201,41 +195,70 @@ func runRegularDirectDownload(ctx context.Context, client *http.Client, qm *Queu
 		existingBytes = fi.Size()
 	}
 
-	rangeHdr := ""
-	if existingBytes > 0 {
-		rangeHdr = fmt.Sprintf("bytes=%d-", existingBytes)
-	}
+	hostKey := extractHostKey(task.URL)
+	var (
+		resp    *http.Response
+		release func()
+	)
+	for throttleTry := 0; ; throttleTry++ {
+		rel, acqErr := qm.hostPool.Acquire(ctx, hostKey)
+		if acqErr != nil {
+			return acqErr
+		}
+		rangeHdr := ""
+		if existingBytes > 0 {
+			rangeHdr = fmt.Sprintf("bytes=%d-", existingBytes)
+		}
 
-	req, err := buildDirectRequest(ctx, task, userAgent, rangeHdr)
-	if err != nil {
-		return err
-	}
+		req, err := buildDirectRequest(ctx, task, userAgent, rangeHdr)
+		if err != nil {
+			rel()
+			return err
+		}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
+		r, err := client.Do(req)
+		if err != nil {
+			rel()
+			return err
+		}
+
+		// If 416 Range Not Satisfiable, try restarting from 0
+		if r.StatusCode == http.StatusRequestedRangeNotSatisfiable && existingBytes > 0 {
+			_ = r.Body.Close()
+			existingBytes = 0
+			_ = os.Remove(partPath)
+
+			req2, err := buildDirectRequest(ctx, task, userAgent, "")
+			if err != nil {
+				rel()
+				return err
+			}
+			r, err = client.Do(req2)
+			if err != nil {
+				rel()
+				return err
+			}
+		}
+
+		if (r.StatusCode == http.StatusTooManyRequests || r.StatusCode == http.StatusServiceUnavailable) && throttleTry < 6 {
+			retryAfter := parseRetryAfter(r.Header.Get("Retry-After"))
+			_ = r.Body.Close()
+			qm.hostPool.ReportThrottle(hostKey, retryAfter)
+			rel()
+			continue
+		}
+
+		resp = r
+		release = rel
+		break
 	}
+	defer release()
 	defer resp.Body.Close()
-
-	// If 416 Range Not Satisfiable, try restarting from 0
-	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable && existingBytes > 0 {
-		existingBytes = 0
-		_ = os.Remove(partPath)
-
-		req2, err := buildDirectRequest(ctx, task, userAgent, "")
-		if err != nil {
-			return err
-		}
-		resp, err = client.Do(req2)
-		if err != nil {
-			return err
-		}
-		defer resp.Body.Close()
-	}
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		return fmt.Errorf("server returned HTTP %d %s", resp.StatusCode, resp.Status)
 	}
+	qm.hostPool.ReportSuccess(hostKey)
 
 	if allowHeaderRename {
 		if cd := resp.Header.Get("Content-Disposition"); cd != "" {
@@ -264,10 +287,10 @@ func runRegularDirectDownload(ctx context.Context, client *http.Client, qm *Queu
 		totalBytes = resp.ContentLength
 	}
 
-	return streamResponseSequentially(ctx, qm, task, resp.Body, downloadDir, fileName, partPath, existingBytes, totalBytes, appendMode, speedSuffix)
+	return streamResponseSequentially(ctx, qm, task, resp.Body, downloadDir, fileName, partPath, existingBytes, totalBytes, appendMode, speedSuffix, qm.TaskLimiters(task))
 }
 
-func streamResponseSequentially(ctx context.Context, qm *QueueManager, task *DownloadTask, body io.Reader, downloadDir, fileName, partPath string, existingBytes, totalBytes int64, appendMode bool, speedSuffix string) error {
+func streamResponseSequentially(ctx context.Context, qm *QueueManager, task *DownloadTask, body io.Reader, downloadDir, fileName, partPath string, existingBytes, totalBytes int64, appendMode bool, speedSuffix string, limiters []*bandwidthLimiter) error {
 	flags := os.O_CREATE | os.O_TRUNC | os.O_WRONLY
 	if appendMode {
 		flags = os.O_CREATE | os.O_WRONLY | os.O_APPEND
@@ -358,6 +381,12 @@ func streamResponseSequentially(ctx context.Context, qm *QueueManager, task *Dow
 				bytesSinceUpdate = 0
 				lastUpdate = now
 			}
+
+			if len(limiters) > 0 {
+				if lErr := waitRateLimiters(ctx, n, limiters...); lErr != nil {
+					return lErr
+				}
+			}
 		}
 
 		if readErr != nil {
@@ -396,6 +425,22 @@ func finalizeDirectDownload(task *DownloadTask, downloadDir, fileName, partPath 
 	return nil
 }
 
+type releaseOnCloseReadCloser struct {
+	io.ReadCloser
+	once    sync.Once
+	onClose func()
+}
+
+func (r *releaseOnCloseReadCloser) Close() error {
+	err := r.ReadCloser.Close()
+	r.once.Do(func() {
+		if r.onClose != nil {
+			r.onClose()
+		}
+	})
+	return err
+}
+
 func runTurboDirectDownload(ctx context.Context, client *http.Client, qm *QueueManager, task *DownloadTask, downloadDir, fileName string, allowHeaderRename bool, userAgent string) error {
 	partPath := filepath.Join(downloadDir, fileName+".part")
 	turboMetaPath := partPath + ".turbo"
@@ -409,37 +454,66 @@ func runTurboDirectDownload(ctx context.Context, client *http.Client, qm *QueueM
 	}
 
 	hasPriorState := (metaErr == nil && loadedMeta != nil) || existingBytes > 0
-	probeRange := fmt.Sprintf("bytes=0-%d", turboBlockSize-1)
-	if hasPriorState {
-		probeRange = "bytes=0-0"
-	}
+	hostKey := extractHostKey(task.URL)
 
-	req, err := buildDirectRequest(ctx, task, userAgent, probeRange)
-	if err != nil {
-		return err
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-
-	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
-		_ = resp.Body.Close()
-		reqPlain, rErr := buildDirectRequest(ctx, task, userAgent, "")
-		if rErr != nil {
-			return rErr
+	var (
+		resp    *http.Response
+		release func()
+	)
+	for throttleTry := 0; ; throttleTry++ {
+		rel, acqErr := qm.hostPool.Acquire(ctx, hostKey)
+		if acqErr != nil {
+			return acqErr
 		}
-		resp, err = client.Do(reqPlain)
+		probeRange := fmt.Sprintf("bytes=0-%d", turboBlockSize-1)
+		if hasPriorState {
+			probeRange = "bytes=0-0"
+		}
+
+		req, err := buildDirectRequest(ctx, task, userAgent, probeRange)
 		if err != nil {
+			rel()
 			return err
 		}
-		hasPriorState = false
+		r, err := client.Do(req)
+		if err != nil {
+			rel()
+			return err
+		}
+
+		if r.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+			_ = r.Body.Close()
+			reqPlain, rErr := buildDirectRequest(ctx, task, userAgent, "")
+			if rErr != nil {
+				rel()
+				return rErr
+			}
+			r, err = client.Do(reqPlain)
+			if err != nil {
+				rel()
+				return err
+			}
+			hasPriorState = false
+		}
+
+		if (r.StatusCode == http.StatusTooManyRequests || r.StatusCode == http.StatusServiceUnavailable) && throttleTry < 6 {
+			retryAfter := parseRetryAfter(r.Header.Get("Retry-After"))
+			_ = r.Body.Close()
+			qm.hostPool.ReportThrottle(hostKey, retryAfter)
+			rel()
+			continue
+		}
+
+		resp = r
+		release = rel
+		break
 	}
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		status := resp.Status
 		code := resp.StatusCode
 		_ = resp.Body.Close()
+		release()
 		return fmt.Errorf("server returned HTTP %d %s", code, status)
 	}
 
@@ -458,32 +532,40 @@ func runTurboDirectDownload(ctx context.Context, client *http.Client, qm *QueueM
 		}
 	}
 
-	// If server does not support Range (200 OK), stream the response directly in 1 pass
+	limiters := qm.TaskLimiters(task)
+
+	// If server does not support Range (200 OK), stream the response directly in 1 pass.
 	if resp.StatusCode == http.StatusOK {
+		qm.hostPool.ReportSuccess(hostKey)
+		defer release()
 		defer resp.Body.Close()
 		_ = os.Remove(turboMetaPath)
-		return streamResponseSequentially(ctx, qm, task, resp.Body, downloadDir, fileName, partPath, 0, resp.ContentLength, false, "")
+		return streamResponseSequentially(ctx, qm, task, resp.Body, downloadDir, fileName, partPath, 0, resp.ContentLength, false, "", limiters)
 	}
 
 	totalBytes := parseContentRangeTotal(resp.Header.Get("Content-Range"))
 	if totalBytes <= 0 {
 		_ = resp.Body.Close()
-		// Server returned 206 without total size; fall back to standard sequential mode
+		release()
+		// Server returned 206 without total size; fall back to standard sequential mode.
 		return runRegularDirectDownload(ctx, client, qm, task, downloadDir, fileName, false, userAgent, "")
 	}
 
-	// Small files (< 2 MB) on fresh probe already fit inside our initial 0-(2MB-1) response!
+	// Small files (<= 2 MB) on fresh probe already fit inside our initial 0-(2MB-1) response.
 	if !hasPriorState && totalBytes <= turboBlockSize {
+		qm.hostPool.ReportSuccess(hostKey)
+		defer release()
 		defer resp.Body.Close()
-		return streamResponseSequentially(ctx, qm, task, resp.Body, downloadDir, fileName, partPath, 0, totalBytes, false, "")
+		return streamResponseSequentially(ctx, qm, task, resp.Body, downloadDir, fileName, partPath, 0, totalBytes, false, "", limiters)
 	}
 
 	var firstBlockBody io.ReadCloser
 	if hasPriorState {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
+		release()
 	} else {
-		firstBlockBody = resp.Body
+		firstBlockBody = &releaseOnCloseReadCloser{ReadCloser: resp.Body, onClose: release}
 	}
 	defer func() {
 		if firstBlockBody != nil {
@@ -491,39 +573,30 @@ func runTurboDirectDownload(ctx context.Context, client *http.Client, qm *QueueM
 		}
 	}()
 
-	numBlocks := int((totalBytes + turboBlockSize - 1) / turboBlockSize)
-	var meta *turboStateMeta
+	var initialRanges []byteRange
 	openFlags := os.O_CREATE | os.O_RDWR
 
-	if loadedMeta != nil && loadedMeta.TotalBytes == totalBytes && loadedMeta.BlockSize == turboBlockSize && len(loadedMeta.DoneBlocks) == numBlocks {
-		meta = loadedMeta
-	} else if existingBytes > 0 && existingBytes < totalBytes && loadedMeta == nil {
-		// Transitioning a paused/active Regular download -> Turbo: preserve completed 2MB prefix blocks!
-		meta = &turboStateMeta{
-			TotalBytes: totalBytes,
-			BlockSize:  turboBlockSize,
-			DoneBlocks: make([]bool, numBlocks),
-		}
-		fullBlocks := int(existingBytes / turboBlockSize)
-		for i := 0; i < fullBlocks && i < numBlocks; i++ {
-			meta.DoneBlocks[i] = true
-		}
+	if loadedMeta != nil && loadedMeta.TotalBytes == totalBytes {
+		initialRanges = loadedMeta.normalizeCompletedRanges()
+	} else if existingBytes > 0 && existingBytes <= totalBytes && loadedMeta == nil {
+		// Transitioning a paused/active Regular download -> Turbo: preserve contiguous prefix bytes!
+		initialRanges = []byteRange{{Start: 0, End: existingBytes - 1}}
 	} else {
 		openFlags |= os.O_TRUNC
-		meta = &turboStateMeta{
-			TotalBytes: totalBytes,
-			BlockSize:  turboBlockSize,
-			DoneBlocks: make([]bool, numBlocks),
-		}
 	}
 
 	file, err := os.OpenFile(partPath, openFlags, 0644)
 	if err != nil {
 		return fmt.Errorf("failed to open partial file: %w", err)
 	}
-	defer file.Close()
+	fileClosed := false
+	defer func() {
+		if !fileClosed {
+			_ = file.Close()
+		}
+	}()
 
-	initialDone := meta.completedBytes()
+	initialDone := countRangeBytes(initialRanges)
 	task.mu.Lock()
 	task.FileName = fileName
 	task.Title = fileName
@@ -533,271 +606,88 @@ func runTurboDirectDownload(ctx context.Context, client *http.Client, qm *QueueM
 	task.mu.Unlock()
 	qm.BroadcastUpdate()
 
-	pending := make([]int, 0, numBlocks)
-	for i := 0; i < numBlocks; i++ {
-		if meta.DoneBlocks[i] {
-			continue
-		}
-		if i == 0 && firstBlockBody != nil {
-			continue // Consumed directly from initial Range response by worker 0
-		}
-		pending = append(pending, i)
+	headers := map[string]string{
+		"User-Agent": userAgent,
+	}
+	if task.Referer != "" {
+		headers["Referer"] = task.Referer
+	}
+	if len(task.Cookies) > 0 {
+		headers["Cookie"] = FormatCookieHeader(task.Cookies)
 	}
 
-	totalTodo := len(pending)
-	if firstBlockBody != nil {
-		totalTodo++
-	}
-	if totalTodo == 0 {
-		_ = file.Truncate(totalBytes)
-		_ = file.Close()
-		return finalizeDirectDownload(task, downloadDir, fileName, partPath, totalBytes, totalBytes)
+	endpoint := &streamEndpointState{
+		url:          task.URL,
+		headers:      headers,
+		maxRefreshes: 4,
 	}
 
-	workerCount := turboWorkers
-	if totalTodo < workerCount {
-		workerCount = totalTodo
+	probeEnd := int64(turboBlockSize) - 1
+	if probeEnd >= totalBytes {
+		probeEnd = totalBytes - 1
 	}
-
-	workerCtx, cancelWorkers := context.WithCancel(ctx)
-	defer cancelWorkers()
 
 	var (
-		metaMu    sync.Mutex
-		nextIdx   atomic.Int64
-		liveBytes atomic.Int64
-		errOnce   sync.Once
-		firstErr  error
-		wg        sync.WaitGroup
+		probeCtx      context.Context
+		probeWatchdog *stallWatchdog
 	)
-	liveBytes.Store(initialDone)
-
-	recordErr := func(e error) {
-		if e == nil {
-			return
-		}
-		errOnce.Do(func() {
-			firstErr = e
-			cancelWorkers()
-		})
+	if firstBlockBody != nil {
+		probeCtx, probeWatchdog = newStallWatchdog(ctx, 30*time.Second)
 	}
 
-	// Progress & sidecar persistence ticker
-	stopProgress := make(chan struct{})
-	var progWG sync.WaitGroup
-	progWG.Add(1)
-	go func() {
-		defer progWG.Done()
-		ticker := time.NewTicker(150 * time.Millisecond)
-		defer ticker.Stop()
-		lastTick := time.Now()
-		lastBytes := initialDone
-		lastMetaSave := time.Now()
-
-		for {
-			select {
-			case <-stopProgress:
-				return
-			case now := <-ticker.C:
-				cur := liveBytes.Load()
-				if cur > totalBytes {
-					cur = totalBytes
-				}
-				elapsed := now.Sub(lastTick).Seconds()
-				if elapsed <= 0.001 {
-					elapsed = 0.001
-				}
-				delta := cur - lastBytes
-				if delta < 0 {
-					delta = 0
-				}
-				rate := float64(delta) / elapsed
-				suffix := fmt.Sprintf(" (%dx)", workerCount)
-				speedStr := formatBytes(int64(rate)) + "/s" + suffix
-				pct := float64(cur) / float64(totalBytes) * 100.0
-				if pct > 100.0 {
-					pct = 100.0
-				}
-				etaStr := ""
-				if rate > 0 && totalBytes > cur {
-					etaStr = formatDuration(int64(float64(totalBytes-cur) / rate))
-				}
-
-				task.mu.Lock()
-				stillActive := task.Status == StatusDownloading
-				if stillActive {
-					task.DownloadedBytes = cur
-					task.TotalBytes = totalBytes
-					task.Progress = pct
-					if delta > 0 || task.Speed == "" {
-						task.Speed = speedStr
-						task.ETA = etaStr
-					}
-				}
-				task.mu.Unlock()
-				if stillActive {
-					qm.BroadcastUpdate()
-				}
-
-				lastBytes = cur
-				lastTick = now
-
-				if now.Sub(lastMetaSave) >= time.Second {
-					metaMu.Lock()
-					saveTurboMeta(turboMetaPath, meta)
-					metaMu.Unlock()
-					lastMetaSave = now
-				}
+	wsErr := runWorkStealingDownload(ctx, workStealingOptions{
+		Client:         client,
+		Endpoint:       endpoint,
+		File:           file,
+		TotalBytes:     totalBytes,
+		InitialRanges:  initialRanges,
+		TurboMetaPath:  turboMetaPath,
+		MaxWorkers:     turboWorkers,
+		MaxRequestSpan: 0,
+		HostPool:       qm.hostPool,
+		Limiters:       limiters,
+		ProbeBody:      firstBlockBody,
+		ProbeCtx:       probeCtx,
+		ProbeWatchdog:  probeWatchdog,
+		ProbeStart:     0,
+		ProbeEnd:       probeEnd,
+		OnProgress: func(cur, tot int64, rate float64, workers int) {
+			pct := float64(cur) / float64(tot) * 100.0
+			if pct > 100.0 {
+				pct = 100.0
 			}
-		}
-	}()
-
-	writeStreamToBlock := func(r io.Reader, blockIdx int) error {
-		start := int64(blockIdx) * turboBlockSize
-		expLen := int64(turboBlockSize)
-		if start+expLen > totalBytes {
-			expLen = totalBytes - start
-		}
-		buf := make([]byte, 32*1024)
-		var written int64
-		for written < expLen {
-			if workerCtx.Err() != nil {
-				liveBytes.Add(-written)
-				return workerCtx.Err()
-			}
-			toRead := len(buf)
-			rem := int(expLen - written)
-			if rem < toRead {
-				toRead = rem
-			}
-			n, rErr := r.Read(buf[:toRead])
-			if n > 0 {
-				if _, wErr := file.WriteAt(buf[:n], start+written); wErr != nil {
-					liveBytes.Add(-written)
-					return fmt.Errorf("disk write error: %w", wErr)
-				}
-				written += int64(n)
-				liveBytes.Add(int64(n))
-			}
-			if rErr != nil {
-				if rErr == io.EOF && written == expLen {
-					break
-				}
-				liveBytes.Add(-written)
-				if rErr == io.EOF {
-					return fmt.Errorf("unexpected EOF in block %d (%d/%d)", blockIdx, written, expLen)
-				}
-				return rErr
-			}
-		}
-		metaMu.Lock()
-		meta.DoneBlocks[blockIdx] = true
-		metaMu.Unlock()
-		return nil
-	}
-
-	fetchBlockWithRetry := func(blockIdx int) error {
-		start := int64(blockIdx) * turboBlockSize
-		end := start + turboBlockSize - 1
-		if end >= totalBytes {
-			end = totalBytes - 1
-		}
-		rangeStr := fmt.Sprintf("bytes=%d-%d", start, end)
-
-		var lastErr error
-		for attempt := 0; attempt < 3; attempt++ {
-			if workerCtx.Err() != nil {
-				return workerCtx.Err()
-			}
-			if attempt > 0 {
-				select {
-				case <-workerCtx.Done():
-					return workerCtx.Err()
-				case <-time.After(time.Duration(attempt*300) * time.Millisecond):
-				}
-			}
-			bReq, rErr := buildDirectRequest(workerCtx, task, userAgent, rangeStr)
-			if rErr != nil {
-				return rErr
-			}
-			bResp, dErr := client.Do(bReq)
-			if dErr != nil {
-				lastErr = dErr
-				continue
-			}
-			if bResp.StatusCode != http.StatusPartialContent {
-				lastErr = fmt.Errorf("block %d returned HTTP %d", blockIdx, bResp.StatusCode)
-				_ = bResp.Body.Close()
-				continue
-			}
-			wErr := writeStreamToBlock(bResp.Body, blockIdx)
-			_ = bResp.Body.Close()
-			if wErr == nil {
-				return nil
-			}
-			lastErr = wErr
-		}
-		return lastErr
-	}
-
-	for w := 0; w < workerCount; w++ {
-		var fb io.ReadCloser
-		if w == 0 && firstBlockBody != nil {
-			fb = firstBlockBody
-			firstBlockBody = nil
-		}
-		wg.Add(1)
-		go func(initialReader io.ReadCloser) {
-			defer wg.Done()
-			if initialReader != nil {
-				err0 := writeStreamToBlock(initialReader, 0)
-				_ = initialReader.Close()
-				if err0 != nil && workerCtx.Err() == nil {
-					if retry0 := fetchBlockWithRetry(0); retry0 != nil {
-						recordErr(retry0)
-						return
-					}
-				} else if err0 != nil {
-					recordErr(err0)
-					return
-				}
+			speedStr := fmt.Sprintf("%s/s (%dx)", formatBytes(int64(rate)), workers)
+			etaStr := ""
+			if rate > 0 && tot > cur {
+				etaStr = formatDuration(int64(float64(tot-cur) / rate))
 			}
 
-			for {
-				if workerCtx.Err() != nil {
-					return
-				}
-				pos := int(nextIdx.Add(1) - 1)
-				if pos >= len(pending) {
-					return
-				}
-				if errB := fetchBlockWithRetry(pending[pos]); errB != nil {
-					recordErr(errB)
-					return
+			task.mu.Lock()
+			stillActive := task.Status == StatusDownloading
+			if stillActive {
+				task.DownloadedBytes = cur
+				task.TotalBytes = tot
+				task.Progress = pct
+				if rate > 0 || task.Speed == "" {
+					task.Speed = speedStr
+					task.ETA = etaStr
 				}
 			}
-		}(fb)
-	}
+			task.mu.Unlock()
+			if stillActive {
+				qm.BroadcastUpdate()
+			}
+		},
+	})
+	firstBlockBody = nil
 
-	wg.Wait()
-	close(stopProgress)
-	progWG.Wait()
-
-	if ctx.Err() != nil {
-		metaMu.Lock()
-		saveTurboMeta(turboMetaPath, meta)
-		metaMu.Unlock()
-		return ctx.Err()
-	}
-	if firstErr != nil {
-		metaMu.Lock()
-		saveTurboMeta(turboMetaPath, meta)
-		metaMu.Unlock()
-		return firstErr
+	if wsErr != nil {
+		return wsErr
 	}
 
 	_ = file.Truncate(totalBytes)
 	_ = file.Close()
+	fileClosed = true
 	return finalizeDirectDownload(task, downloadDir, fileName, partPath, totalBytes, totalBytes)
 }
 

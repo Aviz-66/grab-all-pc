@@ -872,6 +872,10 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 		args = append(args, "--cookies", cookieFile)
 	}
 
+	if effKBps := qm.EffectiveSpeedLimitKBps(task); effKBps > 0 {
+		args = append(args, "--limit-rate", fmt.Sprintf("%dK", effKBps))
+	}
+
 	// Do NOT override User-Agent / Referer on YouTube: yt-dlp manages exact client UAs
 	// internally for Android/iOS/TV innertube APIs, and desktop UA breaks them.
 	if !isYouTubeURL(task.URL) {

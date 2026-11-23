@@ -230,6 +230,18 @@ const (
 	cmdCheckUpdate       = 1032
 	cmdShowMain          = 1040
 	cmdToolsMenu         = 1041
+	cmdGlobalLimit0      = 1050
+	cmdGlobalLimit512    = 1051
+	cmdGlobalLimit1024   = 1052
+	cmdGlobalLimit2048   = 1053
+	cmdGlobalLimit5120   = 1054
+	cmdGlobalLimit10240  = 1055
+	cmdTaskLimit0        = 1060
+	cmdTaskLimit512      = 1061
+	cmdTaskLimit1024     = 1062
+	cmdTaskLimit2048     = 1063
+	cmdTaskLimit5120     = 1064
+	cmdTaskLimit10240    = 1065
 	cmdExit              = 1099
 
 	idcListView = 2001
@@ -554,6 +566,18 @@ var qualityPresets = []struct {
 	{"audio-opus", "Audio Only — Opus"},
 }
 
+var speedLimitPresets = []struct {
+	kbps  int64
+	label string
+}{
+	{0, "Unlimited (Full Speed)"},
+	{512, "512 KB/s"},
+	{1024, "1 MB/s (1024 KB/s)"},
+	{2048, "2 MB/s (2048 KB/s)"},
+	{5120, "5 MB/s (5120 KB/s)"},
+	{10240, "10 MB/s (10240 KB/s)"},
+}
+
 var (
 	singletonMutexHandle uintptr
 	appGUI               *winAppGUI
@@ -573,11 +597,12 @@ type winAppGUI struct {
 	fontUI    uintptr
 	fontBold  uintptr
 
-	mainHwnd   uintptr
-	listHwnd   uintptr
-	statusHwnd uintptr
-	hMenuOpt   uintptr
-	toolbar    []toolbarButtonDef
+	mainHwnd        uintptr
+	listHwnd        uintptr
+	statusHwnd      uintptr
+	hMenuOpt        uintptr
+	hMenuSpeedLimit uintptr
+	toolbar         []toolbarButtonDef
 	rows       []listRowCache
 
 	popups   map[uintptr]*progressPopup // hwnd -> popup
@@ -1137,6 +1162,14 @@ func (g *winAppGUI) buildMainMenu() uintptr {
 	hOpt, _, _ := procCreatePopupMenu.Call()
 	g.hMenuOpt = hOpt
 	procAppendMenuW.Call(hOpt, mfString, cmdToggleTurbo, uintptr(unsafe.Pointer(utf16Ptr("⚡ Turbo Multi-Connection Speed (6x Faster — uncheck for Watch-Live 1x)"))))
+
+	hSpeed, _, _ := procCreatePopupMenu.Call()
+	g.hMenuSpeedLimit = hSpeed
+	for idx, preset := range speedLimitPresets {
+		procAppendMenuW.Call(hSpeed, mfString, uintptr(cmdGlobalLimit0+idx), uintptr(unsafe.Pointer(utf16Ptr(preset.label))))
+	}
+	procAppendMenuW.Call(hOpt, mfPopup, hSpeed, uintptr(unsafe.Pointer(utf16Ptr("Global Speed Limit"))))
+
 	procAppendMenuW.Call(hOpt, mfSeparator, 0, 0)
 	procAppendMenuW.Call(hOpt, mfString, cmdToggleStartup, uintptr(unsafe.Pointer(utf16Ptr("Start GrabAll Automatically with Windows"))))
 	procAppendMenuW.Call(hOpt, mfString, cmdTogglePopup, uintptr(unsafe.Pointer(utf16Ptr("Show Download Progress Popup on New Downloads"))))
@@ -1196,6 +1229,17 @@ func (g *winAppGUI) refreshOptionMenuChecks() {
 			procCheckMenuItem.Call(g.hMenuOpt, id, mfByCommand|mfChecked)
 		} else {
 			procCheckMenuItem.Call(g.hMenuOpt, id, mfByCommand|mfUnchecked)
+		}
+	}
+
+	if g.hMenuSpeedLimit != 0 {
+		curLimit := g.cfg.GetSpeedLimitKBps()
+		for idx, preset := range speedLimitPresets {
+			flag := uintptr(mfByCommand | mfUnchecked)
+			if curLimit == preset.kbps {
+				flag = uintptr(mfByCommand | mfChecked)
+			}
+			procCheckMenuItem.Call(g.hMenuSpeedLimit, uintptr(cmdGlobalLimit0+idx), flag)
 		}
 	}
 }
@@ -1626,11 +1670,15 @@ func (g *winAppGUI) refreshStatusBar() {
 	if g.cfg.GetSpeedMode() == SpeedModeRegular {
 		modeLabel = "Regular (Watch Live)"
 	}
+	limitSeg := ""
+	if lim := g.cfg.GetSpeedLimitKBps(); lim > 0 {
+		limitSeg = fmt.Sprintf("   •   Limit: %s/s", formatBytesHuman(lim*1024))
+	}
 
 	status := fmt.Sprintf(
-		"Active: %d  |  Queued: %d  |  Completed: %d   •   Speed: %s   •   Folder: %s   •   yt-dlp: %s  |  FFmpeg: %s",
+		"Active: %d  |  Queued: %d  |  Completed: %d   •   Speed: %s%s   •   Folder: %s   •   yt-dlp: %s  |  FFmpeg: %s",
 		active, queued, done,
-		modeLabel,
+		modeLabel, limitSeg,
 		filepath.Clean(g.cfg.GetDownloadDir()),
 		ytState, ffState,
 	)
@@ -2271,6 +2319,16 @@ func (g *winAppGUI) showRowContextMenu(taskID string) {
 		} else {
 			procAppendMenuW.Call(hMenu, mfString, cmdTaskSwitchTurbo, uintptr(unsafe.Pointer(utf16Ptr("⚡ Switch to Turbo Speed (6x Multi-Connection)"))))
 		}
+		if hTaskLim, _, _ := procCreatePopupMenu.Call(); hTaskLim != 0 {
+			for idx, preset := range speedLimitPresets {
+				flag := uintptr(mfString | mfUnchecked)
+				if snap.SpeedLimitKBps == preset.kbps {
+					flag = uintptr(mfString | mfChecked)
+				}
+				procAppendMenuW.Call(hTaskLim, flag, uintptr(cmdTaskLimit0+idx), uintptr(unsafe.Pointer(utf16Ptr(preset.label))))
+			}
+			procAppendMenuW.Call(hMenu, mfPopup, hTaskLim, uintptr(unsafe.Pointer(utf16Ptr("Task Speed Limit"))))
+		}
 	}
 
 	procAppendMenuW.Call(hMenu, mfSeparator, 0, 0)
@@ -2466,6 +2524,20 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 		_ = g.cfg.Save()
 		g.refreshOptionMenuChecks()
 		g.qm.triggerLoop()
+
+	case cmdGlobalLimit0, cmdGlobalLimit512, cmdGlobalLimit1024, cmdGlobalLimit2048, cmdGlobalLimit5120, cmdGlobalLimit10240:
+		idx := int(cmdID - cmdGlobalLimit0)
+		if idx >= 0 && idx < len(speedLimitPresets) {
+			g.qm.SetGlobalSpeedLimitKBps(speedLimitPresets[idx].kbps)
+			g.refreshOptionMenuChecks()
+			g.refreshStatusBar()
+		}
+
+	case cmdTaskLimit0, cmdTaskLimit512, cmdTaskLimit1024, cmdTaskLimit2048, cmdTaskLimit5120, cmdTaskLimit10240:
+		idx := int(cmdID - cmdTaskLimit0)
+		if selID != "" && idx >= 0 && idx < len(speedLimitPresets) {
+			g.qm.SetTaskSpeedLimitKBps(selID, speedLimitPresets[idx].kbps)
+		}
 
 	case cmdOpenWeb:
 		openURLDefault(fmt.Sprintf("http://127.0.0.1:%d", g.cfg.Port))

@@ -162,6 +162,11 @@
             </div>
           </div>
           <div class="form-group">
+            <label for="setting-speed-limit">Global Speed Limit (KB/s, 0 = Unlimited)</label>
+            <input type="number" id="setting-speed-limit" min="0" step="128" value="0">
+            <small>0 = Unlimited &bull; 1024 = 1 MB/s &bull; 5120 = 5 MB/s</small>
+          </div>
+          <div class="form-group">
             <label for="setting-video-codec">Default Video Encode Format (YouTube)</label>
             <select id="setting-video-codec">
               <option value="h264">H.264 (AVC) — Default, Best Compatibility</option>

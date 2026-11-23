@@ -291,7 +291,7 @@ function updateTaskCard(card, task) {
     statEta.textContent = task.eta ? `⏱️ ${task.eta}` : '';
   }
 
-  const modeKey = `${task.status}|${task.speedMode || ''}`;
+  const modeKey = `${task.status}|${task.speedMode || ''}|${task.speedLimitKBps || 0}`;
   if (card.dataset.status !== modeKey) {
     card.dataset.status = modeKey;
     const actions = card.querySelector('.task-actions');
@@ -309,6 +309,9 @@ function getTaskButtons(task) {
     buttons += isRegular
       ? `<button class="btn btn-sm btn-secondary btn-action-mode" data-next="turbo" title="Switch to 6x Turbo Multi-Connection Speed">⚡ Turbo</button>`
       : `<button class="btn btn-sm btn-secondary btn-action-mode" data-next="regular" title="Switch to Regular 1-Stream Mode (Watch While Downloading)">🎬 Live</button>`;
+    const limKBps = Number(task.speedLimitKBps) || 0;
+    const limLabel = limKBps > 0 ? `🚦 ${formatBytes(limKBps * 1024)}/s` : '🚦 Limit';
+    buttons += `<button class="btn btn-sm btn-secondary btn-action-limit" title="Set Download Speed Limit (KB/s)">${limLabel}</button>`;
   }
   if (task.status === 'downloading') {
     buttons += `<button class="btn btn-sm btn-secondary btn-action-pause" title="Pause">⏸️ Pause</button>`;
@@ -330,6 +333,18 @@ function attachTaskActionEvents(card, task) {
       const next = btnMode.getAttribute('data-next') || 'regular';
       doAction('/api/speed-mode', { id: task.id, speedMode: next });
       showToast(next === 'regular' ? 'Switched to Regular Mode (Watch Live)' : 'Switched to 6x Turbo Speed');
+    };
+  }
+
+  const btnLimit = card.querySelector('.btn-action-limit');
+  if (btnLimit) {
+    btnLimit.onclick = () => {
+      const curLim = Number(task.speedLimitKBps) || 0;
+      const entered = prompt('Enter speed limit in KB/s for this download (0 = Unlimited, e.g. 1024 for 1 MB/s):', String(curLim));
+      if (entered === null) return;
+      const parsed = Math.max(0, parseInt(entered.trim(), 10) || 0);
+      doAction('/api/speed-limit', { id: task.id, speedLimitKBps: parsed });
+      showToast(parsed > 0 ? `Task limit set to ${formatBytes(parsed * 1024)}/s` : 'Task speed limit removed');
     };
   }
 
@@ -455,13 +470,14 @@ function initSettings() {
     const maxConcurrent = parseInt(document.getElementById('setting-max-concurrent').value, 10);
     const defaultEngine = document.getElementById('setting-default-engine').value;
     const videoCodec = document.getElementById('setting-video-codec')?.value || 'h264';
+    const speedLimitKBps = Math.max(0, parseInt(document.getElementById('setting-speed-limit')?.value || '0', 10) || 0);
     const autoCheckUpdates = document.getElementById('setting-auto-update')?.checked !== false;
 
     try {
       const res = await fetch('/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ downloadDir, maxConcurrent, defaultEngine, videoCodec, autoCheckUpdates }),
+        body: JSON.stringify({ downloadDir, maxConcurrent, defaultEngine, videoCodec, speedLimitKBps, autoCheckUpdates }),
       });
       if (res.ok) {
         defaultVideoCodec = videoCodec;
@@ -553,6 +569,10 @@ async function loadSettings() {
     document.getElementById('setting-download-dir').value = cfg.downloadDir || '';
     document.getElementById('setting-max-concurrent').value = cfg.maxConcurrent || 2;
     document.getElementById('setting-default-engine').value = cfg.defaultEngine || 'auto';
+    const speedLimEl = document.getElementById('setting-speed-limit');
+    if (speedLimEl) {
+      speedLimEl.value = cfg.speedLimitKBps || 0;
+    }
     defaultVideoCodec = cfg.videoCodec || 'h264';
     const codecEl = document.getElementById('setting-video-codec');
     if (codecEl) {

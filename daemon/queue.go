@@ -42,39 +42,55 @@ type DownloadTask struct {
 	UpdatedAt       time.Time  `json:"updatedAt"`
 	CompletedAt     *time.Time `json:"completedAt,omitempty"`
 
-	Quality    string   `json:"quality,omitempty"`    // "best", "2160", "1080", "720", "480", "360", "audio-best", "audio-mp3"
-	VideoCodec string   `json:"videoCodec,omitempty"` // "h264" (default), "vp9", "av1", "auto"
-	SpeedMode  string   `json:"speedMode,omitempty"`  // "turbo" or "regular" (empty inherits config)
-	SubDir    string   `json:"subDir,omitempty"`    // Optional subfolder inside DownloadDir (e.g. playlist title)
-	Cookies   []Cookie `json:"cookies,omitempty"`
-	UserAgent string   `json:"userAgent,omitempty"`
-	Referer   string   `json:"referer,omitempty"`
-	SavePath  string   `json:"savePath,omitempty"`
+	Quality        string   `json:"quality,omitempty"`    // "best", "2160", "1080", "720", "480", "360", "audio-best", "audio-mp3"
+	VideoCodec     string   `json:"videoCodec,omitempty"` // "h264" (default), "vp9", "av1", "auto"
+	SpeedMode      string   `json:"speedMode,omitempty"`  // "turbo" or "regular" (empty inherits config)
+	SpeedLimitKBps int64    `json:"speedLimitKBps,omitempty"` // Per-task speed cap in KB/s (0 = unlimited)
+	SubDir         string   `json:"subDir,omitempty"`         // Optional subfolder inside DownloadDir (e.g. playlist title)
+	Cookies        []Cookie `json:"cookies,omitempty"`
+	UserAgent      string   `json:"userAgent,omitempty"`
+	Referer        string   `json:"referer,omitempty"`
+	SavePath       string   `json:"savePath,omitempty"`
 
 	// Runtime controls
-	cancelFunc context.CancelFunc `json:"-"`
-	runID      uint64             `json:"-"`
-	mu         sync.Mutex         `json:"-"`
-	runMu      sync.Mutex         `json:"-"`
+	cancelFunc  context.CancelFunc `json:"-"`
+	runID       uint64             `json:"-"`
+	rateLimiter *bandwidthLimiter  `json:"-"`
+	mu          sync.Mutex         `json:"-"`
+	runMu       sync.Mutex         `json:"-"`
+}
+
+func (t *DownloadTask) getRateLimiter() *bandwidthLimiter {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.rateLimiter == nil {
+		rateBps := t.SpeedLimitKBps * 1024
+		if rateBps < 0 {
+			rateBps = 0
+		}
+		t.rateLimiter = newBandwidthLimiter(rateBps)
+	}
+	return t.rateLimiter
 }
 
 type AddRequest struct {
-	URL           string          `json:"url"`
-	Title         string          `json:"title,omitempty"`
-	FileName      string          `json:"fileName,omitempty"`
-	Engine        string          `json:"engine,omitempty"`        // "direct", "ytdlp", or "auto"
-	Quality       string          `json:"quality,omitempty"`       // "best", "2160", "1080", "720", "480", "360", "audio-best", "audio-mp3"
-	VideoCodec    string          `json:"videoCodec,omitempty"`    // "h264" (default), "vp9", "av1", "auto"
-	SpeedMode     string          `json:"speedMode,omitempty"`     // "turbo" or "regular"
-	Playlist      bool            `json:"playlist,omitempty"`      // Expand playlist into queue items
-	PlaylistStart int             `json:"playlistStart,omitempty"` // 1-based start index (default 1)
-	PlaylistEnd   int             `json:"playlistEnd,omitempty"`   // 1-based end index (0 = all/count)
-	PlaylistCount int             `json:"playlistCount,omitempty"` // Max number of videos to queue from PlaylistStart
-	PlaylistItems []PlaylistEntry `json:"playlistItems,omitempty"` // Pre-selected entries from checklist UI
-	SubDir        string          `json:"subDir,omitempty"`
-	Cookies       []Cookie        `json:"cookies,omitempty"`
-	UserAgent     string          `json:"userAgent,omitempty"`
-	Referer       string          `json:"referer,omitempty"`
+	URL            string          `json:"url"`
+	Title          string          `json:"title,omitempty"`
+	FileName       string          `json:"fileName,omitempty"`
+	Engine         string          `json:"engine,omitempty"`         // "direct", "ytdlp", or "auto"
+	Quality        string          `json:"quality,omitempty"`        // "best", "2160", "1080", "720", "480", "360", "audio-best", "audio-mp3"
+	VideoCodec     string          `json:"videoCodec,omitempty"`     // "h264" (default), "vp9", "av1", "auto"
+	SpeedMode      string          `json:"speedMode,omitempty"`      // "turbo" or "regular"
+	SpeedLimitKBps int64           `json:"speedLimitKBps,omitempty"` // 0 = unlimited
+	Playlist       bool            `json:"playlist,omitempty"`       // Expand playlist into queue items
+	PlaylistStart  int             `json:"playlistStart,omitempty"`  // 1-based start index (default 1)
+	PlaylistEnd    int             `json:"playlistEnd,omitempty"`    // 1-based end index (0 = all/count)
+	PlaylistCount  int             `json:"playlistCount,omitempty"`  // Max number of videos to queue from PlaylistStart
+	PlaylistItems  []PlaylistEntry `json:"playlistItems,omitempty"`  // Pre-selected entries from checklist UI
+	SubDir         string          `json:"subDir,omitempty"`
+	Cookies        []Cookie        `json:"cookies,omitempty"`
+	UserAgent      string          `json:"userAgent,omitempty"`
+	Referer        string          `json:"referer,omitempty"`
 }
 
 type QueueManager struct {
@@ -88,6 +104,8 @@ type QueueManager struct {
 	stopOnce        sync.Once
 	wg              sync.WaitGroup
 	broker          *SSEBroker
+	globalLimiter   *bandwidthLimiter
+	hostPool        *hostConnectionPool
 	hooksMu         sync.RWMutex
 	onUpdate        func()
 	onTaskAdded     func(task *DownloadTask)
@@ -127,13 +145,19 @@ func (qm *QueueManager) SetUIHooks(onUpdate func(), onTaskAdded func(task *Downl
 }
 
 func NewQueueManager(cfg *Config, dataFile string, broker *SSEBroker) *QueueManager {
+	var globalLimitKBps int64
+	if cfg != nil {
+		globalLimitKBps = cfg.GetSpeedLimitKBps()
+	}
 	qm := &QueueManager{
-		config:     cfg,
-		tasks:      make([]*DownloadTask, 0),
-		dataFile:   dataFile,
-		notifyChan: make(chan struct{}, 10),
-		stopChan:   make(chan struct{}),
-		broker:     broker,
+		config:        cfg,
+		tasks:         make([]*DownloadTask, 0),
+		dataFile:      dataFile,
+		notifyChan:    make(chan struct{}, 10),
+		stopChan:      make(chan struct{}),
+		broker:        broker,
+		globalLimiter: newBandwidthLimiter(globalLimitKBps * 1024),
+		hostPool:      newHostConnectionPool(defaultMaxConnsPerHost),
 	}
 
 	qm.load()
@@ -163,6 +187,12 @@ func (qm *QueueManager) load() {
 			task.Speed = ""
 			task.ETA = ""
 		}
+		if task.SpeedLimitKBps < 0 {
+			task.SpeedLimitKBps = 0
+		}
+		if task.SpeedLimitKBps > 0 {
+			task.getRateLimiter().SetRate(task.SpeedLimitKBps * 1024)
+		}
 		qm.tasks = append(qm.tasks, task)
 	}
 }
@@ -176,6 +206,7 @@ func snapshotTask(t *DownloadTask, includeCookies bool) *DownloadTask {
 		URL:             t.URL,
 		Title:           t.Title,
 		FileName:        t.FileName,
+		CustomFileName:  t.CustomFileName,
 		Engine:          t.Engine,
 		Status:          t.Status,
 		Progress:        t.Progress,
@@ -190,6 +221,7 @@ func snapshotTask(t *DownloadTask, includeCookies bool) *DownloadTask {
 		Quality:         t.Quality,
 		VideoCodec:      t.VideoCodec,
 		SpeedMode:       t.SpeedMode,
+		SpeedLimitKBps:  t.SpeedLimitKBps,
 		SubDir:          t.SubDir,
 		UserAgent:       t.UserAgent,
 		Referer:         t.Referer,
@@ -315,6 +347,11 @@ func (qm *QueueManager) AddTask(req AddRequest) (*DownloadTask, error) {
 		qm.config.mu.RUnlock()
 	}
 
+	reqLimitKBps := req.SpeedLimitKBps
+	if reqLimitKBps < 0 {
+		reqLimitKBps = 0
+	}
+
 	task := &DownloadTask{
 		ID:             taskID,
 		URL:            req.URL,
@@ -325,6 +362,7 @@ func (qm *QueueManager) AddTask(req AddRequest) (*DownloadTask, error) {
 		Quality:        req.Quality,
 		VideoCodec:     reqVideoCodec,
 		SpeedMode:      reqSpeedMode,
+		SpeedLimitKBps: reqLimitKBps,
 		SubDir:    req.SubDir,
 		Status:    StatusQueued,
 		CreatedAt: time.Now(),
@@ -724,6 +762,80 @@ func (qm *QueueManager) SetTaskSpeedMode(id, mode string) bool {
 		qm.triggerLoop()
 	}
 	return true
+}
+
+// SetGlobalSpeedLimitKBps updates the global download speed cap in KB/s (0 = unlimited) live.
+func (qm *QueueManager) SetGlobalSpeedLimitKBps(kbps int64) {
+	if kbps < 0 {
+		kbps = 0
+	}
+	if qm.config != nil {
+		qm.config.SetSpeedLimitKBps(kbps)
+	}
+	if qm.globalLimiter != nil {
+		qm.globalLimiter.SetRate(kbps * 1024)
+	}
+	qm.BroadcastUpdate()
+}
+
+// SetTaskSpeedLimitKBps updates an individual task's speed cap in KB/s (0 = unlimited) live.
+func (qm *QueueManager) SetTaskSpeedLimitKBps(id string, kbps int64) bool {
+	task := qm.GetByID(id)
+	if task == nil {
+		return false
+	}
+	if kbps < 0 {
+		kbps = 0
+	}
+
+	task.mu.Lock()
+	task.SpeedLimitKBps = kbps
+	task.UpdatedAt = time.Now()
+	if task.rateLimiter == nil && kbps > 0 {
+		task.rateLimiter = newBandwidthLimiter(kbps * 1024)
+	} else if task.rateLimiter != nil {
+		task.rateLimiter.SetRate(kbps * 1024)
+	}
+	task.mu.Unlock()
+
+	qm.save()
+	qm.BroadcastUpdate()
+	return true
+}
+
+// EffectiveSpeedLimitKBps returns the tighter of global and per-task KB/s caps (0 = unlimited).
+func (qm *QueueManager) EffectiveSpeedLimitKBps(task *DownloadTask) int64 {
+	var globalKBps, taskKBps int64
+	if qm != nil && qm.config != nil {
+		globalKBps = qm.config.GetSpeedLimitKBps()
+	}
+	if task != nil {
+		task.mu.Lock()
+		taskKBps = task.SpeedLimitKBps
+		task.mu.Unlock()
+	}
+	if globalKBps > 0 && taskKBps > 0 {
+		if taskKBps < globalKBps {
+			return taskKBps
+		}
+		return globalKBps
+	}
+	if taskKBps > 0 {
+		return taskKBps
+	}
+	return globalKBps
+}
+
+// TaskLimiters returns the active per-task and global bandwidth limiters for a task.
+func (qm *QueueManager) TaskLimiters(task *DownloadTask) []*bandwidthLimiter {
+	var limiters []*bandwidthLimiter
+	if task != nil {
+		limiters = append(limiters, task.getRateLimiter())
+	}
+	if qm != nil && qm.globalLimiter != nil {
+		limiters = append(limiters, qm.globalLimiter)
+	}
+	return limiters
 }
 
 // DeleteTask removes a task from the list and cleans up partial or completed files.

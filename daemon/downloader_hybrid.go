@@ -603,18 +603,26 @@ func isHTTPStatusError(err error) bool {
 }
 
 type streamFetchOptions struct {
-	Client          *http.Client
-	URL             string
-	Headers         map[string]string
-	DestPath        string
-	ExpectedSize    int64
-	MaxWorkers      int
-	BlockSize       int64
-	StallTimeout    time.Duration
-	MaxURLRefreshes int
-	OnProgress      func(downloaded, total int64, rateBytesPerSec float64, workers int)
-	OnStatus        func(msg string)
-	RefreshURL      func(ctx context.Context) (newURL string, newHeaders map[string]string, err error)
+	Client               *http.Client
+	URL                  string
+	Headers              map[string]string
+	DestPath             string
+	ExpectedSize         int64
+	MaxWorkers           int
+	BlockSize            int64
+	MaxRequestSpan       int64
+	MinStealSize         int64
+	StallTimeout         time.Duration
+	PreemptGrace         time.Duration
+	PreemptCheckInterval time.Duration
+	DisablePreempt       bool
+	MaxURLRefreshes      int
+	HostPool             *hostConnectionPool
+	Limiters             []*bandwidthLimiter
+	OnProgress           func(downloaded, total int64, rateBytesPerSec float64, workers int)
+	OnStatus             func(msg string)
+	OnStats              func(steals, preemptions int64)
+	RefreshURL           func(ctx context.Context) (newURL string, newHeaders map[string]string, err error)
 }
 
 func cloneHeaderMap(h map[string]string) map[string]string {
@@ -805,6 +813,9 @@ func fetchStreamWithGoEngine(ctx context.Context, opts streamFetchOptions) (int6
 	if opts.MaxURLRefreshes <= 0 {
 		opts.MaxURLRefreshes = 8
 	}
+	if opts.HostPool == nil {
+		opts.HostPool = defaultHostPool
+	}
 
 	partPath := opts.DestPath + ".part"
 	turboMetaPath := partPath + ".turbo"
@@ -839,7 +850,7 @@ func fetchStreamWithGoEngine(ctx context.Context, opts streamFetchOptions) (int6
 }
 
 // copyStreamToOffset streams body into file at startOffset while updating liveBytes and resetting watchdog.
-func copyStreamToOffset(ctx context.Context, file *os.File, body io.Reader, startOffset, maxLen int64, liveBytes *atomic.Int64, watchdog *stallWatchdog) (int64, error) {
+func copyStreamToOffset(ctx context.Context, file *os.File, body io.Reader, startOffset, maxLen int64, liveBytes *atomic.Int64, watchdog *stallWatchdog, limiters []*bandwidthLimiter) (int64, error) {
 	buf := make([]byte, 32*1024)
 	var written int64
 	for maxLen <= 0 || written < maxLen {
@@ -861,6 +872,13 @@ func copyStreamToOffset(ctx context.Context, file *os.File, body io.Reader, star
 			}
 			written += int64(n)
 			liveBytes.Add(int64(n))
+			if len(limiters) > 0 {
+				watchdog.Kick()
+				if lErr := waitRateLimiters(ctx, n, limiters...); lErr != nil {
+					return written, lErr
+				}
+				watchdog.Kick()
+			}
 		}
 		if rErr != nil {
 			if rErr == io.EOF {
@@ -996,6 +1014,8 @@ func fetchStreamSequential(ctx context.Context, opts streamFetchOptions, endpoin
 		chunkDone := false
 		hitFullEOF := false
 		netAttempts := 0
+		throttleAttempts := 0
+		const maxThrottleAttempts = 8
 
 		for !chunkDone {
 			if ctx.Err() != nil {
@@ -1003,16 +1023,24 @@ func fetchStreamSequential(ctx context.Context, opts streamFetchOptions, endpoin
 			}
 
 			curURL, curHeaders, gen := endpoint.current()
+			hostKey := extractHostKey(curURL)
+			release, acqErr := opts.HostPool.Acquire(ctx, hostKey)
+			if acqErr != nil {
+				return 0, acqErr
+			}
+
 			reqCtx, watchdog := newStallWatchdog(ctx, opts.StallTimeout)
 			req, rErr := buildStreamHTTPRequest(reqCtx, curURL, curHeaders, rangeStr)
 			if rErr != nil {
 				watchdog.Stop()
+				release()
 				return 0, rErr
 			}
 
 			resp, dErr := opts.Client.Do(req)
 			if dErr != nil {
 				watchdog.Stop()
+				release()
 				if ctx.Err() != nil {
 					return 0, ctx.Err()
 				}
@@ -1035,9 +1063,27 @@ func fetchStreamSequential(ctx context.Context, opts streamFetchOptions, endpoin
 				continue
 			}
 
+			if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
+				retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+				code := resp.StatusCode
+				_ = resp.Body.Close()
+				watchdog.Stop()
+				opts.HostPool.ReportThrottle(hostKey, retryAfter)
+				release()
+				throttleAttempts++
+				if throttleAttempts > maxThrottleAttempts {
+					return 0, &httpStatusError{
+						StatusCode: code,
+						Message:    fmt.Sprintf("host throttled with HTTP %d", code),
+					}
+				}
+				continue
+			}
+
 			if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusGone {
 				_ = resp.Body.Close()
 				watchdog.Stop()
+				release()
 				if refErr := endpoint.tryRefresh(ctx, gen, resp.StatusCode, fmt.Sprintf("server returned HTTP %d", resp.StatusCode), nil); refErr != nil {
 					return 0, refErr
 				}
@@ -1047,6 +1093,7 @@ func fetchStreamSequential(ctx context.Context, opts streamFetchOptions, endpoin
 			if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
 				_ = resp.Body.Close()
 				watchdog.Stop()
+				release()
 				if opts.ExpectedSize > 0 && offset >= opts.ExpectedSize {
 					offset = opts.ExpectedSize
 					hitFullEOF = true
@@ -1075,14 +1122,16 @@ func fetchStreamSequential(ctx context.Context, opts streamFetchOptions, endpoin
 					expFull = opts.ExpectedSize
 					totalPtr.Store(expFull)
 				}
-				written, cErr := copyStreamToOffset(reqCtx, file, resp.Body, 0, expFull, &liveBytes, watchdog)
+				written, cErr := copyStreamToOffset(reqCtx, file, resp.Body, 0, expFull, &liveBytes, watchdog, opts.Limiters)
 				_ = resp.Body.Close()
 				watchdog.Stop()
+				release()
 				offset = written
 				if ctx.Err() != nil {
 					return 0, ctx.Err()
 				}
 				if cErr == nil {
+					opts.HostPool.ReportSuccess(hostKey)
 					if totalPtr.Load() <= 0 {
 						totalPtr.Store(offset)
 					}
@@ -1104,6 +1153,7 @@ func fetchStreamSequential(ctx context.Context, opts streamFetchOptions, endpoin
 				code := resp.StatusCode
 				_ = resp.Body.Close()
 				watchdog.Stop()
+				release()
 				return 0, &httpStatusError{
 					StatusCode: code,
 					Message:    fmt.Sprintf("server returned HTTP %d", code),
@@ -1123,9 +1173,10 @@ func fetchStreamSequential(ctx context.Context, opts streamFetchOptions, endpoin
 			}
 
 			requestedLen := end - offset + 1
-			written, cErr := copyStreamToOffset(reqCtx, file, resp.Body, offset, expLen, &liveBytes, watchdog)
+			written, cErr := copyStreamToOffset(reqCtx, file, resp.Body, offset, expLen, &liveBytes, watchdog, opts.Limiters)
 			_ = resp.Body.Close()
 			watchdog.Stop()
+			release()
 			offset += written
 
 			if ctx.Err() != nil {
@@ -1143,6 +1194,7 @@ func fetchStreamSequential(ctx context.Context, opts streamFetchOptions, endpoin
 				continue
 			}
 
+			opts.HostPool.ReportSuccess(hostKey)
 			if curTotal <= 0 && resp.ContentLength >= 0 && resp.ContentLength < requestedLen {
 				totalPtr.Store(offset)
 				hitFullEOF = true
@@ -1184,25 +1236,37 @@ func fetchStreamTurbo(ctx context.Context, opts streamFetchOptions, endpoint *st
 		probeResp     *http.Response
 		probeWatchdog *stallWatchdog
 		probeCtx      context.Context
+		probeRelease  func()
+		probeHostKey  string
 	)
 
 	const maxProbeAttempts = 4
+	const maxProbeThrottles = 8
 	netAttempts := 0
+	throttleAttempts := 0
 	for {
 		if ctx.Err() != nil {
 			return 0, ctx.Err()
 		}
 		curURL, curHeaders, gen := endpoint.current()
+		hostKey := extractHostKey(curURL)
+		rel, acqErr := opts.HostPool.Acquire(ctx, hostKey)
+		if acqErr != nil {
+			return 0, acqErr
+		}
+
 		pCtx, watchdog := newStallWatchdog(ctx, opts.StallTimeout)
 		req, rErr := buildStreamHTTPRequest(pCtx, curURL, curHeaders, fmt.Sprintf("bytes=0-%d", blockSize-1))
 		if rErr != nil {
 			watchdog.Stop()
+			rel()
 			return 0, rErr
 		}
 
 		resp, dErr := opts.Client.Do(req)
 		if dErr != nil {
 			watchdog.Stop()
+			rel()
 			if ctx.Err() != nil {
 				return 0, ctx.Err()
 			}
@@ -1221,9 +1285,27 @@ func fetchStreamTurbo(ctx context.Context, opts streamFetchOptions, endpoint *st
 			continue
 		}
 
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
+			retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+			code := resp.StatusCode
+			_ = resp.Body.Close()
+			watchdog.Stop()
+			opts.HostPool.ReportThrottle(hostKey, retryAfter)
+			rel()
+			throttleAttempts++
+			if throttleAttempts > maxProbeThrottles {
+				return 0, &httpStatusError{
+					StatusCode: code,
+					Message:    fmt.Sprintf("host throttled with HTTP %d", code),
+				}
+			}
+			continue
+		}
+
 		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusGone {
 			_ = resp.Body.Close()
 			watchdog.Stop()
+			rel()
 			if refErr := endpoint.tryRefresh(ctx, gen, resp.StatusCode, fmt.Sprintf("server returned HTTP %d", resp.StatusCode), nil); refErr != nil {
 				return 0, refErr
 			}
@@ -1233,6 +1315,8 @@ func fetchStreamTurbo(ctx context.Context, opts streamFetchOptions, endpoint *st
 		probeResp = resp
 		probeWatchdog = watchdog
 		probeCtx = pCtx
+		probeRelease = rel
+		probeHostKey = hostKey
 		break
 	}
 
@@ -1244,6 +1328,10 @@ func fetchStreamTurbo(ctx context.Context, opts streamFetchOptions, endpoint *st
 		if probeWatchdog != nil {
 			probeWatchdog.Stop()
 			probeWatchdog = nil
+		}
+		if probeRelease != nil {
+			probeRelease()
+			probeRelease = nil
 		}
 	}
 
@@ -1261,13 +1349,14 @@ func fetchStreamTurbo(ctx context.Context, opts streamFetchOptions, endpoint *st
 		var totalPtr, liveBytes atomic.Int64
 		totalPtr.Store(expTotal)
 		stopTicker := startStreamProgressTicker(&totalPtr, &liveBytes, 0, 1, opts.OnProgress, nil)
-		written, cErr := copyStreamToOffset(probeCtx, file, probeResp.Body, 0, probeResp.ContentLength, &liveBytes, probeWatchdog)
+		written, cErr := copyStreamToOffset(probeCtx, file, probeResp.Body, 0, probeResp.ContentLength, &liveBytes, probeWatchdog, opts.Limiters)
 		stopTicker()
 		cleanupProbe()
 		_ = file.Close()
 		if cErr != nil {
 			return 0, cErr
 		}
+		opts.HostPool.ReportSuccess(probeHostKey)
 		if err := finalizePartToDest(partPath, turboMetaPath, opts.DestPath); err != nil {
 			return 0, err
 		}
@@ -1296,39 +1385,25 @@ func fetchStreamTurbo(ctx context.Context, opts streamFetchOptions, endpoint *st
 		if probeResp.ContentLength > 0 && probeResp.ContentLength < blockSize {
 			totalBytes = probeResp.ContentLength
 		} else {
-			// Cannot determine total content length for parallel block table; fall back safely to sequential.
+			// Cannot determine total content length for parallel scheduler; fall back safely to sequential.
 			cleanupProbe()
 			return fetchStreamSequential(ctx, opts, endpoint, partPath, turboMetaPath)
 		}
 	}
 
-	numBlocks := int((totalBytes + blockSize - 1) / blockSize)
 	openFlags := os.O_CREATE | os.O_RDWR
-	var meta *turboStateMeta
+	var initialRanges []byteRange
 
 	partInfo, partStatErr := os.Stat(partPath)
 	partExists := partStatErr == nil && !partInfo.IsDir()
 
-	if prevMetaErr == nil && prevMeta != nil && prevMeta.TotalBytes == totalBytes && prevMeta.BlockSize == blockSize && len(prevMeta.DoneBlocks) == numBlocks && partExists {
-		meta = prevMeta
+	if prevMetaErr == nil && prevMeta != nil && prevMeta.TotalBytes == totalBytes && partExists {
+		initialRanges = prevMeta.normalizeCompletedRanges()
 	} else if partExists && partInfo.Size() > 0 && partInfo.Size() <= totalBytes {
-		// Switched Regular -> Turbo or previous run had no .turbo metadata: adopt full contiguous blocks.
-		meta = &turboStateMeta{
-			TotalBytes: totalBytes,
-			BlockSize:  blockSize,
-			DoneBlocks: make([]bool, numBlocks),
-		}
-		fullBlocks := int(partInfo.Size() / blockSize)
-		for i := 0; i < fullBlocks && i < numBlocks; i++ {
-			meta.DoneBlocks[i] = true
-		}
+		// Switched Regular -> Turbo or previous run had no .turbo metadata: adopt contiguous prefix bytes.
+		initialRanges = []byteRange{{Start: 0, End: partInfo.Size() - 1}}
 	} else {
 		openFlags |= os.O_TRUNC
-		meta = &turboStateMeta{
-			TotalBytes: totalBytes,
-			BlockSize:  blockSize,
-			DoneBlocks: make([]bool, numBlocks),
-		}
 	}
 
 	file, err := os.OpenFile(partPath, openFlags, 0644)
@@ -1343,321 +1418,56 @@ func fetchStreamTurbo(ctx context.Context, opts streamFetchOptions, endpoint *st
 		}
 	}()
 
-	useProbeForBlock0 := !meta.DoneBlocks[0] && numBlocks > 0
-	if !useProbeForBlock0 {
-		cleanupProbe()
+	probeEnd := blockSize - 1
+	if probeEnd >= totalBytes {
+		probeEnd = totalBytes - 1
 	}
 
-	pending := make([]int, 0, numBlocks)
-	for i := 0; i < numBlocks; i++ {
-		if meta.DoneBlocks[i] {
-			continue
-		}
-		if i == 0 && useProbeForBlock0 {
-			continue
-		}
-		pending = append(pending, i)
-	}
-
-	totalTodo := len(pending)
-	if useProbeForBlock0 {
-		totalTodo++
-	}
-	if totalTodo == 0 {
-		cleanupProbe()
-		_ = file.Truncate(totalBytes)
-		_ = file.Close()
-		fileClosed = true
-		if err := finalizePartToDest(partPath, turboMetaPath, opts.DestPath); err != nil {
-			return 0, err
-		}
-		return totalBytes, nil
-	}
-
-	workerCount := opts.MaxWorkers
-	if totalTodo < workerCount {
-		workerCount = totalTodo
-	}
-	if workerCount < 1 {
-		workerCount = 1
-	}
-
-	workerCtx, cancelWorkers := context.WithCancel(ctx)
-	defer cancelWorkers()
-
-	initialDone := meta.completedBytes()
 	var (
-		metaMu    sync.Mutex
-		nextIdx   atomic.Int64
-		totalPtr  atomic.Int64
-		liveBytes atomic.Int64
-		errOnce   sync.Once
-		firstErr  error
-		wg        sync.WaitGroup
+		probeBodyWrapped io.ReadCloser
+		useProbeFor0     = len(initialRanges) == 0 || initialRanges[0].Start > 0
 	)
-	totalPtr.Store(totalBytes)
-	liveBytes.Store(initialDone)
-
-	saveMetaSafe := func() {
-		metaMu.Lock()
-		saveTurboMeta(turboMetaPath, meta)
-		metaMu.Unlock()
+	if useProbeFor0 && totalBytes > 0 {
+		rel := probeRelease
+		probeRelease = nil
+		probeBodyWrapped = &releaseOnCloseReadCloser{ReadCloser: probeResp.Body, onClose: rel}
+		probeResp.Body = nil
+	} else {
+		cleanupProbe()
 	}
 
-	recordErr := func(e error) {
-		if e == nil {
-			return
-		}
-		errOnce.Do(func() {
-			firstErr = e
-			cancelWorkers()
-		})
+	maxSpan := opts.MaxRequestSpan
+	if maxSpan <= 0 {
+		maxSpan = blockSize
 	}
 
-	stopTicker := startStreamProgressTicker(&totalPtr, &liveBytes, initialDone, workerCount, opts.OnProgress, saveMetaSafe)
-	defer stopTicker()
-
-	writeStreamToBlock := func(rCtx context.Context, r io.Reader, blockIdx int, watchdog *stallWatchdog) error {
-		start := int64(blockIdx) * blockSize
-		expLen := blockSize
-		if start+expLen > totalBytes {
-			expLen = totalBytes - start
-		}
-		buf := make([]byte, 32*1024)
-		var written int64
-		for written < expLen {
-			if workerCtx.Err() != nil {
-				liveBytes.Add(-written)
-				return workerCtx.Err()
-			}
-			if rCtx.Err() != nil {
-				liveBytes.Add(-written)
-				if workerCtx.Err() != nil {
-					return workerCtx.Err()
-				}
-				return fmt.Errorf("stream stalled in block %d (%d/%d bytes)", blockIdx, written, expLen)
-			}
-			toRead := len(buf)
-			if rem := int(expLen - written); rem < toRead {
-				toRead = rem
-			}
-			n, rErr := r.Read(buf[:toRead])
-			if n > 0 {
-				if watchdog != nil {
-					watchdog.Kick()
-				}
-				if _, wErr := file.WriteAt(buf[:n], start+written); wErr != nil {
-					liveBytes.Add(-written)
-					return fmt.Errorf("disk write error: %w", wErr)
-				}
-				written += int64(n)
-				liveBytes.Add(int64(n))
-			}
-			if rErr != nil {
-				if rErr == io.EOF && written == expLen {
-					break
-				}
-				liveBytes.Add(-written)
-				if rErr == io.EOF {
-					return fmt.Errorf("unexpected EOF in block %d (%d/%d)", blockIdx, written, expLen)
-				}
-				return rErr
-			}
-		}
-		metaMu.Lock()
-		meta.DoneBlocks[blockIdx] = true
-		metaMu.Unlock()
-		return nil
-	}
-
-	fetchBlockWithRetry := func(blockIdx int) error {
-		start := int64(blockIdx) * blockSize
-		end := start + blockSize - 1
-		if end >= totalBytes {
-			end = totalBytes - 1
-		}
-		rangeStr := fmt.Sprintf("bytes=%d-%d", start, end)
-
-		var lastErr error
-		netAttempt := 0
-		const maxNetAttempts = 6
-
-		for {
-			if workerCtx.Err() != nil {
-				return workerCtx.Err()
-			}
-
-			curURL, curHeaders, gen := endpoint.current()
-			reqCtx, watchdog := newStallWatchdog(workerCtx, opts.StallTimeout)
-			bReq, rErr := buildStreamHTTPRequest(reqCtx, curURL, curHeaders, rangeStr)
-			if rErr != nil {
-				watchdog.Stop()
-				return rErr
-			}
-
-			bResp, dErr := opts.Client.Do(bReq)
-			if dErr != nil {
-				watchdog.Stop()
-				if workerCtx.Err() != nil {
-					return workerCtx.Err()
-				}
-				lastErr = dErr
-				netAttempt++
-				if netAttempt >= 3 && opts.RefreshURL != nil {
-					_ = endpoint.tryRefresh(workerCtx, gen, 0, dErr.Error(), saveMetaSafe)
-				}
-				if netAttempt >= maxNetAttempts {
-					return lastErr
-				}
-				backoff := time.Duration(500*(1<<(netAttempt-1))) * time.Millisecond
-				if backoff > 8*time.Second {
-					backoff = 8 * time.Second
-				}
-				select {
-				case <-workerCtx.Done():
-					return workerCtx.Err()
-				case <-time.After(backoff):
-				}
-				continue
-			}
-
-			if bResp.StatusCode == http.StatusForbidden || bResp.StatusCode == http.StatusGone {
-				code := bResp.StatusCode
-				_ = bResp.Body.Close()
-				watchdog.Stop()
-				if refErr := endpoint.tryRefresh(workerCtx, gen, code, fmt.Sprintf("block %d returned HTTP %d", blockIdx, code), saveMetaSafe); refErr != nil {
-					return refErr
-				}
-				continue
-			}
-
-			if bResp.StatusCode != http.StatusPartialContent {
-				code := bResp.StatusCode
-				_ = bResp.Body.Close()
-				watchdog.Stop()
-				lastErr = &httpStatusError{
-					StatusCode: code,
-					Message:    fmt.Sprintf("block %d returned HTTP %d", blockIdx, code),
-				}
-				netAttempt++
-				if netAttempt >= maxNetAttempts {
-					return lastErr
-				}
-				backoff := time.Duration(500*(1<<(netAttempt-1))) * time.Millisecond
-				if backoff > 8*time.Second {
-					backoff = 8 * time.Second
-				}
-				select {
-				case <-workerCtx.Done():
-					return workerCtx.Err()
-				case <-time.After(backoff):
-				}
-				continue
-			}
-
-			wErr := writeStreamToBlock(reqCtx, bResp.Body, blockIdx, watchdog)
-			_ = bResp.Body.Close()
-			watchdog.Stop()
-			if wErr == nil {
-				return nil
-			}
-			if workerCtx.Err() != nil {
-				return workerCtx.Err()
-			}
-			lastErr = wErr
-			netAttempt++
-			if netAttempt >= 3 && opts.RefreshURL != nil {
-				_ = endpoint.tryRefresh(workerCtx, gen, 0, wErr.Error(), saveMetaSafe)
-			}
-			if netAttempt >= maxNetAttempts {
-				return lastErr
-			}
-			backoff := time.Duration(500*(1<<(netAttempt-1))) * time.Millisecond
-			if backoff > 8*time.Second {
-				backoff = 8 * time.Second
-			}
-			select {
-			case <-workerCtx.Done():
-				return workerCtx.Err()
-			case <-time.After(backoff):
-			}
-		}
-	}
-
-	// Ensure probe body is consumed or cleaned up by worker 0.
-	var initialBody io.ReadCloser
-	var initialWatchdog *stallWatchdog
-	var initialReqCtx context.Context
-	if useProbeForBlock0 {
-		initialBody = probeResp.Body
-		initialWatchdog = probeWatchdog
-		initialReqCtx = probeCtx
-	}
-
-	for w := 0; w < workerCount; w++ {
-		var wBody io.ReadCloser
-		var wDog *stallWatchdog
-		var wCtx context.Context
-		if w == 0 && initialBody != nil {
-			wBody = initialBody
-			wDog = initialWatchdog
-			wCtx = initialReqCtx
-			initialBody = nil
-		}
-		wg.Add(1)
-		go func(initCtx context.Context, initBody io.ReadCloser, initDog *stallWatchdog) {
-			defer wg.Done()
-			if initBody != nil {
-				err0 := writeStreamToBlock(initCtx, initBody, 0, initDog)
-				_ = initBody.Close()
-				if initDog != nil {
-					initDog.Stop()
-				}
-				if err0 != nil {
-					if workerCtx.Err() != nil {
-						recordErr(workerCtx.Err())
-						return
-					}
-					if retry0 := fetchBlockWithRetry(0); retry0 != nil {
-						recordErr(retry0)
-						return
-					}
-				}
-			}
-
-			for {
-				if workerCtx.Err() != nil {
-					return
-				}
-				pos := int(nextIdx.Add(1) - 1)
-				if pos >= len(pending) {
-					return
-				}
-				if errB := fetchBlockWithRetry(pending[pos]); errB != nil {
-					recordErr(errB)
-					return
-				}
-			}
-		}(wCtx, wBody, wDog)
-	}
-
-	wg.Wait()
-	stopTicker()
-
-	if ctx.Err() != nil {
-		saveMetaSafe()
-		return 0, ctx.Err()
-	}
-	if firstErr != nil {
-		saveMetaSafe()
-		return 0, firstErr
-	}
-
-	for i, done := range meta.DoneBlocks {
-		if !done {
-			saveMetaSafe()
-			return 0, fmt.Errorf("incomplete stream download: block %d missing", i)
-		}
+	wsErr := runWorkStealingDownload(ctx, workStealingOptions{
+		Client:               opts.Client,
+		Endpoint:             endpoint,
+		File:                 file,
+		TotalBytes:           totalBytes,
+		InitialRanges:        initialRanges,
+		TurboMetaPath:        turboMetaPath,
+		MaxWorkers:           opts.MaxWorkers,
+		MaxRequestSpan:       maxSpan,
+		MinSegmentSize:       blockSize / 2,
+		MinStealSize:         opts.MinStealSize,
+		StallTimeout:         opts.StallTimeout,
+		PreemptGrace:         opts.PreemptGrace,
+		PreemptCheckInterval: opts.PreemptCheckInterval,
+		DisablePreempt:       opts.DisablePreempt,
+		HostPool:             opts.HostPool,
+		Limiters:             opts.Limiters,
+		ProbeBody:            probeBodyWrapped,
+		ProbeCtx:             probeCtx,
+		ProbeWatchdog:        probeWatchdog,
+		ProbeStart:           0,
+		ProbeEnd:             probeEnd,
+		OnProgress:           opts.OnProgress,
+		OnStats:              opts.OnStats,
+	})
+	if wsErr != nil {
+		return 0, wsErr
 	}
 
 	if err := file.Truncate(totalBytes); err != nil {
@@ -1675,7 +1485,7 @@ func fetchStreamTurbo(ctx context.Context, opts streamFetchOptions, endpoint *st
 	}
 
 	if opts.OnProgress != nil {
-		opts.OnProgress(totalBytes, totalBytes, 0, workerCount)
+		opts.OnProgress(totalBytes, totalBytes, 0, opts.MaxWorkers)
 	}
 	if err := finalizePartToDest(partPath, turboMetaPath, opts.DestPath); err != nil {
 		return 0, err
@@ -2296,6 +2106,8 @@ func runHybridYouTubeDownload(ctx context.Context, qm *QueueManager, task *Downl
 			DestPath:     s.DestPath,
 			ExpectedSize: s.ExpectedSize,
 			MaxWorkers:   maxWorkers,
+			HostPool:     qm.hostPool,
+			Limiters:     qm.TaskLimiters(task),
 			OnStatus: func(msg string) {
 				task.mu.Lock()
 				if task.Status == StatusDownloading {

@@ -51,8 +51,9 @@ type Config struct {
 	YtDlpPath         string `json:"ytDlpPath"`
 	FFmpegPath        string `json:"ffmpegPath"`
 	DefaultEngine     string `json:"defaultEngine"`       // "auto", "direct", "ytdlp"
-	SpeedMode         string `json:"speedMode,omitempty"` // "turbo" (default 6x) or "regular" (1x sequential watch-live)
-	VideoCodec        string `json:"videoCodec,omitempty"` // "h264" (default), "vp9", "av1", "auto"
+	SpeedMode           string `json:"speedMode,omitempty"`  // "turbo" (default 6x) or "regular" (1x sequential watch-live)
+	VideoCodec          string `json:"videoCodec,omitempty"` // "h264" (default), "vp9", "av1", "auto"
+	SpeedLimitKBps      int64  `json:"speedLimitKBps,omitempty"` // 0 = unlimited
 	ShowProgressPopup   *bool  `json:"showProgressPopup,omitempty"`
 	FirstRunPromptShown bool   `json:"firstRunPromptShown,omitempty"`
 	AutoCheckUpdates    *bool  `json:"autoCheckUpdates,omitempty"`
@@ -107,6 +108,9 @@ func LoadConfig(configPath string) (*Config, error) {
 		}
 		cfg.configPath = configPath
 		cfg.VideoCodec = normalizeVideoCodec(cfg.VideoCodec)
+		if cfg.SpeedLimitKBps < 0 {
+			cfg.SpeedLimitKBps = 0
+		}
 		if cfg.Port <= 0 {
 			cfg.Port = 17890
 		}
@@ -234,6 +238,27 @@ func (c *Config) SetAutoCheckUpdates(v bool) {
 	c.mu.Lock()
 	val := v
 	c.AutoCheckUpdates = &val
+	c.mu.Unlock()
+	_ = c.Save()
+}
+
+// GetSpeedLimitKBps returns the global download speed cap in KB/s (0 = unlimited).
+func (c *Config) GetSpeedLimitKBps() int64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.SpeedLimitKBps <= 0 {
+		return 0
+	}
+	return c.SpeedLimitKBps
+}
+
+// SetSpeedLimitKBps updates the global download speed cap in KB/s (0 = unlimited) and saves config.
+func (c *Config) SetSpeedLimitKBps(kbps int64) {
+	if kbps < 0 {
+		kbps = 0
+	}
+	c.mu.Lock()
+	c.SpeedLimitKBps = kbps
 	c.mu.Unlock()
 	_ = c.Save()
 }
