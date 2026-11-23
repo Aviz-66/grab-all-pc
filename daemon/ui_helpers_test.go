@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -388,5 +391,151 @@ func TestRangeSchedulerSnapshotSegments(t *testing.T) {
 	}
 	if !foundCompletedPrefix || !foundReleasedTail {
 		t.Errorf("expected completed prefix and unassigned tail after Release, got %+v", afterRelease)
+	}
+}
+
+func TestExtensionOpenFileAndLiveQueueAPI(t *testing.T) {
+	origOpenFile := openFileHandler
+	var openMu sync.Mutex
+	var openedPaths []string
+	openFileHandler = func(filePath string) error {
+		openMu.Lock()
+		openedPaths = append(openedPaths, filePath)
+		openMu.Unlock()
+		return nil
+	}
+	defer func() { openFileHandler = origOpenFile }()
+
+	tmpDir := t.TempDir()
+	dlDir := filepath.Join(tmpDir, "downloads")
+	if err := os.MkdirAll(dlDir, 0755); err != nil {
+		t.Fatalf("mkdir dlDir: %v", err)
+	}
+	sampleFile := filepath.Join(dlDir, "demo_video.mp4")
+	if err := os.WriteFile(sampleFile, []byte("mp4data"), 0644); err != nil {
+		t.Fatalf("write sampleFile: %v", err)
+	}
+
+	cfg, err := LoadConfig(filepath.Join(tmpDir, "config.json"))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.mu.Lock()
+	cfg.DownloadDir = dlDir
+	cfg.mu.Unlock()
+
+	qm := NewQueueManager(cfg, filepath.Join(tmpDir, "queue.json"), nil)
+	defer qm.Stop()
+
+	doneTask := &DownloadTask{
+		ID:              "ext-done-1",
+		URL:             "https://example.com/demo_video.mp4",
+		Title:           "Demo Video",
+		FileName:        "demo_video.mp4",
+		SavePath:        sampleFile,
+		Engine:          EngineDirect,
+		Status:          StatusCompleted,
+		Progress:        100,
+		DownloadedBytes: 7,
+		TotalBytes:      7,
+	}
+	qm.tasksMu.Lock()
+	qm.tasks = []*DownloadTask{doneTask}
+	qm.tasksMu.Unlock()
+
+	srv := NewServer(cfg, qm, NewSSEBroker())
+	handler := srv.setupRoutes()
+
+	// 1. POST /api/open-file with trusted extension origin opens exact file.
+	openReq := httptest.NewRequest("POST", "/api/open-file", strings.NewReader(`{"id":"ext-done-1"}`))
+	openReq.Header.Set("Origin", "chrome-extension://testext123")
+	openReq.Header.Set("Content-Type", "application/json")
+	openRec := httptest.NewRecorder()
+	handler.ServeHTTP(openRec, openReq)
+	if openRec.Code != http.StatusOK {
+		t.Fatalf("POST /api/open-file expected 200, got %d body=%s", openRec.Code, openRec.Body.String())
+	}
+	var openResp struct {
+		Success bool   `json:"success"`
+		Path    string `json:"path"`
+	}
+	if err := json.Unmarshal(openRec.Body.Bytes(), &openResp); err != nil {
+		t.Fatalf("decode open-file response: %v", err)
+	}
+	if !openResp.Success || openResp.Path != sampleFile {
+		t.Errorf("unexpected open-file response: %+v", openResp)
+	}
+	openMu.Lock()
+	if len(openedPaths) != 1 || openedPaths[0] != sampleFile {
+		openMu.Unlock()
+		t.Fatalf("expected openFileHandler called with %q, got %+v", sampleFile, openedPaths)
+	}
+	openMu.Unlock()
+
+	// 2. POST /api/open-file with unknown ID -> 404.
+	missingReq := httptest.NewRequest("POST", "/api/open-file", strings.NewReader(`{"id":"does-not-exist"}`))
+	missingReq.Header.Set("Origin", "chrome-extension://testext123")
+	missingRec := httptest.NewRecorder()
+	handler.ServeHTTP(missingRec, missingReq)
+	if missingRec.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for unknown task id, got %d (%s)", missingRec.Code, missingRec.Body.String())
+	}
+
+	// 3. Untrusted web origin without token -> 401 Unauthorized.
+	evilReq := httptest.NewRequest("POST", "/api/open-file", strings.NewReader(`{"id":"ext-done-1"}`))
+	evilReq.Header.Set("Origin", "https://evil.example")
+	evilRec := httptest.NewRecorder()
+	handler.ServeHTTP(evilRec, evilReq)
+	if evilRec.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 from untrusted origin, got %d", evilRec.Code)
+	}
+
+	// 4. GET /api/queue from extension origin returns task list.
+	qReq := httptest.NewRequest("GET", "/api/queue", nil)
+	qReq.Header.Set("Origin", "chrome-extension://testext123")
+	qRec := httptest.NewRecorder()
+	handler.ServeHTTP(qRec, qReq)
+	if qRec.Code != http.StatusOK {
+		t.Fatalf("GET /api/queue expected 200, got %d", qRec.Code)
+	}
+	var qList []*DownloadTask
+	if err := json.Unmarshal(qRec.Body.Bytes(), &qList); err != nil {
+		t.Fatalf("decode /api/queue: %v", err)
+	}
+	if len(qList) != 1 || qList[0].ID != "ext-done-1" {
+		t.Errorf("unexpected /api/queue result: %+v", qList)
+	}
+
+	// 5. GET /api/events?token=<token> streams queue_init frame and closes cleanly.
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	sseHTTPReq, err := http.NewRequest("GET", ts.URL+"/api/events?token="+cfg.GetToken(), nil)
+	if err != nil {
+		t.Fatalf("build sse request: %v", err)
+	}
+	sseHTTPReq.Header.Set("Origin", "chrome-extension://testext123")
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Do(sseHTTPReq)
+	if err != nil {
+		t.Fatalf("connect /api/events: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 on SSE endpoint, got %d", resp.StatusCode)
+	}
+	reader := bufio.NewReader(resp.Body)
+	line1, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read SSE event line: %v", err)
+	}
+	line2, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read SSE data line: %v", err)
+	}
+	if !strings.Contains(line1, "event: queue_init") || !strings.Contains(line2, "ext-done-1") {
+		t.Errorf("expected queue_init frame containing ext-done-1, got %q %q", line1, line2)
 	}
 }

@@ -7,12 +7,14 @@
     :root {
       --bg: #0f172a;
       --card: #1e293b;
+      --card-hover: #263449;
       --border: #334155;
       --text: #f8fafc;
       --muted: #94a3b8;
       --primary: #3b82f6;
       --primary-hover: #2563eb;
       --success: #10b981;
+      --warning: #f59e0b;
       --danger: #ef4444;
       --radius: 8px;
     }
@@ -25,20 +27,20 @@
     }
 
     body {
-      width: 360px;
+      width: 390px;
       background: var(--bg);
       color: var(--text);
-      padding: 14px;
+      padding: 12px 14px;
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      gap: 10px;
     }
 
     .header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding-bottom: 10px;
+      padding-bottom: 8px;
       border-bottom: 1px solid var(--border);
     }
 
@@ -48,8 +50,10 @@
       gap: 8px;
     }
 
-    .logo {
-      font-size: 20px;
+    .brand-icon {
+      width: 20px;
+      height: 20px;
+      border-radius: 4px;
     }
 
     .brand h2 {
@@ -76,6 +80,77 @@
     .dot.online { background-color: var(--success); box-shadow: 0 0 6px var(--success); }
     .dot.offline { background-color: var(--danger); box-shadow: 0 0 6px var(--danger); }
 
+    /* Alerts */
+    .alert {
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      display: none;
+    }
+    .alert-success { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.35); }
+    .alert-danger { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.35); }
+
+    /* Top Tabs */
+    .tabs {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 4px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 3px;
+    }
+
+    .tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      padding: 6px 8px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      transition: all 0.15s ease;
+    }
+
+    .tab-btn:hover {
+      color: var(--text);
+    }
+
+    .tab-btn.active {
+      background: var(--primary);
+      color: #fff;
+    }
+
+    .tab-badge {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 1px 5px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.22);
+      color: #fff;
+      line-height: 1.2;
+    }
+
+    .tab-badge.hidden {
+      display: none;
+    }
+
+    .tab-panel {
+      display: none;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .tab-panel.active {
+      display: flex;
+    }
+
+    /* Buttons */
     .btn {
       width: 100%;
       padding: 8px 12px;
@@ -105,7 +180,7 @@
       border: 1px solid var(--border);
     }
     .btn-secondary:hover {
-      background: #27354f;
+      background: var(--card-hover);
     }
 
     .btn-sm {
@@ -114,17 +189,120 @@
       width: auto;
     }
 
-    .section-title {
+    /* Active Mini Banner in Capture Tab */
+    .mini-banner {
+      background: rgba(59, 130, 246, 0.12);
+      border: 1px solid rgba(59, 130, 246, 0.38);
+      border-radius: var(--radius);
+      padding: 7px 10px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      transition: background 0.15s ease;
+    }
+    .mini-banner:hover {
+      background: rgba(59, 130, 246, 0.18);
+    }
+    .mini-banner.hidden {
+      display: none;
+    }
+    .mini-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 11px;
+    }
+    .mini-title {
+      flex: 1;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--text);
+      font-weight: 600;
+    }
+    .mini-cta {
+      flex-shrink: 0;
+      color: #93c5fd;
+      font-weight: 700;
+      background: transparent;
+      border: none;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .mini-progress-bg {
+      height: 4px;
+      background: rgba(15, 23, 42, 0.7);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .mini-progress-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--primary);
+      transition: width 0.2s ease;
+    }
+
+    /* Capture Form Controls */
+    .capture-select-row {
+      display: flex;
+      gap: 5px;
+    }
+    .capture-select {
+      min-width: 0;
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 6px;
+      border-radius: 6px;
       font-size: 12px;
+      outline: none;
+    }
+    .capture-select:focus {
+      border-color: var(--primary);
+    }
+
+    .playlist-toggle-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      padding: 2px;
+    }
+    .playlist-range-row {
+      display: none;
+      gap: 8px;
+      align-items: center;
+      font-size: 11px;
+      color: var(--muted);
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 8px;
+    }
+    .playlist-num-input {
+      background: #0b0f19;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 3px 6px;
+      border-radius: 4px;
+      font-size: 12px;
+      outline: none;
+    }
+
+    .section-title {
+      font-size: 11px;
       font-weight: 600;
       color: var(--muted);
       text-transform: uppercase;
       letter-spacing: 0.5px;
-      margin-top: 4px;
+      margin-top: 2px;
     }
 
     .media-list {
-      max-height: 160px;
+      max-height: 155px;
       overflow-y: auto;
       display: flex;
       flex-direction: column;
@@ -176,6 +354,254 @@
       border: 1px dashed var(--border);
     }
 
+    /* Downloads Tab */
+    .dl-toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 6px;
+    }
+    .dl-filters {
+      display: flex;
+      gap: 4px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 2px;
+    }
+    .dl-filter-btn {
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .dl-filter-btn span {
+      opacity: 0.85;
+      font-weight: 500;
+    }
+    .dl-filter-btn.active {
+      background: var(--primary);
+      color: #fff;
+    }
+
+    .dl-controls-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .dl-search-input {
+      flex: 1;
+      min-width: 0;
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 5px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      outline: none;
+    }
+    .dl-search-input:focus {
+      border-color: var(--primary);
+    }
+    .dl-limit-select {
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 5px 6px;
+      border-radius: 6px;
+      font-size: 11px;
+      outline: none;
+    }
+    .dl-limit-select:focus {
+      border-color: var(--primary);
+    }
+
+    .dl-summary {
+      font-size: 11px;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .dl-list {
+      max-height: 295px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+
+    .dl-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 8px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .dl-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .dl-title-wrap {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex: 1;
+      min-width: 0;
+    }
+    .dl-icon {
+      font-size: 13px;
+      flex-shrink: 0;
+    }
+    .dl-title {
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .dl-badge {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: capitalize;
+      padding: 2px 6px;
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+    .status-downloading { background: rgba(59, 130, 246, 0.2); color: #60a5fa; }
+    .status-completed { background: rgba(16, 185, 129, 0.2); color: #34d399; }
+    .status-paused { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
+    .status-queued { background: rgba(148, 163, 184, 0.2); color: #cbd5e1; }
+    .status-error { background: rgba(239, 68, 68, 0.2); color: #f87171; }
+    .status-canceled { background: rgba(100, 116, 139, 0.2); color: #94a3b8; }
+
+    .dl-progress-bg {
+      height: 5px;
+      background: #0b0f19;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .dl-progress-fill {
+      height: 100%;
+      width: 0%;
+      transition: width 0.2s ease;
+    }
+    .dl-progress-fill.status-downloading { background: var(--primary); }
+    .dl-progress-fill.status-completed { background: var(--success); }
+    .dl-progress-fill.status-paused { background: var(--warning); }
+    .dl-progress-fill.status-queued { background: var(--muted); }
+    .dl-progress-fill.status-error,
+    .dl-progress-fill.status-canceled { background: var(--danger); }
+
+    .dl-seg-bar {
+      position: relative;
+      height: 5px;
+      margin-top: 3px;
+      background: #0b0f19;
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .dl-seg-fill {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      background: var(--success);
+    }
+    .dl-seg-fill.active {
+      background: var(--primary);
+    }
+
+    .dl-stats {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 6px;
+      font-size: 10px;
+      color: var(--muted);
+    }
+
+    .dl-error {
+      font-size: 10px;
+      color: #fca5a5;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .dl-actions {
+      display: flex;
+      gap: 5px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .dl-btn {
+      padding: 3px 8px;
+      border-radius: 5px;
+      border: 1px solid var(--border);
+      background: #0f172a;
+      color: var(--text);
+      font-size: 10px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .dl-btn:hover:not(:disabled) {
+      background: var(--card-hover);
+    }
+    .dl-btn:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
+    .dl-btn-primary {
+      background: var(--primary);
+      border-color: var(--primary);
+      color: #fff;
+    }
+    .dl-btn-primary:hover:not(:disabled) {
+      background: var(--primary-hover);
+    }
+    .dl-btn-danger {
+      color: #fca5a5;
+      border-color: rgba(239, 68, 68, 0.35);
+    }
+
+    .dl-empty {
+      font-size: 12px;
+      color: var(--muted);
+      text-align: center;
+      padding: 18px 12px;
+      background: var(--card);
+      border-radius: 7px;
+      border: 1px dashed var(--border);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+    .dl-retry-btn {
+      width: auto;
+      padding: 5px 10px;
+      font-size: 11px;
+    }
+    .dl-more-hint {
+      font-size: 11px;
+      color: var(--muted);
+      text-align: center;
+      padding: 4px 0;
+    }
+
+    /* Settings Tab */
     .toggles-group {
       background: var(--card);
       border: 1px solid var(--border);
@@ -183,7 +609,7 @@
       padding: 10px;
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 10px;
     }
 
     .toggle-row {
@@ -191,22 +617,32 @@
       justify-content: space-between;
       align-items: center;
       font-size: 12px;
+      gap: 8px;
     }
 
-    .token-input-group {
+    .settings-field {
       display: flex;
-      gap: 6px;
+      flex-direction: column;
+      gap: 4px;
     }
-
-    .token-input-group input {
-      flex: 1;
+    .settings-label {
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .settings-input,
+    .settings-select {
+      width: 100%;
       background: #0b0f19;
       border: 1px solid var(--border);
       color: var(--text);
       padding: 6px 8px;
-      border-radius: 4px;
+      border-radius: 5px;
       font-size: 12px;
       outline: none;
+    }
+    .settings-input:focus,
+    .settings-select:focus {
+      border-color: var(--primary);
     }
 
     .footer {
@@ -215,21 +651,12 @@
       padding-top: 6px;
       border-top: 1px solid var(--border);
     }
-
-    .alert {
-      padding: 6px 10px;
-      border-radius: 6px;
-      font-size: 11px;
-      display: none;
-    }
-    .alert-success { background: rgba(16, 185, 129, 0.2); color: #34d399; }
-    .alert-danger { background: rgba(239, 68, 68, 0.2); color: #f87171; }
   </style>
 </head>
 <body>
   <div class="header">
     <div class="brand">
-      <img src="icons/icon48.png" style="width:20px; height:20px; border-radius:4px; vertical-align:middle; margin-right:6px;" alt="GrabAll">
+      <img src="icons/icon48.png" class="brand-icon" alt="GrabAll">
       <h2>GrabAll</h2>
     </div>
     <div class="status-indicator">
@@ -240,75 +667,146 @@
 
   <div id="status-alert" class="alert"></div>
 
-  <!-- Primary Page Action -->
-  <div style="display:flex; gap:5px;">
-    <select id="select-quality" style="flex:1.2; min-width:0; background:var(--card); border:1px solid var(--border); color:var(--text); padding:6px 6px; border-radius:6px; font-size:12px; outline:none;">
-      <optgroup label="Video">
-        <option value="best" selected>🎬 Best Quality</option>
-        <option value="2160">📺 4K (2160p)</option>
-        <option value="1080">📺 1080p</option>
-        <option value="720">📺 720p</option>
-        <option value="480">📺 480p</option>
-        <option value="360">📺 360p</option>
-      </optgroup>
-      <optgroup label="Audio Only">
-        <option value="audio-mp3">🎵 Audio Only (MP3)</option>
-        <option value="audio-m4a">🎵 Audio Only (M4A)</option>
-        <option value="audio-opus">🎵 Audio Only (Opus)</option>
-        <option value="audio-best">🎵 Best Audio</option>
-      </optgroup>
-    </select>
-    <select id="select-video-codec" title="Preferred YouTube video encode format" style="flex:0.85; min-width:0; background:var(--card); border:1px solid var(--border); color:var(--text); padding:6px 5px; border-radius:6px; font-size:12px; outline:none;">
-      <option value="h264" selected>🎞️ H.264</option>
-      <option value="vp9">🎞️ VP9</option>
-      <option value="av1">🎞️ AV1</option>
-      <option value="auto">🎞️ Auto</option>
-    </select>
-    <select id="select-speed-mode" title="Turbo uses 6x parallel connections; Watch Live uses 1 sequential stream so you can play movies while downloading" style="flex:0.95; min-width:0; background:var(--card); border:1px solid var(--border); color:var(--text); padding:6px 5px; border-radius:6px; font-size:12px; outline:none;">
-      <option value="turbo" selected>⚡ Turbo</option>
-      <option value="regular">🎬 Live</option>
-    </select>
+  <!-- Navigation Tabs -->
+  <div class="tabs" role="tablist">
+    <button type="button" class="tab-btn active" data-tab="capture" role="tab" aria-selected="true">🎬 Capture</button>
+    <button type="button" class="tab-btn" data-tab="downloads" role="tab" aria-selected="false">
+      📥 Downloads <span id="tab-active-badge" class="tab-badge hidden">0</span>
+    </button>
+    <button type="button" class="tab-btn" data-tab="settings" role="tab" aria-selected="false">⚙️ Settings</button>
   </div>
 
-  <div class="toggle-row" style="font-size:12px; padding:2px 2px;">
-    <label for="check-playlist" style="cursor:pointer;">📑 Download Playlist (if playlist URL)</label>
-    <input type="checkbox" id="check-playlist">
-  </div>
-
-  <div id="playlist-range-row" style="display:none; gap:8px; align-items:center; font-size:11px; color:var(--muted); background:var(--card); border:1px solid var(--border); border-radius:6px; padding:6px 8px;">
-    <span>Start #:</span>
-    <input type="number" id="input-pl-start" min="1" value="1" style="width:52px; background:#0b0f19; border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:4px; font-size:12px;">
-    <span style="margin-left:auto;">Max Videos (0=All):</span>
-    <input type="number" id="input-pl-count" min="0" value="10" style="width:58px; background:#0b0f19; border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:4px; font-size:12px;">
-  </div>
-
-  <button id="btn-download-page" class="btn btn-primary">
-    🎬 Download Current Page Video
-  </button>
-
-  <!-- Detected Media -->
-  <div class="section-title">Detected Media on Tab</div>
-  <div id="media-container" class="media-list">
-    <div class="empty-sniff">No video streams detected yet.</div>
-  </div>
-
-  <!-- Toggles & Token -->
-  <div class="toggles-group">
-    <div class="toggle-row">
-      <label for="check-intercept">Intercept Browser Downloads</label>
-      <input type="checkbox" id="check-intercept">
+  <!-- Panel 1: Page Capture & Sniffed Streams -->
+  <section id="panel-capture" class="tab-panel active">
+    <div id="active-mini-banner" class="mini-banner hidden" title="Click to open live downloads">
+      <div class="mini-top">
+        <span id="mini-banner-text" class="mini-title">Downloading...</span>
+        <button type="button" id="btn-mini-view" class="mini-cta">View &rarr;</button>
+      </div>
+      <div class="mini-progress-bg">
+        <div id="mini-banner-progress-fill" class="mini-progress-fill"></div>
+      </div>
     </div>
 
-    <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">Auth Token</div>
-    <div class="token-input-group">
-      <input type="password" id="input-token" placeholder="Paste Daemon Auth Token">
-      <button id="btn-save-token" class="btn btn-sm btn-secondary">Save</button>
+    <div class="capture-select-row">
+      <select id="select-quality" class="capture-select" style="flex:1.2;">
+        <optgroup label="Video">
+          <option value="best" selected>🎬 Best Quality</option>
+          <option value="2160">📺 4K (2160p)</option>
+          <option value="1080">📺 1080p</option>
+          <option value="720">📺 720p</option>
+          <option value="480">📺 480p</option>
+          <option value="360">📺 360p</option>
+        </optgroup>
+        <optgroup label="Audio Only">
+          <option value="audio-mp3">🎵 Audio Only (MP3)</option>
+          <option value="audio-m4a">🎵 Audio Only (M4A)</option>
+          <option value="audio-opus">🎵 Audio Only (Opus)</option>
+          <option value="audio-best">🎵 Best Audio</option>
+        </optgroup>
+      </select>
+      <select id="select-video-codec" class="capture-select" title="Preferred YouTube video encode format" style="flex:0.85;">
+        <option value="h264" selected>🎞️ H.264</option>
+        <option value="vp9">🎞️ VP9</option>
+        <option value="av1">🎞️ AV1</option>
+        <option value="auto">🎞️ Auto</option>
+      </select>
+      <select id="select-speed-mode" class="capture-select" title="Turbo uses 6x parallel connections; Watch Live uses 1 sequential stream so you can play movies while downloading" style="flex:0.95;">
+        <option value="turbo" selected>⚡ Turbo</option>
+        <option value="regular">🎬 Live</option>
+      </select>
     </div>
-  </div>
+
+    <div class="playlist-toggle-row">
+      <label for="check-playlist" style="cursor:pointer;">📑 Download Playlist (if playlist URL)</label>
+      <input type="checkbox" id="check-playlist">
+    </div>
+
+    <div id="playlist-range-row" class="playlist-range-row">
+      <span>Start #:</span>
+      <input type="number" id="input-pl-start" class="playlist-num-input" min="1" value="1" style="width:52px;">
+      <span style="margin-left:auto;">Max Videos (0=All):</span>
+      <input type="number" id="input-pl-count" class="playlist-num-input" min="0" value="10" style="width:58px;">
+    </div>
+
+    <button type="button" id="btn-download-page" class="btn btn-primary">
+      🎬 Download Current Page Video
+    </button>
+
+    <div class="section-title">Detected Media on Tab</div>
+    <div id="media-container" class="media-list">
+      <div class="empty-sniff">No video streams detected yet.</div>
+    </div>
+  </section>
+
+  <!-- Panel 2: Live Active & Recent Downloads -->
+  <section id="panel-downloads" class="tab-panel">
+    <div class="dl-toolbar">
+      <div class="dl-filters">
+        <button type="button" class="dl-filter-btn active" data-dl-filter="all">All <span id="dl-count-all">0</span></button>
+        <button type="button" class="dl-filter-btn" data-dl-filter="active">Active <span id="dl-count-active">0</span></button>
+        <button type="button" class="dl-filter-btn" data-dl-filter="completed">Done <span id="dl-count-done">0</span></button>
+      </div>
+      <button type="button" id="btn-popup-clear-done" class="btn btn-sm btn-secondary">🧹 Clear Done</button>
+    </div>
+
+    <div class="dl-controls-row">
+      <input type="search" id="dl-search-input" class="dl-search-input" placeholder="Filter downloads..." aria-label="Filter downloads">
+      <select id="select-global-limit" class="dl-limit-select" title="Global speed limit across all active downloads">
+        <option value="0">Cap: Unlimited</option>
+        <option value="512">Cap: 512 KB/s</option>
+        <option value="1024">Cap: 1 MB/s</option>
+        <option value="2048">Cap: 2 MB/s</option>
+        <option value="5120">Cap: 5 MB/s</option>
+        <option value="10240">Cap: 10 MB/s</option>
+      </select>
+    </div>
+
+    <div class="dl-summary">
+      <span id="dl-summary-text">Connecting to GrabAll...</span>
+    </div>
+
+    <div id="downloads-list" class="dl-list">
+      <div class="dl-empty">Waiting for GrabAll daemon...</div>
+    </div>
+  </section>
+
+  <!-- Panel 3: Settings & Pairing -->
+  <section id="panel-settings" class="tab-panel">
+    <div class="toggles-group">
+      <div class="toggle-row">
+        <label for="check-intercept" style="cursor:pointer;">Intercept Browser Downloads</label>
+        <input type="checkbox" id="check-intercept">
+      </div>
+
+      <div class="settings-field">
+        <label class="settings-label" for="select-when-done">When All Downloads Finish</label>
+        <select id="select-when-done" class="settings-select">
+          <option value="none">Do Nothing</option>
+          <option value="open_file">Open Completed File</option>
+          <option value="open_folder">Open Downloads Folder</option>
+          <option value="sleep">Put PC to Sleep</option>
+          <option value="shutdown">Shut Down PC (30s countdown)</option>
+        </select>
+      </div>
+
+      <div class="settings-field">
+        <label class="settings-label" for="input-daemon-url">Daemon URL</label>
+        <input type="text" id="input-daemon-url" class="settings-input" value="http://127.0.0.1:17890" placeholder="http://127.0.0.1:17890">
+      </div>
+
+      <div class="settings-field">
+        <label class="settings-label" for="input-token">Auth Token</label>
+        <input type="password" id="input-token" class="settings-input" placeholder="Paste Daemon Auth Token">
+      </div>
+
+      <button type="button" id="btn-save-token" class="btn btn-primary">Save &amp; Reconnect</button>
+    </div>
+  </section>
 
   <!-- Footer -->
   <div class="footer">
-    <button id="btn-open-dashboard" class="btn btn-secondary">
+    <button type="button" id="btn-open-dashboard" class="btn btn-secondary">
       ⚡ Open GrabAll Window
     </button>
   </div>

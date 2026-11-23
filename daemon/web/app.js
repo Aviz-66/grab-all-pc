@@ -400,6 +400,7 @@ function getTaskButtons(task) {
   } else if (task.status === 'paused' || task.status === 'error' || task.status === 'canceled') {
     buttons += `<button class="btn btn-sm btn-primary btn-action-resume" title="Resume">▶️ Resume</button>`;
   } else if (task.status === 'completed') {
+    buttons += `<button class="btn btn-sm btn-primary btn-action-open-file" title="Open Downloaded File">▶️ Open</button>`;
     buttons += `<button class="btn btn-sm btn-secondary btn-action-folder" title="Show in Folder">📂 Folder</button>`;
   }
 
@@ -442,6 +443,11 @@ function attachTaskActionEvents(card, task) {
   const btnCancel = card.querySelector('.btn-action-cancel');
   if (btnCancel) {
     btnCancel.onclick = () => doAction('/api/cancel', { id: task.id });
+  }
+
+  const btnOpenFile = card.querySelector('.btn-action-open-file');
+  if (btnOpenFile) {
+    btnOpenFile.onclick = () => doAction('/api/open-file', { id: task.id });
   }
 
   const btnFolder = card.querySelector('.btn-action-folder');

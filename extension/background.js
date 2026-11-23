@@ -364,6 +364,52 @@ async function sendToDaemon({
   return await response.json();
 }
 
+// Reusable authenticated RPC helper for popup / background daemon requests.
+async function daemonRequest(path, { method = 'GET', body = null } = {}) {
+  const cfg = await chrome.storage.local.get(DEFAULT_CONFIG);
+  const daemonUrl = (cfg.daemonUrl || DEFAULT_CONFIG.daemonUrl).replace(/\/+$/, '');
+  let token = cfg.authToken || '';
+  if (!token) {
+    token = await autoPairToken(daemonUrl);
+  }
+
+  const buildHeaders = (tok) => {
+    const h = {
+      'X-Daemon-Token': tok || '',
+      'X-GrabAll-Ext': chrome.runtime.id || 'graball-mv3',
+    };
+    if (body !== null) {
+      h['Content-Type'] = 'application/json';
+    }
+    return h;
+  };
+
+  const payloadStr = body !== null ? JSON.stringify(body) : undefined;
+  let res = await fetch(`${daemonUrl}${path}`, {
+    method,
+    headers: buildHeaders(token),
+    body: payloadStr,
+  });
+
+  if (res.status === 401) {
+    const refreshed = await autoPairToken(daemonUrl);
+    if (refreshed) {
+      token = refreshed;
+      res = await fetch(`${daemonUrl}${path}`, {
+        method,
+        headers: buildHeaders(token),
+        body: payloadStr,
+      });
+    }
+  }
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error || `HTTP ${res.status}`);
+  }
+  return { data, token, daemonUrl };
+}
+
 function showBadgeSuccess(tabId) {
   if (!tabId) return;
   chrome.action.setBadgeText({ text: '✓', tabId });
@@ -474,8 +520,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'CHECK_DAEMON') {
     chrome.storage.local.get(DEFAULT_CONFIG).then(async (config) => {
+      const daemonUrl = (config.daemonUrl || 'http://127.0.0.1:17890').replace(/\/+$/, '');
       try {
-        const daemonUrl = config.daemonUrl || 'http://127.0.0.1:17890';
         const res = await fetch(`${daemonUrl}/api/ping`);
         if (res.ok) {
           const data = await res.json();
@@ -485,47 +531,90 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           } else {
             syncYouTubeCookies(daemonUrl, token);
           }
-          sendResponse({ online: true, info: data, token });
+          sendResponse({ online: true, info: data, token, daemonUrl });
         } else {
-          sendResponse({ online: false });
+          sendResponse({ online: false, daemonUrl });
         }
       } catch (e) {
-        sendResponse({ online: false });
+        sendResponse({ online: false, daemonUrl });
       }
     });
     return true;
   }
 
+  if (message.type === 'GET_QUEUE') {
+    daemonRequest('/api/queue')
+      .then((res) =>
+        sendResponse({
+          success: true,
+          tasks: Array.isArray(res.data) ? res.data : [],
+          token: res.token,
+          daemonUrl: res.daemonUrl,
+        })
+      )
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === 'GET_DAEMON_CONFIG') {
+    daemonRequest('/api/config')
+      .then((res) => sendResponse({ success: true, config: res.data }))
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === 'TASK_ACTION') {
+    const id = message.id || '';
+    const actionMap = {
+      pause: { path: '/api/pause', body: { id } },
+      resume: { path: '/api/resume', body: { id } },
+      cancel: { path: '/api/cancel', body: { id } },
+      delete: { path: '/api/delete', body: { id, deleteFile: Boolean(message.deleteFile) } },
+      open_file: { path: '/api/open-file', body: { id } },
+      open_folder: { path: '/api/open-folder', body: { id } },
+      clear_completed: { path: '/api/clear-completed', body: {} },
+    };
+    const spec = actionMap[message.action];
+    if (!spec) {
+      sendResponse({ success: false, error: `Unknown action: ${message.action}` });
+      return true;
+    }
+    daemonRequest(spec.path, { method: 'POST', body: spec.body })
+      .then((res) => sendResponse({ success: true, data: res.data }))
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === 'UPDATE_DAEMON_CONFIG') {
+    daemonRequest('/api/config', { method: 'POST', body: message.payload || {} })
+      .then((res) => sendResponse({ success: true, data: res.data }))
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === 'SET_WHEN_DONE') {
+    daemonRequest('/api/when-done', {
+      method: 'POST',
+      body: { action: message.action || 'none' },
+    })
+      .then((res) => sendResponse({ success: true, data: res.data }))
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
   if (message.type === 'OPEN_GRABALL_APP') {
     chrome.storage.local.get(DEFAULT_CONFIG).then(async (config) => {
-      const daemonUrl = config.daemonUrl || 'http://127.0.0.1:17890';
-      let token = config.authToken || '';
-      if (!token) {
-        token = await autoPairToken(daemonUrl);
-      }
+      const daemonUrl = (config.daemonUrl || 'http://127.0.0.1:17890').replace(/\/+$/, '');
       try {
-        let res = await fetch(`${daemonUrl}/api/show-window`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Daemon-Token': token },
-          body: '{}',
+        const res = await daemonRequest('/api/show-window', { method: 'POST', body: {} });
+        sendResponse({
+          success: true,
+          nativeGui: Boolean(res.data?.nativeGui),
+          daemonUrl: res.daemonUrl || daemonUrl,
         });
-        if (res.status === 401) {
-          token = await autoPairToken(daemonUrl);
-          res = await fetch(`${daemonUrl}/api/show-window`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Daemon-Token': token },
-            body: '{}',
-          });
-        }
-        if (res.ok) {
-          const data = await res.json();
-          sendResponse({ success: true, nativeGui: Boolean(data.nativeGui), daemonUrl });
-          return;
-        }
       } catch (e) {
-        // Fallback to web tab
+        sendResponse({ success: false, nativeGui: false, daemonUrl });
       }
-      sendResponse({ success: false, nativeGui: false, daemonUrl });
     });
     return true;
   }

@@ -17,6 +17,8 @@ import (
 //go:embed web/*
 var embeddedWebFS embed.FS
 
+var openFileHandler = openFileDefault
+
 type SSEBroker struct {
 	clients map[chan []byte]bool
 	mu      sync.Mutex
@@ -121,6 +123,7 @@ func (s *Server) setupRoutes() http.Handler {
 	mux.HandleFunc("/api/install-ffmpeg", s.handleInstallFFmpeg)
 	mux.HandleFunc("/api/install-all", s.handleInstallAll)
 	mux.HandleFunc("/api/open-folder", s.handleOpenFolder)
+	mux.HandleFunc("/api/open-file", s.handleOpenFile)
 	mux.HandleFunc("/api/update/check", s.handleUpdateCheck)
 	mux.HandleFunc("/api/update/apply", s.handleUpdateApply)
 
@@ -502,6 +505,52 @@ func (s *Server) handleOpenFolder(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+}
+
+func (s *Server) handleOpenFile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	w.Header().Set("Content-Type", "application/json")
+	if req.ID == "" || s.queue.GetByID(req.ID) == nil {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Task not found",
+		})
+		return
+	}
+
+	filePath, _ := resolveTaskRevealPaths(s.config, s.queue, req.ID)
+	if filePath == "" {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Downloaded file not found on disk",
+		})
+		return
+	}
+
+	if err := openFileHandler(filePath); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"path":    filePath,
+	})
 }
 
 func (s *Server) handlePause(w http.ResponseWriter, r *http.Request) {
