@@ -686,20 +686,68 @@ func runYtDlpDownload(ctx context.Context, qm *QueueManager, task *DownloadTask)
 		}
 	}
 
-	err = executeYtDlpAttempt(ctx, qm, task, binPath, downloadDir, cookieFile)
-	if err != nil && ctx.Err() == nil && cookieFile != "" && isYouTubeURL(task.URL) {
+	const (
+		maxTotalAutoResumes  = 12
+		maxNoProgressRetries = 3
+	)
+	currentCookieFile := cookieFile
+	totalAutoResumes := 0
+	noProgressRetries := 0
+	retriedWithoutCookies := false
+
+	for {
+		task.mu.Lock()
+		bytesBefore := task.DownloadedBytes
+		task.mu.Unlock()
+
+		err = executeYtDlpAttempt(ctx, qm, task, binPath, downloadDir, currentCookieFile)
+		if err == nil || ctx.Err() != nil {
+			return err
+		}
+
 		errMsg := err.Error()
 		// Retry without cookies ONLY if YouTube served SABR-only / empty formats to web cookies
 		// (do NOT retry without cookies on "not a bot", which would just double startup wait time)
-		if strings.Contains(errMsg, "Requested format is not available") ||
-			strings.Contains(errMsg, "Only images are available") {
-			if retryErr := executeYtDlpAttempt(ctx, qm, task, binPath, downloadDir, ""); retryErr == nil {
-				return nil
+		if !retriedWithoutCookies && currentCookieFile != "" && isYouTubeURL(task.URL) &&
+			(strings.Contains(errMsg, "Requested format is not available") ||
+				strings.Contains(errMsg, "Only images are available")) {
+			retriedWithoutCookies = true
+			currentCookieFile = ""
+			continue
+		}
+
+		if isRetryableYtDlpNetworkError(errMsg) {
+			task.mu.Lock()
+			bytesAfter := task.DownloadedBytes
+			task.mu.Unlock()
+
+			if bytesAfter > bytesBefore {
+				noProgressRetries = 0
+			} else {
+				noProgressRetries++
+			}
+
+			if totalAutoResumes < maxTotalAutoResumes && noProgressRetries <= maxNoProgressRetries {
+				totalAutoResumes++
+				task.mu.Lock()
+				if task.Status == StatusDownloading {
+					task.Speed = fmt.Sprintf("Network drop — refreshing URL & resuming (%d)...", totalAutoResumes)
+					task.ETA = ""
+				}
+				task.mu.Unlock()
+				qm.BroadcastUpdate()
+
+				select {
+				case <-time.After(3 * time.Second):
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				continue
 			}
 		}
-	}
 
-	return err
+		return err
+	}
 }
 
 func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTask, binPath, downloadDir, cookieFile string) error {
@@ -714,31 +762,15 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 		concFrags = "6"
 	}
 
-	args := []string{
-		"--force-ipv4",
-		"--socket-timeout", "15",
-		"--cache-dir", cacheDir,
-		"--newline",
-		"--progress",
-		"--progress-delta", "0.15",
-		"--no-warnings",
-		"--no-playlist",
-		// Fields: pct|speed|eta|downloaded|total(or estimate)|fragIdx|fragCnt|exactStreamSize|formatID|filename
-		// exactStreamSize comes from YouTube's real contentLength (info.filesize), so the shown size never
-		// "guesses" from fragment averages in Turbo (dashy) mode. Filename is kept LAST (may contain '|').
-		"--progress-template", "download:DOWNLOAD_INFO:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes,progress.total_bytes_estimate)s|%(progress.fragment_index)s|%(progress.fragment_count)s|%(info.filesize,info.filesize_approx)s|%(info.format_id)s|%(progress.filename)s",
-		"--progress-template", "postprocess:POSTPROCESS_INFO:%(progress.status)s|%(progress.postprocessor)s",
-		"--paths", fmt.Sprintf("home:%s", downloadDir),
-		"--concurrent-fragments", concFrags,
-		"--buffer-size", "64K",
-		"--retries", "3",
-		"--fragment-retries", "3",
-	}
+	args := buildYtDlpBaseArgs(cacheDir, downloadDir, concFrags)
 
 	ytDashySort := ""
-	if isTurbo && isYouTubeURL(task.URL) {
-		args = append(args, "--extractor-args", "youtube:formats=dashy,duplicate")
-		ytDashySort = ",proto:http_dash_segments"
+	if isYouTubeURL(task.URL) {
+		allowDashy := prepareYtDlpResumeState(downloadDir, task, isTurbo)
+		if isTurbo && allowDashy {
+			args = append(args, "--extractor-args", "youtube:formats=dashy,duplicate")
+			ytDashySort = ",proto:http_dash_segments"
+		}
 	}
 
 	if pluginsDir := ensureYtDlpSpeedPlugin(); pluginsDir != "" {
@@ -855,7 +887,7 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 	sizeFile := filepath.Join(os.TempDir(), fmt.Sprintf("graball_size_%s.txt", task.ID))
 	_ = os.Remove(sizeFile)
 	defer os.Remove(sizeFile)
-	args = append(args, "--print-to-file", "before_dl:%(filesize,filesize_approx)s", sizeFile)
+	args = append(args, "--print-to-file", "before_dl:%(filesize)s|%(filesize_approx)s|%(requested_formats.0.filesize)s|%(requested_formats.1.filesize)s", sizeFile)
 
 	args = append(args, task.URL)
 
@@ -926,12 +958,16 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 
 	scanner := bufio.NewScanner(stdout)
 	var lastUpdate time.Time
+	skippedFragments := 0
 
 	for scanner.Scan() {
 		if ctx.Err() != nil {
 			break
 		}
 		line := cleanOutput(scanner.Text())
+		if strings.Contains(line, "Skipping fragment") {
+			skippedFragments++
+		}
 
 		if strings.HasPrefix(line, "DOWNLOAD_INFO:") {
 			payload := strings.TrimPrefix(line, "DOWNLOAD_INFO:")
@@ -1182,12 +1218,24 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 		task.FileName = origFileName
 		task.mu.Unlock()
 		stderrMu.Lock()
-		detail := strings.Join(stderrLines, "; ")
+		detail := formatYtDlpStderrError(stderrLines)
 		stderrMu.Unlock()
 		if detail != "" {
 			return fmt.Errorf("yt-dlp failed: %s (%w)", detail, cmdErr)
 		}
 		return fmt.Errorf("yt-dlp failed: %w", cmdErr)
+	}
+
+	stderrMu.Lock()
+	for _, sl := range stderrLines {
+		if strings.Contains(sl, "Skipping fragment") {
+			skippedFragments++
+		}
+	}
+	stderrMu.Unlock()
+
+	if !sizes.combinedKnown() {
+		sizes.loadCombinedFromFile(sizeFile)
 	}
 
 	// Lock in the true final size from disk (after merge / audio conversion)
@@ -1201,6 +1249,9 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 
 	if resolved := resolveExistingMediaFile(downloadDir, cand, task.FileName, task.Title); resolved != "" {
 		if fi, statErr := os.Stat(resolved); statErr == nil && !fi.IsDir() && fi.Size() > 0 {
+			if integrityErr := checkMergedOutputIntegrity(strings.HasPrefix(quality, "audio"), sizes.combinedExact, fi.Size(), skippedFragments); integrityErr != nil {
+				return integrityErr
+			}
 			task.mu.Lock()
 			task.SavePath = resolved
 			task.FileName = filepath.Base(resolved)
@@ -1225,7 +1276,8 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 // In Turbo (dashy fragment) mode yt-dlp only reports a fluctuating total_bytes_estimate,
 // so we prefer YouTube's exact per-format filesize and the exact combined video+audio size.
 type ytSizeTracker struct {
-	combined       int64 // exact video+audio total from --print-to-file (0 = unknown)
+	combined       int64 // exact or approximate video+audio total from --print-to-file (0 = unknown)
+	combinedExact  int64 // exact sum of requested stream filesizes from --print-to-file (0 = unknown)
 	combinedTries  int
 	completedBytes int64 // bytes of streams already finished (e.g. video before audio)
 	curKey         string
@@ -1245,7 +1297,40 @@ func (s *ytSizeTracker) loadCombinedFromFile(path string) {
 		return
 	}
 	for _, line := range strings.Split(string(data), "\n") {
-		if v := parseOptionalInt64(strings.TrimSpace(line)); v > 0 {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.Contains(line, "|") {
+			parts := strings.Split(line, "|")
+			var exactSingle, approx, rf0, rf1 int64
+			if len(parts) > 0 {
+				exactSingle = parseOptionalInt64(parts[0])
+			}
+			if len(parts) > 1 {
+				approx = parseOptionalInt64(parts[1])
+			}
+			if len(parts) > 2 {
+				rf0 = parseOptionalInt64(parts[2])
+			}
+			if len(parts) > 3 {
+				rf1 = parseOptionalInt64(parts[3])
+			}
+			if rf0 > 0 && rf1 > 0 {
+				s.combinedExact = rf0 + rf1
+				s.combined = rf0 + rf1
+				return
+			}
+			if exactSingle > 0 {
+				s.combinedExact = exactSingle
+				s.combined = exactSingle
+				return
+			}
+			if approx > 0 {
+				s.combined = approx
+				return
+			}
+		} else if v := parseOptionalInt64(line); v > 0 {
 			s.combined = v
 			return
 		}
@@ -1595,4 +1680,314 @@ func buildYtDlpSortOrder(quality, videoCodec, ytDashySort string) string {
 	}
 
 	return strings.Join(parts, ",")
+}
+
+const ytDashyChunkSize int64 = 10 << 20 // 10 MiB segments used by yt-dlp youtube:formats=dashy
+
+func buildYtDlpBaseArgs(cacheDir, downloadDir, concFrags string) []string {
+	return []string{
+		"--force-ipv4",
+		"--socket-timeout", "30",
+		"--cache-dir", cacheDir,
+		"--newline",
+		"--progress",
+		"--progress-delta", "0.15",
+		"--no-warnings",
+		"--no-playlist",
+		// Fields: pct|speed|eta|downloaded|total(or estimate)|fragIdx|fragCnt|exactStreamSize|formatID|filename
+		// exactStreamSize comes from YouTube's real contentLength (info.filesize), so the shown size never
+		// "guesses" from fragment averages in Turbo (dashy) mode. Filename is kept LAST (may contain '|').
+		"--progress-template", "download:DOWNLOAD_INFO:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress.downloaded_bytes)s|%(progress.total_bytes,progress.total_bytes_estimate)s|%(progress.fragment_index)s|%(progress.fragment_count)s|%(info.filesize,info.filesize_approx)s|%(info.format_id)s|%(progress.filename)s",
+		"--progress-template", "postprocess:POSTPROCESS_INFO:%(progress.status)s|%(progress.postprocessor)s",
+		"--paths", fmt.Sprintf("home:%s", downloadDir),
+		"--concurrent-fragments", concFrags,
+		"--buffer-size", "64K",
+		"--retries", "10",
+		"--fragment-retries", "10",
+		"--file-access-retries", "5",
+		"--retry-sleep", "http:exp=1:16",
+		"--retry-sleep", "fragment:exp=1:16",
+		"--abort-on-unavailable-fragments",
+	}
+}
+
+func isRetryableYtDlpNetworkError(errMsg string) bool {
+	lower := strings.ToLower(errMsg)
+	fatalMarkers := []string{
+		"sign in to confirm",
+		"not a bot",
+		"video unavailable",
+		"private video",
+		"postprocessing",
+		"truncated",
+		"no space left",
+		"requested format is not available",
+		"only images are available",
+		"unsupported url",
+		"copyright",
+	}
+	for _, marker := range fatalMarkers {
+		if strings.Contains(lower, marker) {
+			return false
+		}
+	}
+
+	retryableMarkers := []string{
+		"httpconnectionpool",
+		"httpsconnectionpool",
+		"read timed out",
+		"timed out",
+		"connection reset",
+		"connection aborted",
+		"remotedisconnected",
+		"incomplete read",
+		"incompleteread",
+		"unable to download video data",
+		"http error 403",
+		"http error 500",
+		"http error 502",
+		"http error 503",
+		"http error 504",
+		"eof occurred in violation of protocol",
+		"ssl:",
+		"fragment ",
+		"giving up after",
+	}
+	for _, marker := range retryableMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func extractYouTubeVideoID(rawURL string) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return ""
+	}
+	host := strings.ToLower(u.Host)
+	trimmedPath := strings.Trim(u.Path, "/")
+	if strings.Contains(host, "youtu.be") {
+		if idx := strings.IndexByte(trimmedPath, '/'); idx >= 0 {
+			trimmedPath = trimmedPath[:idx]
+		}
+		return strings.TrimSpace(trimmedPath)
+	}
+	if strings.Contains(host, "youtube.com") || strings.Contains(host, "youtube-nocookie.com") {
+		if u.Path == "/watch" {
+			return strings.TrimSpace(u.Query().Get("v"))
+		}
+		parts := strings.Split(trimmedPath, "/")
+		if len(parts) >= 2 {
+			switch parts[0] {
+			case "shorts", "live", "embed":
+				return strings.TrimSpace(parts[1])
+			}
+		}
+	}
+	return ""
+}
+
+// reconcileDashyYtdlIndex aligns yt-dlp's .ytdl fragment_index with the exact number of
+// 10 MiB dashy chunks written into .part when concurrent-fragment threads get out of sync.
+func reconcileDashyYtdlIndex(partPath, ytdlPath string) bool {
+	fi, err := os.Stat(partPath)
+	if err != nil || fi.IsDir() || fi.Size() < ytDashyChunkSize || fi.Size()%ytDashyChunkSize != 0 {
+		return false
+	}
+
+	raw, err := os.ReadFile(ytdlPath)
+	if err != nil {
+		return false
+	}
+	var root map[string]interface{}
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return false
+	}
+	dlMap, ok := root["downloader"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	curFrag, ok := dlMap["current_fragment"].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	curIdxFloat, ok := curFrag["index"].(float64)
+	if !ok {
+		return false
+	}
+	curIdx := int64(curIdxFloat)
+
+	var fragCount int64
+	if fcFloat, ok := dlMap["fragment_count"].(float64); ok {
+		fragCount = int64(fcFloat)
+	}
+
+	expectedIdx := fi.Size() / ytDashyChunkSize
+	diff := expectedIdx - curIdx
+	if diff < 0 {
+		diff = -diff
+	}
+	if curIdx > 0 && expectedIdx != curIdx && diff <= 8 && (fragCount == 0 || expectedIdx < fragCount) {
+		curFrag["index"] = expectedIdx
+		updated, err := json.Marshal(root)
+		if err != nil {
+			return false
+		}
+		tmpPath := ytdlPath + ".tmp"
+		if err := os.WriteFile(tmpPath, updated, 0644); err != nil {
+			_ = os.Remove(tmpPath)
+			return false
+		}
+		if err := renameFileWithRetry(tmpPath, ytdlPath, 3, 50*time.Millisecond); err != nil {
+			_ = os.Remove(tmpPath)
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+// prepareYtDlpResumeState checks existing .part/.ytdl state before starting yt-dlp so
+// Regular<->Turbo mode switches never append fragment 0 onto a sequential .part file, and
+// fixes minor concurrent-fragment index drift in dashy .ytdl checkpoints.
+func prepareYtDlpResumeState(downloadDir string, task *DownloadTask, isTurbo bool) (allowDashy bool) {
+	if task == nil || downloadDir == "" {
+		return true
+	}
+
+	task.mu.Lock()
+	sp := task.SavePath
+	fn := task.FileName
+	title := task.Title
+	taskURL := task.URL
+	task.mu.Unlock()
+
+	stems := extractCandidateStems(sp, fn, title)
+	if vid := extractYouTubeVideoID(taskURL); vid != "" {
+		bracketID := "[" + vid + "]"
+		alreadyPresent := false
+		for _, s := range stems {
+			if strings.EqualFold(s, bracketID) {
+				alreadyPresent = true
+				break
+			}
+		}
+		if !alreadyPresent {
+			stems = append(stems, bracketID)
+		}
+	}
+	if len(stems) == 0 {
+		return true
+	}
+
+	entries, err := os.ReadDir(downloadDir)
+	if err != nil {
+		return true
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		eName := entry.Name()
+		lower := strings.ToLower(eName)
+		if !strings.HasSuffix(lower, ".part") ||
+			strings.Contains(lower, ".part-frag") ||
+			strings.HasSuffix(lower, ".part.turbo") {
+			continue
+		}
+
+		matched := false
+		for _, stem := range stems {
+			if stem != "" && strings.Contains(lower, strings.ToLower(stem)) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+
+		partPath := filepath.Join(downloadDir, eName)
+		fi, statErr := os.Stat(partPath)
+		if statErr != nil || fi.IsDir() || fi.Size() == 0 {
+			continue
+		}
+
+		ytdlPath := partPath[:len(partPath)-5] + ".ytdl"
+		_, ytdlErr := os.Stat(ytdlPath)
+
+		if isTurbo {
+			if os.IsNotExist(ytdlErr) {
+				// Sequential HttpFD .part exists with no .ytdl checkpoint: keep HttpFD to avoid
+				// FragmentFD reopening in append mode at fragment_index=0.
+				return false
+			} else if ytdlErr == nil {
+				reconcileDashyYtdlIndex(partPath, ytdlPath)
+			}
+		} else {
+			if ytdlErr == nil {
+				_ = removeFileWithRetry(ytdlPath, 3, 50*time.Millisecond)
+			}
+		}
+	}
+
+	return true
+}
+
+func formatYtDlpStderrError(stderrLines []string) string {
+	if len(stderrLines) == 0 {
+		return ""
+	}
+	primaryIdx := -1
+	for i := len(stderrLines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(stderrLines[i])
+		if line == "" {
+			continue
+		}
+		if primaryIdx == -1 {
+			primaryIdx = i
+		}
+		if strings.Contains(strings.ToLower(line), "error:") {
+			primaryIdx = i
+			break
+		}
+	}
+	if primaryIdx < 0 {
+		return ""
+	}
+
+	primary := strings.TrimSpace(stderrLines[primaryIdx])
+	var extra string
+	for i := len(stderrLines) - 1; i >= 0; i-- {
+		if i == primaryIdx {
+			continue
+		}
+		cand := strings.TrimSpace(stderrLines[i])
+		if cand == "" || cand == primary {
+			continue
+		}
+		if len(primary)+2+len(cand) <= 300 {
+			extra = cand
+		}
+		break
+	}
+	if extra != "" {
+		return primary + "; " + extra
+	}
+	return primary
+}
+
+func checkMergedOutputIntegrity(isAudio bool, exactExpected, actualSize int64, skippedFragments int) error {
+	if skippedFragments > 0 {
+		return fmt.Errorf("yt-dlp skipped %d fragment(s); output may be incomplete — please retry", skippedFragments)
+	}
+	if !isAudio && exactExpected > 50*1024*1024 && actualSize > 0 && actualSize < exactExpected*65/100 {
+		return fmt.Errorf("merged video is truncated (%.2f GB saved vs %.2f GB expected) — partial stream was corrupted or disk ran low on free space (merging needs ~2x file size free)",
+			float64(actualSize)/float64(1<<30),
+			float64(exactExpected)/float64(1<<30))
+	}
+	return nil
 }

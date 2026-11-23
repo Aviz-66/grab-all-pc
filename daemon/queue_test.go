@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -989,5 +990,180 @@ func TestVideoCodecNormalizationAndSortOrder(t *testing.T) {
 		t.Errorf("Expected explicit task VideoCodec %q, got %q", VideoCodecAV1, t2.VideoCodec)
 	}
 }
+
+func TestYtDlpResilienceFlags(t *testing.T) {
+	args := buildYtDlpBaseArgs("/tmp/cache", "/tmp/dl", "6")
+
+	hasFlag := func(flag string) bool {
+		for _, a := range args {
+			if a == flag {
+				return true
+			}
+		}
+		return false
+	}
+	hasPair := func(flag, val string) bool {
+		for i := 0; i+1 < len(args); i++ {
+			if args[i] == flag && args[i+1] == val {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !hasFlag("--abort-on-unavailable-fragments") {
+		t.Errorf("expected --abort-on-unavailable-fragments in args: %v", args)
+	}
+	if !hasPair("--retries", "10") {
+		t.Errorf("expected --retries 10 in args: %v", args)
+	}
+	if !hasPair("--fragment-retries", "10") {
+		t.Errorf("expected --fragment-retries 10 in args: %v", args)
+	}
+	if !hasPair("--socket-timeout", "30") {
+		t.Errorf("expected --socket-timeout 30 in args: %v", args)
+	}
+	if !hasPair("--file-access-retries", "5") {
+		t.Errorf("expected --file-access-retries 5 in args: %v", args)
+	}
+	if !hasPair("--retry-sleep", "http:exp=1:16") {
+		t.Errorf("expected --retry-sleep http:exp=1:16 in args: %v", args)
+	}
+	if !hasPair("--retry-sleep", "fragment:exp=1:16") {
+		t.Errorf("expected --retry-sleep fragment:exp=1:16 in args: %v", args)
+	}
+}
+
+func TestYtDlpRetryableNetworkErrorClassification(t *testing.T) {
+	retryable := []string{
+		"HTTPSConnectionPool(host='rr1---sn.googlevideo.com', port=443): Read timed out",
+		"yt-dlp failed: [download] Got error: HTTPConnectionPool: Connection reset by peer",
+		"ERROR: unable to download video data: HTTP Error 403: Forbidden",
+		"ERROR: fragment 200 not found, unable to continue",
+	}
+	for _, msg := range retryable {
+		if !isRetryableYtDlpNetworkError(msg) {
+			t.Errorf("expected error to be retryable: %q", msg)
+		}
+	}
+
+	nonRetryable := []string{
+		"ERROR: [youtube] xyz: Sign in to confirm you're not a bot",
+		"ERROR: Postprocessing: No space left on device",
+		"merged video is truncated (2.00 GB saved vs 11.10 GB expected)",
+		"ERROR: Requested format is not available",
+	}
+	for _, msg := range nonRetryable {
+		if isRetryableYtDlpNetworkError(msg) {
+			t.Errorf("expected error NOT to be retryable: %q", msg)
+		}
+	}
+}
+
+func TestReconcileDashyYtdlAndModeSwitchSafety(t *testing.T) {
+	tmpDir := t.TempDir()
+	task := &DownloadTask{
+		ID:       "dl_test_dashy",
+		URL:      "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+		Title:    "Long Livestream [dQw4w9WgXcQ]",
+		FileName: "Long Livestream [dQw4w9WgXcQ].mp4",
+	}
+
+	partPath := filepath.Join(tmpDir, "Long Livestream [dQw4w9WgXcQ].f137.mp4.part")
+	f, err := os.Create(partPath)
+	if err != nil {
+		t.Fatalf("failed to create .part file: %v", err)
+	}
+	_ = f.Close()
+	if err := os.Truncate(partPath, 20*ytDashyChunkSize); err != nil {
+		t.Fatalf("failed to truncate .part file: %v", err)
+	}
+
+	// 1. Sequential .part exists with NO .ytdl -> Turbo must fall back to non-dashy HttpFD (allowDashy=false)
+	if allow := prepareYtDlpResumeState(tmpDir, task, true); allow {
+		t.Fatalf("expected allowDashy=false when .part exists without .ytdl checkpoint")
+	}
+
+	// 2. Write drifted dashy .ytdl (index=23 instead of 20) -> Turbo allows dashy AND aligns index back to 20
+	ytdlPath := filepath.Join(tmpDir, "Long Livestream [dQw4w9WgXcQ].f137.mp4.ytdl")
+	initialJSON := `{"downloader":{"current_fragment":{"index":23},"fragment_count":100,"extra_state":{"k":"v"}}}`
+	if err := os.WriteFile(ytdlPath, []byte(initialJSON), 0644); err != nil {
+		t.Fatalf("failed to write .ytdl file: %v", err)
+	}
+
+	if allow := prepareYtDlpResumeState(tmpDir, task, true); !allow {
+		t.Fatalf("expected allowDashy=true when .ytdl checkpoint exists")
+	}
+
+	updatedRaw, err := os.ReadFile(ytdlPath)
+	if err != nil {
+		t.Fatalf("failed to read reconciled .ytdl: %v", err)
+	}
+	var parsed struct {
+		Downloader struct {
+			CurrentFragment struct {
+				Index int64 `json:"index"`
+			} `json:"current_fragment"`
+			FragmentCount int64             `json:"fragment_count"`
+			ExtraState    map[string]string `json:"extra_state"`
+		} `json:"downloader"`
+	}
+	if err := json.Unmarshal(updatedRaw, &parsed); err != nil {
+		t.Fatalf("failed to unmarshal reconciled .ytdl: %v", err)
+	}
+	if parsed.Downloader.CurrentFragment.Index != 20 {
+		t.Errorf("expected reconciled fragment index 20, got %d", parsed.Downloader.CurrentFragment.Index)
+	}
+	if parsed.Downloader.FragmentCount != 100 || parsed.Downloader.ExtraState["k"] != "v" {
+		t.Errorf("expected fragment_count=100 and extra_state preserved, got %+v", parsed)
+	}
+
+	// 3. Regular mode switch -> stale .ytdl is removed cleanly
+	prepareYtDlpResumeState(tmpDir, task, false)
+	if _, err := os.Stat(ytdlPath); !os.IsNotExist(err) {
+		t.Errorf("expected stale .ytdl to be removed when switching to Regular mode")
+	}
+}
+
+func TestFormatYtDlpStderrAndPostMergeIntegrity(t *testing.T) {
+	lines := []string{
+		"WARNING: [download] HTTPSConnectionPool(host='rr1', port=443): Read timed out",
+		"[download] Got error: HTTPSConnectionPool: retrying",
+		"ERROR: Postprocessing: No space left on device",
+	}
+	formatted := formatYtDlpStderrError(lines)
+	if !strings.HasPrefix(formatted, "ERROR: Postprocessing: No space left on device") {
+		t.Errorf("expected newest ERROR: line first, got: %q", formatted)
+	}
+
+	tmpDir := t.TempDir()
+	sizeFile := filepath.Join(tmpDir, "size.txt")
+	if err := os.WriteFile(sizeFile, []byte("NA|11100000000|10800000000|300000000\n"), 0644); err != nil {
+		t.Fatalf("write size file failed: %v", err)
+	}
+	tracker := &ytSizeTracker{}
+	tracker.loadCombinedFromFile(sizeFile)
+	if tracker.combinedExact != 11100000000 || tracker.combined != 11100000000 {
+		t.Errorf("expected combinedExact=11100000000, combined=11100000000; got %d, %d", tracker.combinedExact, tracker.combined)
+	}
+
+	// 2.0 GB saved vs 11.1 GB exact video must fail integrity guard
+	if err := checkMergedOutputIntegrity(false, 11100000000, 2000000000, 0); err == nil {
+		t.Errorf("expected truncated 2 GB vs 11.1 GB video to fail integrity check")
+	}
+	// 10.9 GB saved vs 11.1 GB exact video (muxing container overhead diff) must pass
+	if err := checkMergedOutputIntegrity(false, 11100000000, 10900000000, 0); err != nil {
+		t.Errorf("expected 10.9 GB vs 11.1 GB video to pass, got error: %v", err)
+	}
+	// Any skipped fragments must fail
+	if err := checkMergedOutputIntegrity(false, 11100000000, 11090000000, 2); err == nil {
+		t.Errorf("expected skippedFragments=2 to fail integrity check")
+	}
+	// Audio-only transcode (e.g. MP3/Opus much smaller than source m4a/webm) must pass
+	if err := checkMergedOutputIntegrity(true, 300000000, 80000000, 0); err != nil {
+		t.Errorf("expected audio-only task to bypass video size ratio check, got: %v", err)
+	}
+}
+
 
 
