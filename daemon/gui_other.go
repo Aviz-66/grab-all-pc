@@ -3,12 +3,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 )
 
 func activateExistingInstance(cfg *Config) bool {
@@ -41,6 +43,28 @@ func runPlatformApp(cfg *Config, qm *QueueManager, srv *Server, startInTray bool
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	srv.SetRestartForUpdateHandler(func() {
+		fmt.Println("\n[*] Restarting GrabAll into newly installed version...")
+		qm.Stop()
+		qm.save()
+		srv.Shutdown()
+		if exePath, err := currentExecutablePath(); err == nil && exePath != "" {
+			_ = startDetachedExecutable(exePath, buildRestartArgs(os.Args[1:], os.Getpid()))
+		}
+		os.Exit(0)
+	})
+
+	if cfg.GetAutoCheckUpdates() && srv.updater != nil {
+		go func() {
+			time.Sleep(4 * time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if info, err := srv.updater.CheckForUpdate(ctx, false); err == nil && info.UpdateAvailable {
+				fmt.Printf("  [!] Update available: GrabAll v%s (current v%s) — update via Web UI or /api/update/apply\n\n", info.LatestVersion, info.CurrentVersion)
+			}
+		}()
+	}
 
 	go func() {
 		<-sigChan

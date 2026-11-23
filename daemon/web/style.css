@@ -528,3 +528,37 @@ body {
   opacity: 0;
   pointer-events: none;
 }
+
+/* Update Banner */
+.update-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  background-color: rgba(59, 130, 246, 0.14);
+  border: 1px solid rgba(59, 130, 246, 0.45);
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+
+.update-banner.hidden {
+  display: none;
+}
+
+.update-banner-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.update-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.update-banner-actions a {
+  text-decoration: none;
+}

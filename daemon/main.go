@@ -7,11 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 )
 
 const Banner = `
   ======================================================
-     ⚡ GrabAll Download Manager v2.0 (Ultra-Lean Edition)
+     ⚡ GrabAll Download Manager v` + AppVersion + ` (Ultra-Lean Edition)
   ======================================================
 `
 
@@ -58,8 +59,14 @@ func main() {
 		downloadDirFlag = flag.String("downloads", "", "Directory to save downloaded files")
 		trayFlag        = flag.Bool("tray", false, "Start minimized in the Windows system tray")
 		headlessFlag    = flag.Bool("headless", false, "Run background daemon only without native GUI")
+		waitPIDFlag     = flag.Int("wait-pid", 0, "Wait for previous GrabAll PID to exit before starting")
 	)
 	flag.Parse()
+
+	if *waitPIDFlag > 0 {
+		waitForParentPIDExit(*waitPIDFlag, 6*time.Second)
+	}
+	go cleanupOldUpdatedBinary()
 
 	if runtime.GOOS != "windows" || *headlessFlag {
 		fmt.Print(Banner)

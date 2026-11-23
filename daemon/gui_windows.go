@@ -82,8 +82,9 @@ const (
 	wmAppQueueUpdate = wmApp + 2
 	wmAppTaskAdded   = wmApp + 3
 	wmAppPlaylistAdd = wmApp + 4
-	wmAppShowMain    = wmApp + 5
-	wmAppStatusMsg   = wmApp + 6
+	wmAppShowMain         = wmApp + 5
+	wmAppStatusMsg        = wmApp + 6
+	wmAppRestartForUpdate = wmApp + 7
 
 	// Button / Edit / Static / Combo Styles
 	bsPushButton    = 0x00000000
@@ -216,6 +217,7 @@ const (
 	cmdToggleStartup     = 1017
 	cmdTogglePopup       = 1018
 	cmdToggleTurbo       = 1019
+	cmdToggleAutoUpdate  = 1020
 	cmdConc1             = 1021
 	cmdConc2             = 1022
 	cmdConc3             = 1023
@@ -224,6 +226,7 @@ const (
 	cmdTaskSwitchTurbo   = 1026
 	cmdOpenWeb           = 1030
 	cmdAbout             = 1031
+	cmdCheckUpdate       = 1032
 	cmdShowMain          = 1040
 	cmdToolsMenu         = 1041
 	cmdExit              = 1099
@@ -580,6 +583,7 @@ type winAppGUI struct {
 	addDlg   *addDialogControls
 
 	updateQueued atomic.Bool
+	updating     atomic.Bool
 
 	eventsMu        sync.Mutex
 	pendingTaskIDs  []string
@@ -651,6 +655,13 @@ func activateExistingInstance(cfg *Config) bool {
 	return false
 }
 
+func releaseSingleInstanceLock() {
+	if singletonMutexHandle != 0 {
+		_ = syscall.CloseHandle(syscall.Handle(singletonMutexHandle))
+		singletonMutexHandle = 0
+	}
+}
+
 func runPlatformApp(cfg *Config, qm *QueueManager, srv *Server, startInTray bool, headless bool) {
 	if headless {
 		if err := srv.Start(); err != nil {
@@ -675,6 +686,11 @@ func runPlatformApp(cfg *Config, qm *QueueManager, srv *Server, startInTray bool
 	srv.SetShowWindowHandler(func() {
 		if g.mainHwnd != 0 {
 			procPostMessageW.Call(g.mainHwnd, wmAppShowMain, 0, 0)
+		}
+	})
+	srv.SetRestartForUpdateHandler(func() {
+		if g.mainHwnd != 0 {
+			procPostMessageW.Call(g.mainHwnd, wmAppRestartForUpdate, 0, 0)
 		}
 	})
 
@@ -1059,6 +1075,12 @@ func (g *winAppGUI) initAndRunMessageLoop(startInTray bool) {
 		procUpdateWindow.Call(g.mainHwnd)
 	}
 	go g.checkFirstRunEnginePrompt()
+	go func() {
+		time.Sleep(6 * time.Second)
+		if g.cfg.GetAutoCheckUpdates() {
+			g.checkForAppUpdate(false, startInTray)
+		}
+	}()
 
 	var msg winMsg
 	for {
@@ -1097,6 +1119,7 @@ func (g *winAppGUI) buildMainMenu() uintptr {
 	procAppendMenuW.Call(hOpt, mfSeparator, 0, 0)
 	procAppendMenuW.Call(hOpt, mfString, cmdToggleStartup, uintptr(unsafe.Pointer(utf16Ptr("Start GrabAll Automatically with Windows"))))
 	procAppendMenuW.Call(hOpt, mfString, cmdTogglePopup, uintptr(unsafe.Pointer(utf16Ptr("Show Download Progress Popup on New Downloads"))))
+	procAppendMenuW.Call(hOpt, mfString, cmdToggleAutoUpdate, uintptr(unsafe.Pointer(utf16Ptr("Automatically Check for GrabAll Updates on Startup"))))
 	procAppendMenuW.Call(hOpt, mfSeparator, 0, 0)
 	procAppendMenuW.Call(hOpt, mfString, cmdConc1, uintptr(unsafe.Pointer(utf16Ptr("Max Concurrent Downloads: 1"))))
 	procAppendMenuW.Call(hOpt, mfString, cmdConc2, uintptr(unsafe.Pointer(utf16Ptr("Max Concurrent Downloads: 2"))))
@@ -1106,6 +1129,7 @@ func (g *winAppGUI) buildMainMenu() uintptr {
 	// Help Menu
 	hHelp, _, _ := procCreatePopupMenu.Call()
 	procAppendMenuW.Call(hHelp, mfString, cmdOpenWeb, uintptr(unsafe.Pointer(utf16Ptr("Open Web UI in Browser"))))
+	procAppendMenuW.Call(hHelp, mfString, cmdCheckUpdate, uintptr(unsafe.Pointer(utf16Ptr("Check for Updates..."))))
 	procAppendMenuW.Call(hHelp, mfString, cmdAbout, uintptr(unsafe.Pointer(utf16Ptr("About GrabAll"))))
 
 	procAppendMenuW.Call(hMain, mfPopup, hTasks, uintptr(unsafe.Pointer(utf16Ptr("&Tasks"))))
@@ -1137,6 +1161,12 @@ func (g *winAppGUI) refreshOptionMenuChecks() {
 		procCheckMenuItem.Call(g.hMenuOpt, cmdTogglePopup, mfByCommand|mfChecked)
 	} else {
 		procCheckMenuItem.Call(g.hMenuOpt, cmdTogglePopup, mfByCommand|mfUnchecked)
+	}
+
+	if g.cfg.GetAutoCheckUpdates() {
+		procCheckMenuItem.Call(g.hMenuOpt, cmdToggleAutoUpdate, mfByCommand|mfChecked)
+	} else {
+		procCheckMenuItem.Call(g.hMenuOpt, cmdToggleAutoUpdate, mfByCommand|mfUnchecked)
 	}
 
 	conc := g.cfg.GetMaxConcurrent()
@@ -2017,6 +2047,7 @@ func (g *winAppGUI) showTrayContextMenu() {
 	procAppendMenuW.Call(hMenu, popFlags, cmdTogglePopup, uintptr(unsafe.Pointer(utf16Ptr("Show Download Progress Popup"))))
 
 	procAppendMenuW.Call(hMenu, mfSeparator, 0, 0)
+	procAppendMenuW.Call(hMenu, mfString, cmdCheckUpdate, uintptr(unsafe.Pointer(utf16Ptr("Check for Updates..."))))
 	procAppendMenuW.Call(hMenu, mfString, cmdExit, uintptr(unsafe.Pointer(utf16Ptr("Exit GrabAll"))))
 
 	var pt winPoint
@@ -2164,6 +2195,7 @@ func (g *winAppGUI) showToolsPopupMenu() {
 	procAppendMenuW.Call(hMenu, mfString, cmdInstallFFmpeg, uintptr(unsafe.Pointer(utf16Ptr(ffLabel))))
 	procAppendMenuW.Call(hMenu, mfSeparator, 0, 0)
 	procAppendMenuW.Call(hMenu, mfString, cmdChangeDir, uintptr(unsafe.Pointer(utf16Ptr("Change Default Save Folder..."))))
+	procAppendMenuW.Call(hMenu, mfString, cmdCheckUpdate, uintptr(unsafe.Pointer(utf16Ptr("Check for GrabAll PC Updates..."))))
 	procAppendMenuW.Call(hMenu, mfString, cmdOpenWeb, uintptr(unsafe.Pointer(utf16Ptr("Open Web UI in Browser"))))
 
 	var pt winPoint
@@ -2388,6 +2420,10 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 		g.cfg.SetShowProgressPopup(!g.cfg.GetShowProgressPopup())
 		g.refreshOptionMenuChecks()
 
+	case cmdToggleAutoUpdate:
+		g.cfg.SetAutoCheckUpdates(!g.cfg.GetAutoCheckUpdates())
+		g.refreshOptionMenuChecks()
+
 	case cmdConc1, cmdConc2, cmdConc3, cmdConc4:
 		n := int(cmdID-cmdConc1) + 1
 		g.cfg.mu.Lock()
@@ -2400,10 +2436,13 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 	case cmdOpenWeb:
 		openURLDefault(fmt.Sprintf("http://127.0.0.1:%d", g.cfg.Port))
 
+	case cmdCheckUpdate:
+		go g.checkForAppUpdate(true, false)
+
 	case cmdAbout:
 		procMessageBoxW.Call(
 			g.mainHwnd,
-			uintptr(unsafe.Pointer(utf16Ptr("GrabAll Download Manager v2.2.9 (Native Win32 Edition)\n\nUltra-lightweight high-speed downloader built for low-RAM PCs.\n• Native Win32 GUI (~14 MB RAM, zero WebView/Electron bloat)\n• Turbo 6x Parallel Engine + Switchable Regular Watch-Live Mode\n• Clean Video Hover Grabber + Dedicated Playlist Downloader"))),
+			uintptr(unsafe.Pointer(utf16Ptr(fmt.Sprintf("GrabAll Download Manager v%s (Native Win32 Edition)\n\nUltra-lightweight high-speed downloader built for low-RAM PCs.\n• Native Win32 GUI (~14 MB RAM, zero WebView/Electron bloat)\n• Turbo 6x Parallel Engine + Switchable Regular Watch-Live Mode\n• Clean Video Hover Grabber + Dedicated Playlist Downloader", AppVersion)))),
 			uintptr(unsafe.Pointer(utf16Ptr("About GrabAll"))),
 			mbOK|mbIconInfo,
 		)
@@ -2551,6 +2590,10 @@ func mainWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 
 	case wmAppStatusMsg:
 		g.refreshStatusBar()
+		return 0
+
+	case wmAppRestartForUpdate:
+		g.performGracefulRestartForUpdate()
 		return 0
 
 	case wmClose:
@@ -2726,4 +2769,166 @@ func addDlgWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 
 	ret, _, _ := procDefWindowProcW.Call(hwnd, uintptr(msg), wParam, lParam)
 	return ret
+}
+
+func (g *winAppGUI) checkForAppUpdate(manual bool, startInTray bool) {
+	if !g.updating.CompareAndSwap(false, true) {
+		if manual {
+			procMessageBoxW.Call(g.mainHwnd, uintptr(unsafe.Pointer(utf16Ptr("An update check or installation is already in progress."))), uintptr(unsafe.Pointer(utf16Ptr("GrabAll Update"))), mbOK|mbIconInfo)
+		}
+		return
+	}
+	defer g.updating.Store(false)
+
+	if g.srv == nil || g.srv.updater == nil {
+		return
+	}
+
+	if manual {
+		g.postStatusMessage("Checking for GrabAll PC updates...")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	info, err := g.srv.updater.CheckForUpdate(ctx, manual)
+	cancel()
+
+	if manual {
+		g.postStatusMessage("")
+	}
+
+	if err != nil {
+		if manual {
+			procMessageBoxW.Call(
+				g.mainHwnd,
+				uintptr(unsafe.Pointer(utf16Ptr("Could not check for updates:\n\n"+err.Error()))),
+				uintptr(unsafe.Pointer(utf16Ptr("GrabAll Update Check"))),
+				mbOK|mbIconWarning,
+			)
+		}
+		return
+	}
+
+	if !info.UpdateAvailable {
+		if manual {
+			procMessageBoxW.Call(
+				g.mainHwnd,
+				uintptr(unsafe.Pointer(utf16Ptr(fmt.Sprintf("GrabAll PC is up to date! (v%s)", info.CurrentVersion)))),
+				uintptr(unsafe.Pointer(utf16Ptr("GrabAll Update Check"))),
+				mbOK|mbIconInfo,
+			)
+		}
+		return
+	}
+
+	if !manual && startInTray {
+		g.showTrayBalloon(
+			fmt.Sprintf("GrabAll PC Update Available (v%s)", info.LatestVersion),
+			"Open Help -> Check for Updates to download and install.",
+		)
+		return
+	}
+
+	prompt := fmt.Sprintf(
+		"A new version of GrabAll PC is available!\n\nCurrent Version: v%s\nLatest Version: v%s\nPackage: %s\n\nDownload and install the update now? (GrabAll will restart automatically.)",
+		info.CurrentVersion, info.LatestVersion, info.FileName,
+	)
+	res, _, _ := procMessageBoxW.Call(
+		g.mainHwnd,
+		uintptr(unsafe.Pointer(utf16Ptr(prompt))),
+		uintptr(unsafe.Pointer(utf16Ptr("GrabAll Update Available"))),
+		mbYesNo|mbIconQuestion,
+	)
+	if res == idYes {
+		g.runAppUpdateInstall(info)
+	}
+}
+
+func (g *winAppGUI) runAppUpdateInstall(info *UpdateInfo) {
+	if g.qm != nil && g.qm.countDownloading() > 0 {
+		res, _, _ := procMessageBoxW.Call(
+			g.mainHwnd,
+			uintptr(unsafe.Pointer(utf16Ptr("Downloads are currently active.\n\nPause active downloads and install the update now?"))),
+			uintptr(unsafe.Pointer(utf16Ptr("Active Downloads"))),
+			mbYesNo|mbIconWarning,
+		)
+		if res != idYes {
+			return
+		}
+		for _, t := range g.qm.GetAll() {
+			if t.Status == StatusDownloading {
+				g.qm.PauseTask(t.ID)
+			}
+		}
+	}
+
+	if !info.CanAutoUpdate {
+		msg := fmt.Sprintf("GrabAll v%s is installed in a protected folder that cannot be updated automatically.\n\nOpen the release download page in your browser?", info.LatestVersion)
+		res, _, _ := procMessageBoxW.Call(
+			g.mainHwnd,
+			uintptr(unsafe.Pointer(utf16Ptr(msg))),
+			uintptr(unsafe.Pointer(utf16Ptr("Manual Update Required"))),
+			mbYesNo|mbIconInfo,
+		)
+		if res == idYes && info.ReleaseURL != "" {
+			openURLDefault(info.ReleaseURL)
+		}
+		return
+	}
+
+	g.postStatusMessage(fmt.Sprintf("Downloading GrabAll v%s update...", info.LatestVersion))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	err := g.srv.updater.ApplyUpdate(ctx, info, func(stage string, downloaded, total int64) {
+		switch stage {
+		case "downloading":
+			if total > 0 {
+				pct := float64(downloaded) / float64(total) * 100.0
+				g.postStatusMessage(fmt.Sprintf("Downloading GrabAll v%s... %.0f%%", info.LatestVersion, pct))
+			} else if downloaded > 0 {
+				g.postStatusMessage(fmt.Sprintf("Downloading GrabAll v%s... %.1f MB", info.LatestVersion, float64(downloaded)/float64(1<<20)))
+			}
+		case "extracting":
+			g.postStatusMessage(fmt.Sprintf("Installing GrabAll v%s...", info.LatestVersion))
+		case "restarting":
+			g.postStatusMessage(fmt.Sprintf("Restarting GrabAll v%s...", info.LatestVersion))
+		}
+	})
+
+	if err != nil {
+		g.postStatusMessage("")
+		msg := fmt.Sprintf("Failed to install update v%s:\n\n%s\n\nOpen the release download page in your browser instead?", info.LatestVersion, err.Error())
+		res, _, _ := procMessageBoxW.Call(
+			g.mainHwnd,
+			uintptr(unsafe.Pointer(utf16Ptr(msg))),
+			uintptr(unsafe.Pointer(utf16Ptr("Update Failed"))),
+			mbYesNo|mbIconError,
+		)
+		if res == idYes && info.ReleaseURL != "" {
+			openURLDefault(info.ReleaseURL)
+		}
+		return
+	}
+
+	g.postStatusMessage(fmt.Sprintf("Restarting GrabAll v%s...", info.LatestVersion))
+	if g.mainHwnd != 0 {
+		procPostMessageW.Call(g.mainHwnd, wmAppRestartForUpdate, 0, 0)
+	}
+}
+
+func (g *winAppGUI) performGracefulRestartForUpdate() {
+	g.quitting = true
+	for hwnd := range g.popups {
+		procDestroyWindow.Call(hwnd)
+	}
+	g.removeTrayIcon()
+	g.qm.Stop()
+	g.qm.save()
+	g.srv.Shutdown()
+	releaseSingleInstanceLock()
+
+	if exePath, err := currentExecutablePath(); err == nil && exePath != "" {
+		_ = startDetachedExecutable(exePath, buildRestartArgs(os.Args[1:], os.Getpid()))
+	}
+	procDestroyWindow.Call(g.mainHwnd)
 }

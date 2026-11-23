@@ -4,6 +4,8 @@ let tasks = [];
 let currentFilter = 'all';
 let sseConnection = null;
 let defaultVideoCodec = 'h264';
+let latestUpdateInfo = null;
+let autoCheckUpdatesEnabled = true;
 
 // DOM Elements
 const queueListEl = document.getElementById('queue-list');
@@ -27,12 +29,15 @@ const formAdd = document.getElementById('form-add');
 const formSettings = document.getElementById('form-settings');
 
 // Initialize
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   initSSE();
   initFilters();
   initModals();
   initSettings();
-  loadSettings();
+  await loadSettings();
+  if (autoCheckUpdatesEnabled) {
+    checkForUpdates(false);
+  }
 });
 
 let fallbackPollTimer = null;
@@ -450,15 +455,17 @@ function initSettings() {
     const maxConcurrent = parseInt(document.getElementById('setting-max-concurrent').value, 10);
     const defaultEngine = document.getElementById('setting-default-engine').value;
     const videoCodec = document.getElementById('setting-video-codec')?.value || 'h264';
+    const autoCheckUpdates = document.getElementById('setting-auto-update')?.checked !== false;
 
     try {
       const res = await fetch('/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ downloadDir, maxConcurrent, defaultEngine, videoCodec }),
+        body: JSON.stringify({ downloadDir, maxConcurrent, defaultEngine, videoCodec, autoCheckUpdates }),
       });
       if (res.ok) {
         defaultVideoCodec = videoCodec;
+        autoCheckUpdatesEnabled = autoCheckUpdates;
         showToast('Settings saved successfully');
         modalSettings.classList.add('hidden');
       } else {
@@ -519,6 +526,22 @@ function initSettings() {
       btn.textContent = 'Install FFmpeg';
     }
   });
+
+  document.getElementById('btn-check-update')?.addEventListener('click', () => {
+    checkForUpdates(true);
+  });
+
+  document.getElementById('btn-apply-update')?.addEventListener('click', () => {
+    applyAppUpdate();
+  });
+
+  document.getElementById('btn-banner-update')?.addEventListener('click', () => {
+    applyAppUpdate();
+  });
+
+  document.getElementById('btn-banner-dismiss')?.addEventListener('click', () => {
+    document.getElementById('update-banner')?.classList.add('hidden');
+  });
 }
 
 async function loadSettings() {
@@ -539,6 +562,15 @@ async function loadSettings() {
     if (addCodecEl) {
       addCodecEl.value = defaultVideoCodec;
     }
+    autoCheckUpdatesEnabled = cfg.autoCheckUpdates !== false;
+    const autoUpdateEl = document.getElementById('setting-auto-update');
+    if (autoUpdateEl) {
+      autoUpdateEl.checked = autoCheckUpdatesEnabled;
+    }
+    const appVerEl = document.getElementById('app-version-text');
+    if (appVerEl && !(latestUpdateInfo && latestUpdateInfo.updateAvailable)) {
+      appVerEl.textContent = cfg.version ? `v${cfg.version}` : 'Ready';
+    }
     document.getElementById('setting-token').value = cfg.authToken || '';
 
     const statusEl = document.getElementById('ytdlp-status-text');
@@ -558,6 +590,154 @@ async function loadSettings() {
     }
   } catch (err) {
     console.error('Failed to load settings', err);
+  }
+}
+
+async function checkForUpdates(manual = false) {
+  const btnCheck = document.getElementById('btn-check-update');
+  const btnApply = document.getElementById('btn-apply-update');
+  const appVerEl = document.getElementById('app-version-text');
+  const banner = document.getElementById('update-banner');
+  const bannerText = document.getElementById('update-banner-text');
+  const bannerLink = document.getElementById('link-banner-release');
+
+  if (btnCheck && manual) {
+    btnCheck.disabled = true;
+    btnCheck.textContent = 'Checking...';
+  }
+
+  try {
+    const res = await fetch(`/api/update/check?force=${manual ? '1' : '0'}`);
+    const data = await res.json();
+    if (!res.ok) {
+      if (manual) {
+        showToast(data.error || 'Failed to check for updates', true);
+      }
+      return;
+    }
+
+    latestUpdateInfo = data;
+    if (data.updateAvailable) {
+      if (appVerEl) {
+        appVerEl.innerHTML = `<span style="color:var(--primary)">v${escapeHtml(data.currentVersion)} &rarr; <strong>v${escapeHtml(data.latestVersion)} available</strong></span>`;
+      }
+      if (btnApply) {
+        btnApply.classList.remove('hidden');
+        btnApply.disabled = !data.canAutoUpdate;
+        if (!data.canAutoUpdate) {
+          btnApply.title = 'Install folder is read-only — download from Release Notes';
+        }
+      }
+      if (banner && bannerText) {
+        bannerText.textContent = `GrabAll PC v${data.latestVersion} is available (current v${data.currentVersion})`;
+        if (bannerLink) {
+          if (data.releaseUrl) {
+            bannerLink.href = data.releaseUrl;
+            bannerLink.style.display = '';
+          } else {
+            bannerLink.style.display = 'none';
+          }
+        }
+        const bannerUpdateBtn = document.getElementById('btn-banner-update');
+        if (bannerUpdateBtn) {
+          bannerUpdateBtn.style.display = data.canAutoUpdate ? '' : 'none';
+        }
+        banner.classList.remove('hidden');
+      }
+    } else {
+      if (appVerEl) {
+        appVerEl.innerHTML = `<span style="color:var(--success)">v${escapeHtml(data.currentVersion)} (Up to date)</span>`;
+      }
+      if (btnApply) {
+        btnApply.classList.add('hidden');
+      }
+      if (banner) {
+        banner.classList.add('hidden');
+      }
+      if (manual) {
+        showToast(`GrabAll PC is up to date (v${data.currentVersion})`);
+      }
+    }
+  } catch (err) {
+    if (manual) {
+      showToast('Error checking for updates', true);
+    }
+  } finally {
+    if (btnCheck && manual) {
+      btnCheck.disabled = false;
+      btnCheck.textContent = 'Check for Updates';
+    }
+  }
+}
+
+async function applyAppUpdate() {
+  const btnBanner = document.getElementById('btn-banner-update');
+  const btnModal = document.getElementById('btn-apply-update');
+  const btnCheck = document.getElementById('btn-check-update');
+
+  [btnBanner, btnModal, btnCheck].forEach((b) => {
+    if (b) b.disabled = true;
+  });
+  if (btnBanner) btnBanner.textContent = 'Updating...';
+  if (btnModal) btnModal.textContent = 'Updating...';
+
+  try {
+    const res = await fetch('/api/update/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force: false }),
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      showToast(data.error || 'Update failed', true);
+      [btnBanner, btnModal, btnCheck].forEach((b) => {
+        if (b) b.disabled = false;
+      });
+      if (btnBanner) btnBanner.textContent = 'Update & Restart';
+      if (btnModal) btnModal.textContent = 'Update & Restart';
+      return;
+    }
+
+    if (data.upToDate) {
+      showToast(`Already up to date (v${data.version || ''})`);
+      [btnBanner, btnModal, btnCheck].forEach((b) => {
+        if (b) b.disabled = false;
+      });
+      if (btnBanner) btnBanner.textContent = 'Update & Restart';
+      if (btnModal) btnModal.textContent = 'Update & Restart';
+      return;
+    }
+
+    showToast('Update installed! Restarting GrabAll...');
+    let attempts = 0;
+    const pollRestart = setInterval(async () => {
+      attempts++;
+      if (attempts > 25) {
+        clearInterval(pollRestart);
+        location.reload();
+        return;
+      }
+      try {
+        const ping = await fetch('/api/ping', { cache: 'no-store' });
+        if (ping.ok) {
+          const pingData = await ping.json();
+          if (!latestUpdateInfo || pingData.version === latestUpdateInfo.latestVersion || attempts >= 3) {
+            clearInterval(pollRestart);
+            location.reload();
+          }
+        }
+      } catch {
+        // Still restarting
+      }
+    }, 1200);
+  } catch (err) {
+    showToast('Error installing update', true);
+    [btnBanner, btnModal, btnCheck].forEach((b) => {
+      if (b) b.disabled = false;
+    });
+    if (btnBanner) btnBanner.textContent = 'Update & Restart';
+    if (btnModal) btnModal.textContent = 'Update & Restart';
   }
 }
 

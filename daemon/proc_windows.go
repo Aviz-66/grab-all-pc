@@ -13,7 +13,11 @@ import (
 	"unsafe"
 )
 
-const createNoWindow = 0x08000000
+const (
+	createNoWindow        = 0x08000000
+	createNewProcessGroup = 0x00000200
+	winSynchronize        = 0x00100000
+)
 
 // killProcessTree terminates a process AND all of its child processes (PyInstaller inner
 // yt-dlp.exe, qjs.exe, and ffmpeg.exe) immediately when Pause or Cancel is clicked.
@@ -182,4 +186,27 @@ func setAutoStartEnabled(enable bool) error {
 		return fmt.Errorf("failed to write Run registry value (code %d)", ret)
 	}
 	return nil
+}
+
+func waitForParentPIDExit(pid int, maxWait time.Duration) {
+	if pid <= 0 {
+		return
+	}
+	h, err := syscall.OpenProcess(winSynchronize, false, uint32(pid))
+	if err == nil && h != 0 {
+		defer syscall.CloseHandle(h)
+		ms := uint32(maxWait.Milliseconds())
+		_, _ = syscall.WaitForSingleObject(h, ms)
+		return
+	}
+	time.Sleep(350 * time.Millisecond)
+}
+
+func startDetachedExecutable(exePath string, args []string) error {
+	cmd := exec.Command(exePath, args...)
+	cmd.Dir = filepath.Dir(exePath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: createNewProcessGroup,
+	}
+	return cmd.Start()
 }

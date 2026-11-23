@@ -60,23 +60,30 @@ func (b *SSEBroker) BroadcastJSON(eventType string, data interface{}) {
 }
 
 type Server struct {
-	config       *Config
-	queue        *QueueManager
-	broker       *SSEBroker
-	httpSrv      *http.Server
-	onShowWindow func()
+	config             *Config
+	queue              *QueueManager
+	broker             *SSEBroker
+	updater            *Updater
+	httpSrv            *http.Server
+	onShowWindow       func()
+	onRestartForUpdate func()
 }
 
 func NewServer(cfg *Config, qm *QueueManager, broker *SSEBroker) *Server {
 	return &Server{
-		config: cfg,
-		queue:  qm,
-		broker: broker,
+		config:  cfg,
+		queue:   qm,
+		broker:  broker,
+		updater: NewUpdater(),
 	}
 }
 
 func (s *Server) SetShowWindowHandler(fn func()) {
 	s.onShowWindow = fn
+}
+
+func (s *Server) SetRestartForUpdateHandler(fn func()) {
+	s.onRestartForUpdate = fn
 }
 
 func (s *Server) setupRoutes() http.Handler {
@@ -112,6 +119,8 @@ func (s *Server) setupRoutes() http.Handler {
 	mux.HandleFunc("/api/install-ffmpeg", s.handleInstallFFmpeg)
 	mux.HandleFunc("/api/install-all", s.handleInstallAll)
 	mux.HandleFunc("/api/open-folder", s.handleOpenFolder)
+	mux.HandleFunc("/api/update/check", s.handleUpdateCheck)
+	mux.HandleFunc("/api/update/apply", s.handleUpdateApply)
 
 	return s.corsAndAuthMiddleware(mux)
 }
@@ -232,7 +241,7 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":          "ok",
-		"version":         "2.2.9",
+		"version":         AppVersion,
 		"nativeGui":       s.onShowWindow != nil,
 		"downloadDir":     s.config.GetDownloadDir(),
 		"maxConcurrent":   s.config.GetMaxConcurrent(),
@@ -594,20 +603,23 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, hasYtDlp := resolveYtDlpBinary(s.config)
 		hasFFmpeg := resolveFFmpegBinary(s.config) != ""
+		autoUpdates := s.config.GetAutoCheckUpdates()
 
 		s.config.mu.RLock()
 		resp := map[string]interface{}{
-			"port":            s.config.Port,
-			"authToken":       s.config.AuthToken,
-			"downloadDir":     s.config.DownloadDir,
-			"maxConcurrent":   s.config.MaxConcurrent,
-			"ytDlpPath":       s.config.YtDlpPath,
-			"ffmpegPath":      s.config.FFmpegPath,
-			"defaultEngine":   s.config.DefaultEngine,
-			"speedMode":       normalizeSpeedMode(s.config.SpeedMode),
-			"videoCodec":      normalizeVideoCodec(s.config.VideoCodec),
-			"ytDlpAvailable":  hasYtDlp == nil,
-			"ffmpegAvailable": hasFFmpeg,
+			"version":          AppVersion,
+			"port":             s.config.Port,
+			"authToken":        s.config.AuthToken,
+			"downloadDir":      s.config.DownloadDir,
+			"maxConcurrent":    s.config.MaxConcurrent,
+			"ytDlpPath":        s.config.YtDlpPath,
+			"ffmpegPath":       s.config.FFmpegPath,
+			"defaultEngine":    s.config.DefaultEngine,
+			"speedMode":        normalizeSpeedMode(s.config.SpeedMode),
+			"videoCodec":       normalizeVideoCodec(s.config.VideoCodec),
+			"ytDlpAvailable":   hasYtDlp == nil,
+			"ffmpegAvailable":  hasFFmpeg,
+			"autoCheckUpdates": autoUpdates,
 		}
 		s.config.mu.RUnlock()
 		_ = json.NewEncoder(w).Encode(resp)
@@ -616,13 +628,14 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodPost {
 		var req struct {
-			DownloadDir   string `json:"downloadDir"`
-			MaxConcurrent int    `json:"maxConcurrent"`
-			DefaultEngine string `json:"defaultEngine"`
-			SpeedMode     string `json:"speedMode"`
-			VideoCodec    string `json:"videoCodec"`
-			YtDlpPath     string `json:"ytDlpPath"`
-			FFmpegPath    string `json:"ffmpegPath"`
+			DownloadDir      string `json:"downloadDir"`
+			MaxConcurrent    int    `json:"maxConcurrent"`
+			DefaultEngine    string `json:"defaultEngine"`
+			SpeedMode        string `json:"speedMode"`
+			VideoCodec       string `json:"videoCodec"`
+			YtDlpPath        string `json:"ytDlpPath"`
+			FFmpegPath       string `json:"ffmpegPath"`
+			AutoCheckUpdates *bool  `json:"autoCheckUpdates"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -650,6 +663,10 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.FFmpegPath != "" {
 			s.config.FFmpegPath = req.FFmpegPath
+		}
+		if req.AutoCheckUpdates != nil {
+			val := *req.AutoCheckUpdates
+			s.config.AutoCheckUpdates = &val
 		}
 		s.config.mu.Unlock()
 
@@ -770,5 +787,87 @@ func (s *Server) Shutdown() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = s.httpSrv.Shutdown(ctx)
+	}
+}
+
+func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.updater == nil {
+		s.updater = NewUpdater()
+	}
+
+	force := r.URL.Query().Get("force") == "1" || strings.EqualFold(r.URL.Query().Get("force"), "true")
+	info, err := s.updater.CheckForUpdate(r.Context(), force)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(info)
+}
+
+func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.updater == nil {
+		s.updater = NewUpdater()
+	}
+
+	var req struct {
+		Force bool `json:"force"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	w.Header().Set("Content-Type", "application/json")
+	if s.queue != nil && s.queue.countDownloading() > 0 && !req.Force {
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "Active downloads are in progress. Pause or finish them before updating.",
+		})
+		return
+	}
+
+	info, err := s.updater.CheckForUpdate(r.Context(), true)
+	if err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	if !info.UpdateAvailable {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":  false,
+			"upToDate": true,
+			"version":  info.CurrentVersion,
+		})
+		return
+	}
+
+	if err := s.updater.ApplyUpdate(r.Context(), info, nil); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":    true,
+		"version":    info.LatestVersion,
+		"restarting": s.onRestartForUpdate != nil,
+	})
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+
+	if s.onRestartForUpdate != nil {
+		restartFn := s.onRestartForUpdate
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			restartFn()
+		}()
 	}
 }

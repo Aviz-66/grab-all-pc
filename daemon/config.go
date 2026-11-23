@@ -55,6 +55,7 @@ type Config struct {
 	VideoCodec        string `json:"videoCodec,omitempty"` // "h264" (default), "vp9", "av1", "auto"
 	ShowProgressPopup   *bool  `json:"showProgressPopup,omitempty"`
 	FirstRunPromptShown bool   `json:"firstRunPromptShown,omitempty"`
+	AutoCheckUpdates    *bool  `json:"autoCheckUpdates,omitempty"`
 
 	mu         sync.RWMutex `json:"-"`
 	configPath string       `json:"-"`
@@ -214,6 +215,25 @@ func (c *Config) GetSpeedMode() string {
 func (c *Config) SetSpeedMode(mode string) {
 	c.mu.Lock()
 	c.SpeedMode = normalizeSpeedMode(mode)
+	c.mu.Unlock()
+	_ = c.Save()
+}
+
+// GetAutoCheckUpdates returns whether GrabAll checks graball-website for PC updates on startup.
+func (c *Config) GetAutoCheckUpdates() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.AutoCheckUpdates == nil {
+		return true
+	}
+	return *c.AutoCheckUpdates
+}
+
+// SetAutoCheckUpdates updates the startup update-check preference and saves config.
+func (c *Config) SetAutoCheckUpdates(v bool) {
+	c.mu.Lock()
+	val := v
+	c.AutoCheckUpdates = &val
 	c.mu.Unlock()
 	_ = c.Save()
 }
