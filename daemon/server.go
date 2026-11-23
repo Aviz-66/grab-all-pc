@@ -112,6 +112,7 @@ func (s *Server) setupRoutes() http.Handler {
 	mux.HandleFunc("/api/resume", s.handleResume)
 	mux.HandleFunc("/api/speed-mode", s.handleSpeedMode)
 	mux.HandleFunc("/api/speed-limit", s.handleSpeedLimit)
+	mux.HandleFunc("/api/when-done", s.handleWhenDone)
 	mux.HandleFunc("/api/cancel", s.handleCancel)
 	mux.HandleFunc("/api/delete", s.handleDelete)
 	mux.HandleFunc("/api/clear-completed", s.handleClearCompleted)
@@ -248,6 +249,8 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 		"maxConcurrent":   s.config.GetMaxConcurrent(),
 		"speedMode":       s.config.GetSpeedMode(),
 		"speedLimitKBps":  s.config.GetSpeedLimitKBps(),
+		"theme":           s.config.GetTheme(),
+		"whenDoneAction":  s.queue.GetWhenDoneAction(),
 		"ytDlpAvailable":  hasYtDlp == nil,
 		"ffmpegAvailable": hasFFmpeg,
 	})
@@ -582,6 +585,32 @@ func (s *Server) handleSpeedLimit(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleWhenDone(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == http.MethodGet {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"whenDoneAction": s.queue.GetWhenDoneAction(),
+		})
+		return
+	}
+	if r.Method == http.MethodPost {
+		var req struct {
+			Action string `json:"action"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		applied := s.queue.SetWhenDoneAction(req.Action)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":        true,
+			"whenDoneAction": applied,
+		})
+		return
+	}
+	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -646,6 +675,8 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			"speedMode":        normalizeSpeedMode(s.config.SpeedMode),
 			"videoCodec":       normalizeVideoCodec(s.config.VideoCodec),
 			"speedLimitKBps":   s.config.SpeedLimitKBps,
+			"theme":            normalizeTheme(s.config.Theme),
+			"whenDoneAction":   s.queue.GetWhenDoneAction(),
 			"ytDlpAvailable":   hasYtDlp == nil,
 			"ffmpegAvailable":  hasFFmpeg,
 			"autoCheckUpdates": autoUpdates,
@@ -663,6 +694,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			SpeedMode        string `json:"speedMode"`
 			VideoCodec       string `json:"videoCodec"`
 			SpeedLimitKBps   *int64 `json:"speedLimitKBps"`
+			Theme            string `json:"theme"`
 			YtDlpPath        string `json:"ytDlpPath"`
 			FFmpegPath       string `json:"ffmpegPath"`
 			AutoCheckUpdates *bool  `json:"autoCheckUpdates"`
@@ -687,6 +719,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.VideoCodec != "" {
 			s.config.VideoCodec = normalizeVideoCodec(req.VideoCodec)
+		}
+		if req.Theme != "" {
+			s.config.Theme = normalizeTheme(req.Theme)
 		}
 		if req.YtDlpPath != "" {
 			s.config.YtDlpPath = req.YtDlpPath

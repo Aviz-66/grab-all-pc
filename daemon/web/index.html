@@ -52,6 +52,14 @@
         <button class="filter-tab" data-filter="error">Failed <span id="count-error">0</span></button>
       </div>
       <div class="bulk-actions">
+        <input type="search" id="search-input" class="search-input" placeholder="Search downloads..." aria-label="Search downloads" />
+        <select id="when-done-select" class="when-done-select" title="One-shot action when all active downloads finish">
+          <option value="none">When done: Nothing</option>
+          <option value="open_file">When done: Open File</option>
+          <option value="open_folder">When done: Open Folder</option>
+          <option value="sleep">When done: Sleep PC</option>
+          <option value="shutdown">When done: Shut Down PC</option>
+        </select>
         <button id="btn-clear-completed" class="btn btn-sm btn-ghost">🧹 Clear Completed</button>
       </div>
     </div>

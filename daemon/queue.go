@@ -48,9 +48,10 @@ type DownloadTask struct {
 	SpeedLimitKBps int64    `json:"speedLimitKBps,omitempty"` // Per-task speed cap in KB/s (0 = unlimited)
 	SubDir         string   `json:"subDir,omitempty"`         // Optional subfolder inside DownloadDir (e.g. playlist title)
 	Cookies        []Cookie `json:"cookies,omitempty"`
-	UserAgent      string   `json:"userAgent,omitempty"`
-	Referer        string   `json:"referer,omitempty"`
-	SavePath       string   `json:"savePath,omitempty"`
+	UserAgent      string            `json:"userAgent,omitempty"`
+	Referer        string            `json:"referer,omitempty"`
+	SavePath       string            `json:"savePath,omitempty"`
+	Segments       []SegmentProgress `json:"segments,omitempty"`
 
 	// Runtime controls
 	cancelFunc  context.CancelFunc `json:"-"`
@@ -106,6 +107,9 @@ type QueueManager struct {
 	broker          *SSEBroker
 	globalLimiter   *bandwidthLimiter
 	hostPool        *hostConnectionPool
+	whenDoneMu      sync.RWMutex
+	whenDoneAction  string
+	onWhenDone      func(action string, lastTask *DownloadTask)
 	hooksMu         sync.RWMutex
 	onUpdate        func()
 	onTaskAdded     func(task *DownloadTask)
@@ -150,14 +154,15 @@ func NewQueueManager(cfg *Config, dataFile string, broker *SSEBroker) *QueueMana
 		globalLimitKBps = cfg.GetSpeedLimitKBps()
 	}
 	qm := &QueueManager{
-		config:        cfg,
-		tasks:         make([]*DownloadTask, 0),
-		dataFile:      dataFile,
-		notifyChan:    make(chan struct{}, 10),
-		stopChan:      make(chan struct{}),
-		broker:        broker,
-		globalLimiter: newBandwidthLimiter(globalLimitKBps * 1024),
-		hostPool:      newHostConnectionPool(defaultMaxConnsPerHost),
+		config:         cfg,
+		tasks:          make([]*DownloadTask, 0),
+		dataFile:       dataFile,
+		notifyChan:     make(chan struct{}, 10),
+		stopChan:       make(chan struct{}),
+		broker:         broker,
+		globalLimiter:  newBandwidthLimiter(globalLimitKBps * 1024),
+		hostPool:       newHostConnectionPool(defaultMaxConnsPerHost),
+		whenDoneAction: WhenDoneNone,
 	}
 
 	qm.load()
@@ -226,6 +231,10 @@ func snapshotTask(t *DownloadTask, includeCookies bool) *DownloadTask {
 		UserAgent:       t.UserAgent,
 		Referer:         t.Referer,
 		SavePath:        t.SavePath,
+	}
+	if !includeCookies && len(t.Segments) > 0 {
+		cp.Segments = make([]SegmentProgress, len(t.Segments))
+		copy(cp.Segments, t.Segments)
 	}
 	if includeCookies {
 		cp.Cookies = t.Cookies
@@ -616,6 +625,7 @@ func (qm *QueueManager) PauseTask(id string) bool {
 		task.Status = StatusPaused
 		task.Speed = ""
 		task.ETA = ""
+		task.Segments = nil
 		task.UpdatedAt = time.Now()
 		if task.cancelFunc != nil {
 			task.cancelFunc()
@@ -626,6 +636,7 @@ func (qm *QueueManager) PauseTask(id string) bool {
 	} else if task.Status == StatusQueued {
 		task.runID++
 		task.Status = StatusPaused
+		task.Segments = nil
 		task.UpdatedAt = time.Now()
 		shouldSave = true
 	}
@@ -690,6 +701,7 @@ func (qm *QueueManager) CancelTask(id string) bool {
 		task.Status = StatusCanceled
 		task.Speed = ""
 		task.ETA = ""
+		task.Segments = nil
 		task.UpdatedAt = time.Now()
 		if task.cancelFunc != nil {
 			task.cancelFunc()
@@ -698,6 +710,7 @@ func (qm *QueueManager) CancelTask(id string) bool {
 	} else if task.Status == StatusQueued || task.Status == StatusPaused {
 		task.runID++
 		task.Status = StatusCanceled
+		task.Segments = nil
 		task.UpdatedAt = time.Now()
 	}
 	task.mu.Unlock()
@@ -836,6 +849,90 @@ func (qm *QueueManager) TaskLimiters(task *DownloadTask) []*bandwidthLimiter {
 		limiters = append(limiters, qm.globalLimiter)
 	}
 	return limiters
+}
+
+func (qm *QueueManager) GetWhenDoneAction() string {
+	if qm == nil {
+		return WhenDoneNone
+	}
+	qm.whenDoneMu.RLock()
+	defer qm.whenDoneMu.RUnlock()
+	return normalizeWhenDoneAction(qm.whenDoneAction)
+}
+
+func (qm *QueueManager) SetWhenDoneAction(action string) string {
+	norm := normalizeWhenDoneAction(action)
+	qm.whenDoneMu.Lock()
+	qm.whenDoneAction = norm
+	qm.whenDoneMu.Unlock()
+	qm.BroadcastUpdate()
+	return norm
+}
+
+func (qm *QueueManager) SetWhenDoneHandler(fn func(action string, lastTask *DownloadTask)) {
+	qm.whenDoneMu.Lock()
+	qm.onWhenDone = fn
+	qm.whenDoneMu.Unlock()
+}
+
+func (qm *QueueManager) countActiveOrQueued() int {
+	qm.tasksMu.RLock()
+	defer qm.tasksMu.RUnlock()
+	count := 0
+	for _, t := range qm.tasks {
+		t.mu.Lock()
+		if t.Status == StatusDownloading || t.Status == StatusQueued {
+			count++
+		}
+		t.mu.Unlock()
+	}
+	return count
+}
+
+func (qm *QueueManager) maybeTriggerWhenDone(completedTask *DownloadTask) {
+	if qm == nil || qm.countActiveOrQueued() > 0 {
+		return
+	}
+	qm.whenDoneMu.Lock()
+	action := normalizeWhenDoneAction(qm.whenDoneAction)
+	if action == WhenDoneNone {
+		qm.whenDoneMu.Unlock()
+		return
+	}
+	qm.whenDoneAction = WhenDoneNone
+	handler := qm.onWhenDone
+	qm.whenDoneMu.Unlock()
+
+	qm.BroadcastUpdate()
+
+	go func(act string, last *DownloadTask) {
+		if handler != nil {
+			handler(act, last)
+			return
+		}
+		executeWhenDoneAction(qm.config, qm, act, last)
+	}(action, completedTask)
+}
+
+func executeWhenDoneAction(cfg *Config, qm *QueueManager, action string, lastTask *DownloadTask) {
+	var taskID string
+	if lastTask != nil {
+		taskID = lastTask.ID
+	}
+	switch normalizeWhenDoneAction(action) {
+	case WhenDoneOpenFile:
+		fp, dir := resolveTaskRevealPaths(cfg, qm, taskID)
+		if fp == "" || openFileDefault(fp) != nil {
+			openFolderOrSelectFile(fp, dir)
+		}
+	case WhenDoneOpenFolder:
+		fp, dir := resolveTaskRevealPaths(cfg, qm, taskID)
+		openFolderOrSelectFile(fp, dir)
+	case WhenDoneSleep:
+		_ = triggerSystemSleep()
+	case WhenDoneShutdown:
+		_ = triggerSystemShutdown(30)
+	}
 }
 
 // DeleteTask removes a task from the list and cleans up partial or completed files.
@@ -1030,6 +1127,12 @@ func (qm *QueueManager) runDownload(ctx context.Context, task *DownloadTask, myR
 	task.UpdatedAt = now
 	task.Speed = ""
 	task.ETA = ""
+	task.Segments = nil
+
+	var (
+		justCompleted bool
+		completedSnap *DownloadTask
+	)
 
 	if ctx.Err() != nil {
 		// Context was canceled
@@ -1040,6 +1143,7 @@ func (qm *QueueManager) runDownload(ctx context.Context, task *DownloadTask, myR
 		task.Status = StatusError
 		task.ErrorMessage = err.Error()
 	} else {
+		justCompleted = true
 		task.Status = StatusCompleted
 		task.Progress = 100.0
 		task.CompletedAt = &now
@@ -1066,6 +1170,7 @@ func (qm *QueueManager) runDownload(ctx context.Context, task *DownloadTask, myR
 
 		// Purge any lingering temporary/partial files belonging to this task
 		qm.cleanTaskArtifacts(task, false)
+		completedSnap = snapshotTask(task, false)
 		goto broadcastEnd
 	}
 	task.mu.Unlock()
@@ -1074,6 +1179,9 @@ broadcastEnd:
 	qm.save()
 	qm.BroadcastUpdate()
 	qm.triggerLoop()
+	if justCompleted {
+		qm.maybeTriggerWhenDone(completedSnap)
+	}
 }
 
 func (qm *QueueManager) Stop() {

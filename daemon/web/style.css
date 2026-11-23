@@ -214,6 +214,33 @@ body {
   background: rgba(255, 255, 255, 0.25);
 }
 
+.bulk-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.search-input,
+.when-done-select {
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  outline: none;
+}
+
+.search-input {
+  min-width: 190px;
+}
+
+.search-input:focus,
+.when-done-select:focus {
+  border-color: var(--primary);
+}
+
 /* Queue List */
 .queue-list {
   display: flex;
@@ -561,4 +588,26 @@ body {
 
 .update-banner-actions a {
   text-decoration: none;
+}
+
+/* Segment Map Progress Strip */
+.segment-map-bar {
+  position: relative;
+  height: 7px;
+  margin-top: 6px;
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.segment-map-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background-color: var(--success, #10b981);
+}
+
+.segment-map-fill.active {
+  background-color: var(--primary);
 }

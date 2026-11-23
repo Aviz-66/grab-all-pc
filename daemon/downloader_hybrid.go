@@ -620,6 +620,7 @@ type streamFetchOptions struct {
 	HostPool             *hostConnectionPool
 	Limiters             []*bandwidthLimiter
 	OnProgress           func(downloaded, total int64, rateBytesPerSec float64, workers int)
+	OnSegments           func(segs []SegmentProgress)
 	OnStatus             func(msg string)
 	OnStats              func(steals, preemptions int64)
 	RefreshURL           func(ctx context.Context) (newURL string, newHeaders map[string]string, err error)
@@ -1464,6 +1465,7 @@ func fetchStreamTurbo(ctx context.Context, opts streamFetchOptions, endpoint *st
 		ProbeStart:           0,
 		ProbeEnd:             probeEnd,
 		OnProgress:           opts.OnProgress,
+		OnSegments:           opts.OnSegments,
 		OnStats:              opts.OnStats,
 	})
 	if wsErr != nil {
@@ -2108,6 +2110,13 @@ func runHybridYouTubeDownload(ctx context.Context, qm *QueueManager, task *Downl
 			MaxWorkers:   maxWorkers,
 			HostPool:     qm.hostPool,
 			Limiters:     qm.TaskLimiters(task),
+			OnSegments: func(segs []SegmentProgress) {
+				task.mu.Lock()
+				if task.Status == StatusDownloading {
+					task.Segments = segs
+				}
+				task.mu.Unlock()
+			},
 			OnStatus: func(msg string) {
 				task.mu.Lock()
 				if task.Status == StatusDownloading {

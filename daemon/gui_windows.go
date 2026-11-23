@@ -59,23 +59,28 @@ const (
 	swShow       = 5
 
 	// Window Messages
-	wmCreate        = 0x0001
-	wmDestroy       = 0x0002
-	wmSize          = 0x0005
-	wmSetText       = 0x000C
-	wmClose         = 0x0010
-	wmQuit          = 0x0012
-	wmGetMinMaxInfo = 0x0024
-	wmSetFont       = 0x0030
-	wmNotify        = 0x004E
-	wmSetIcon       = 0x0080
-	wmCommand       = 0x0111
-	wmSysCommand    = 0x0112
-	wmTimer         = 0x0113
+	wmCreate         = 0x0001
+	wmDestroy        = 0x0002
+	wmSize           = 0x0005
+	wmSetText        = 0x000C
+	wmPaint          = 0x000F
+	wmClose          = 0x0010
+	wmQuit           = 0x0012
+	wmEraseBkgnd     = 0x0014
+	wmGetMinMaxInfo  = 0x0024
+	wmSetFont        = 0x0030
+	wmNotify         = 0x004E
+	wmSetIcon        = 0x0080
+	wmCommand        = 0x0111
+	wmSysCommand     = 0x0112
+	wmTimer          = 0x0113
+	wmCtlColorEdit   = 0x0133
+	wmCtlColorListBox = 0x0134
+	wmCtlColorBtn    = 0x0135
 	wmCtlColorStatic = 0x0138
-	wmLButtonUp     = 0x0202
-	wmLButtonDblClk = 0x0203
-	wmRButtonUp     = 0x0205
+	wmLButtonUp      = 0x0202
+	wmLButtonDblClk  = 0x0203
+	wmRButtonUp      = 0x0205
 
 	wmApp            = 0x8000
 	wmAppTray        = wmApp + 1
@@ -97,13 +102,26 @@ const (
 	bstUnchecked    = 0
 
 	esAutoHScroll = 0x0080
+	emSetCueBanner = 0x1501
+	enChange       = 0x0300
+
 	ssLeftNoWrap  = 0x000C
 	ssEndEllipsis = 0x4000
+
+	lbsNotify           = 0x0001
+	lbsNoIntegralHeight = 0x0100
+	lbAddString         = 0x0180
+	lbInsertString      = 0x0181
+	lbDeleteString      = 0x0182
+	lbSetCurSel         = 0x0186
+	lbGetCurSel         = 0x0188
+	lbnSelChange        = 1
 
 	cbsDropDownList = 0x0003
 	cbAddString     = 0x0143
 	cbGetCurSel     = 0x0147
 	cbSetCurSel     = 0x014E
+	cbnSelChange    = 1
 
 	// ListView Constants
 	iccListViewClasses = 0x00000001
@@ -119,14 +137,21 @@ const (
 	lvsExDoubleBuffer  = 0x00010000
 
 	lvmFirst                    = 0x1000
+	lvmSetBkColor               = lvmFirst + 1
 	lvmDeleteItem               = lvmFirst + 8
 	lvmDeleteAllItems           = lvmFirst + 9
 	lvmGetNextItem              = lvmFirst + 12
+	lvmRedrawItems              = lvmFirst + 21
+	lvmSetTextColor             = lvmFirst + 36
+	lvmSetTextBkColor           = lvmFirst + 38
 	lvmSetItemState             = lvmFirst + 43
+	lvmGetItemState             = lvmFirst + 44
 	lvmSetExtendedListViewStyle = lvmFirst + 54
+	lvmGetSubItemRect           = lvmFirst + 56
 	lvmInsertItemW              = lvmFirst + 77
 	lvmInsertColumnW            = lvmFirst + 97
 	lvmSetItemTextW             = lvmFirst + 116
+	lvirBounds                  = 0
 
 	lvcfFmt     = 0x0001
 	lvcfWidth   = 0x0002
@@ -141,8 +166,23 @@ const (
 	lvisFocused   = 0x0001
 	lvniSelected  = 0x0002
 
-	nmDblClk = ^uint32(2) // -3
-	nmRClick = ^uint32(4) // -5
+	nmDblClk     = ^uint32(2)  // -3
+	nmRClick     = ^uint32(4)  // -5
+	nmCustomDraw = ^uint32(11) // -12
+
+	cddsPrePaint        = 0x00000001
+	cddsItemPrePaint    = 0x00010001
+	cddsSubItem         = 0x00020000
+	cdrfDoDefault       = 0x00000000
+	cdrfNewFont         = 0x00000002
+	cdrfSkipDefault     = 0x00000004
+	cdrfNotifyItemDraw  = 0x00000020
+	cdrfNotifySubItemDraw = 0x00000020
+
+	dtCenter      = 0x00000001
+	dtVCenter     = 0x00000004
+	dtSingleLine  = 0x00000020
+	dtEndEllipsis = 0x00008000
 
 	// Progress Bar Constants
 	pbsSmooth    = 0x01
@@ -242,15 +282,26 @@ const (
 	cmdTaskLimit2048     = 1063
 	cmdTaskLimit5120     = 1064
 	cmdTaskLimit10240    = 1065
+	cmdThemeAuto         = 1070
+	cmdThemeLight        = 1071
+	cmdThemeDark         = 1072
+	cmdWhenDoneNone      = 1075
+	cmdWhenDoneOpenFile  = 1076
+	cmdWhenDoneOpenFolder = 1077
+	cmdWhenDoneSleep     = 1078
+	cmdWhenDoneShutdown  = 1079
 	cmdExit              = 1099
 
-	idcListView = 2001
-	idcStatus   = 2002
+	idcListView   = 2001
+	idcStatus     = 2002
+	idcSidebar    = 2003
+	idcSearchEdit = 2004
 
 	// Progress Popup Control IDs
-	idcProgBtnPrimary   = 3001
-	idcProgBtnSecondary = 3002
-	idcProgBtnClose     = 3003
+	idcProgBtnPrimary    = 3001
+	idcProgBtnSecondary  = 3002
+	idcProgBtnClose      = 3003
+	idcProgComboWhenDone = 3004
 
 	// Add Dialog Control IDs
 	idcAddEditURL   = 4001
@@ -270,6 +321,8 @@ var (
 	modComctl32 = syscall.NewLazyDLL("comctl32.dll")
 	modShell32  = syscall.NewLazyDLL("shell32.dll")
 	modOle32    = syscall.NewLazyDLL("ole32.dll")
+	modDwmapi   = syscall.NewLazyDLL("dwmapi.dll")
+	modUxtheme  = syscall.NewLazyDLL("uxtheme.dll")
 
 	procSetProcessDPIAware   = modUser32.NewProc("SetProcessDPIAware")
 	procRegisterClassExW     = modUser32.NewProc("RegisterClassExW")
@@ -318,8 +371,15 @@ var (
 	procEmptyClipboard       = modUser32.NewProc("EmptyClipboard")
 	procGetClipboardData     = modUser32.NewProc("GetClipboardData")
 	procSetClipboardData     = modUser32.NewProc("SetClipboardData")
-	procFindWindowW          = modUser32.NewProc("FindWindowW")
+	procFindWindowW            = modUser32.NewProc("FindWindowW")
 	procRegisterWindowMessageW = modUser32.NewProc("RegisterWindowMessageW")
+	procFillRect               = modUser32.NewProc("FillRect")
+	procFrameRect              = modUser32.NewProc("FrameRect")
+	procDrawTextW              = modUser32.NewProc("DrawTextW")
+	procInvalidateRect         = modUser32.NewProc("InvalidateRect")
+	procBeginPaint             = modUser32.NewProc("BeginPaint")
+	procEndPaint               = modUser32.NewProc("EndPaint")
+	procSetClassLongPtrW       = modUser32.NewProc("SetClassLongPtrW")
 
 	procGetModuleHandleW = modKernel32.NewProc("GetModuleHandleW")
 	procCreateMutexW     = modKernel32.NewProc("CreateMutexW")
@@ -335,8 +395,13 @@ var (
 	procDeleteObject     = modGdi32.NewProc("DeleteObject")
 	procGetDeviceCaps    = modGdi32.NewProc("GetDeviceCaps")
 	procSetBkMode        = modGdi32.NewProc("SetBkMode")
+	procCreateSolidBrush = modGdi32.NewProc("CreateSolidBrush")
+	procSetTextColor     = modGdi32.NewProc("SetTextColor")
+	procSetBkColor       = modGdi32.NewProc("SetBkColor")
 
 	procInitCommonControlsEx = modComctl32.NewProc("InitCommonControlsEx")
+	procDwmSetWindowAttr     = modDwmapi.NewProc("DwmSetWindowAttribute")
+	procSetWindowTheme       = modUxtheme.NewProc("SetWindowTheme")
 
 	procShellNotifyIconW      = modShell32.NewProc("Shell_NotifyIconW")
 	procShellExecuteW         = modShell32.NewProc("ShellExecuteW")
@@ -471,6 +536,101 @@ type nmItemActivate struct {
 	UKeyFlags uint32
 }
 
+type nmCustomDrawInfo struct {
+	Hdr         nmHdr
+	DwDrawStage uint32
+	Hdc         uintptr
+	Rc          winRect
+	DwItemSpec  uintptr
+	UItemState  uint32
+	LItemlParam uintptr
+}
+
+type nmLvCustomDraw struct {
+	Nmcd        nmCustomDrawInfo
+	ClrText     uint32
+	ClrTextBk   uint32
+	ISubItem    int32
+	DwItemType  uint32
+	ClrFace     uint32
+	IIconEffect int32
+	IIconPhase  int32
+	IPartId     int32
+	IStateId    int32
+	RcText      winRect
+	UAlign      uint32
+}
+
+type paintStruct struct {
+	Hdc        uintptr
+	FErase     int32
+	RcPaint    winRect
+	FRestore   int32
+	FIncUpdate int32
+	RgbReserved [32]byte
+}
+
+type uiThemeColors struct {
+	Window    uint32
+	Surface   uint32
+	SurfaceAlt uint32
+	Selected  uint32
+	Track     uint32
+	Border    uint32
+	FillBlue  uint32
+	FillGreen uint32
+	FillAmber uint32
+	FillRed   uint32
+	Text      uint32
+	TextMuted uint32
+	TextOnBar uint32
+	TextGreen uint32
+	TextRed   uint32
+}
+
+func rgbColor(r, g, b uint8) uint32 {
+	return uint32(r) | (uint32(g) << 8) | (uint32(b) << 16)
+}
+
+func getThemeColors(dark bool) uiThemeColors {
+	if dark {
+		return uiThemeColors{
+			Window:     rgbColor(24, 24, 28),
+			Surface:    rgbColor(32, 33, 38),
+			SurfaceAlt: rgbColor(38, 40, 46),
+			Selected:   rgbColor(45, 76, 128),
+			Track:      rgbColor(48, 52, 64),
+			Border:     rgbColor(72, 76, 88),
+			FillBlue:   rgbColor(37, 99, 235),
+			FillGreen:  rgbColor(5, 150, 105),
+			FillAmber:  rgbColor(217, 119, 6),
+			FillRed:    rgbColor(220, 38, 38),
+			Text:       rgbColor(241, 245, 249),
+			TextMuted:  rgbColor(148, 163, 184),
+			TextOnBar:  rgbColor(255, 255, 255),
+			TextGreen:  rgbColor(52, 211, 153),
+			TextRed:    rgbColor(248, 113, 113),
+		}
+	}
+	return uiThemeColors{
+		Window:     rgbColor(243, 245, 248),
+		Surface:    rgbColor(255, 255, 255),
+		SurfaceAlt: rgbColor(248, 250, 252),
+		Selected:   rgbColor(219, 234, 254),
+		Track:      rgbColor(226, 232, 240),
+		Border:     rgbColor(203, 213, 225),
+		FillBlue:   rgbColor(96, 165, 250),
+		FillGreen:  rgbColor(110, 231, 183),
+		FillAmber:  rgbColor(252, 211, 77),
+		FillRed:    rgbColor(252, 165, 165),
+		Text:       rgbColor(15, 23, 42),
+		TextMuted:  rgbColor(100, 116, 139),
+		TextOnBar:  rgbColor(15, 23, 42),
+		TextGreen:  rgbColor(21, 128, 61),
+		TextRed:    rgbColor(185, 28, 28),
+	}
+}
+
 type bitmapInfoHeader struct {
 	BiSize          uint32
 	BiWidth         int32
@@ -517,28 +677,38 @@ type toolbarButtonDef struct {
 }
 
 type listRowCache struct {
-	id   string
-	cols [6]string
+	id       string
+	cols     [6]string
+	status   string
+	progress float64
 }
 
 type progressPopup struct {
-	taskID       string
-	hwnd         uintptr
-	lblTitle     uintptr
-	lblURL       uintptr
-	lblStatus    uintptr
-	lblSize      uintptr
-	lblSpeed     uintptr
-	progBar      uintptr
-	btnPrimary   uintptr
-	btnSecondary uintptr
-	btnClose     uintptr
-	lastTitle    string
-	lastStatus   string
-	lastSize     string
-	lastSpeed    string
-	lastPos      int
-	lastMode     string // "active", "paused", "completed", "error"
+	taskID         string
+	hwnd           uintptr
+	lblTitle       uintptr
+	lblURL         uintptr
+	lblStatus      uintptr
+	lblSize        uintptr
+	lblSpeed       uintptr
+	progBar        uintptr
+	lblConns       uintptr
+	comboWhenDone  uintptr
+	segRect        winRect
+	btnPrimary     uintptr
+	btnSecondary   uintptr
+	btnClose       uintptr
+	lastTitle      string
+	lastStatus     string
+	lastSize       string
+	lastSpeed      string
+	lastConns      string
+	lastWhenDone   string
+	lastPos        int
+	lastMode       string // "active", "paused", "completed", "error"
+	lastSegments   []SegmentProgress
+	lastTotalBytes int64
+	lastStatusCode string
 }
 
 type addDialogControls struct {
@@ -598,12 +768,35 @@ type winAppGUI struct {
 	fontBold  uintptr
 
 	mainHwnd        uintptr
+	sidebarHwnd     uintptr
+	searchHwnd      uintptr
 	listHwnd        uintptr
 	statusHwnd      uintptr
 	hMenuOpt        uintptr
 	hMenuSpeedLimit uintptr
+	hMenuTheme      uintptr
+	hMenuWhenDone   uintptr
 	toolbar         []toolbarButtonDef
-	rows       []listRowCache
+	toolbarEndX     int
+	rows            []listRowCache
+
+	activeCategory  string
+	searchQuery     string
+	sidebarLabels   [10]string
+	updatingSidebar bool
+
+	darkMode     bool
+	colors       uiThemeColors
+	hbrWindow    uintptr
+	hbrSurface   uintptr
+	hbrSurfaceAlt uintptr
+	hbrSelected  uintptr
+	hbrTrack     uintptr
+	hbrBorder    uintptr
+	hbrFillBlue  uintptr
+	hbrFillGreen uintptr
+	hbrFillAmber uintptr
+	hbrFillRed   uintptr
 
 	popups   map[uintptr]*progressPopup // hwnd -> popup
 	taskPop  map[string]uintptr         // taskID -> hwnd
@@ -702,14 +895,22 @@ func runPlatformApp(cfg *Config, qm *QueueManager, srv *Server, startInTray bool
 	runtime.LockOSThread()
 
 	g := &winAppGUI{
-		cfg:     cfg,
-		qm:      qm,
-		srv:     srv,
-		dpi:     96,
-		popups:  make(map[uintptr]*progressPopup),
-		taskPop: make(map[string]uintptr),
+		cfg:            cfg,
+		qm:             qm,
+		srv:            srv,
+		dpi:            96,
+		activeCategory: CategoryAll,
+		popups:         make(map[uintptr]*progressPopup),
+		taskPop:        make(map[string]uintptr),
 	}
 	appGUI = g
+
+	qm.SetWhenDoneHandler(func(action string, lastTask *DownloadTask) {
+		if action == WhenDoneShutdown && !g.quitting && g.trayAdded.Load() {
+			g.showTrayBalloon("Downloads Complete", "Shutting down PC in 30 seconds...")
+		}
+		executeWhenDoneAction(g.cfg, g.qm, action, lastTask)
+	})
 
 	// Wire server & queue hooks to Win32 message loop
 	srv.SetShowWindowHandler(func() {
@@ -981,6 +1182,106 @@ func loadIconFromEmbeddedData(size int) uintptr {
 	return hIcon
 }
 
+func (g *winAppGUI) destroyThemeBrushes() {
+	ptrs := []*uintptr{
+		&g.hbrWindow, &g.hbrSurface, &g.hbrSurfaceAlt, &g.hbrSelected,
+		&g.hbrTrack, &g.hbrBorder, &g.hbrFillBlue, &g.hbrFillGreen,
+		&g.hbrFillAmber, &g.hbrFillRed,
+	}
+	for _, p := range ptrs {
+		if *p != 0 {
+			procDeleteObject.Call(*p)
+			*p = 0
+		}
+	}
+}
+
+func (g *winAppGUI) rebuildThemeBrushes(dark bool) {
+	g.destroyThemeBrushes()
+	g.darkMode = dark
+	c := getThemeColors(dark)
+	g.colors = c
+
+	mk := func(cr uint32) uintptr {
+		h, _, _ := procCreateSolidBrush.Call(uintptr(cr))
+		return h
+	}
+	g.hbrWindow = mk(c.Window)
+	g.hbrSurface = mk(c.Surface)
+	g.hbrSurfaceAlt = mk(c.SurfaceAlt)
+	g.hbrSelected = mk(c.Selected)
+	g.hbrTrack = mk(c.Track)
+	g.hbrBorder = mk(c.Border)
+	g.hbrFillBlue = mk(c.FillBlue)
+	g.hbrFillGreen = mk(c.FillGreen)
+	g.hbrFillAmber = mk(c.FillAmber)
+	g.hbrFillRed = mk(c.FillRed)
+}
+
+func (g *winAppGUI) applyWindowDarkChrome(hwnd uintptr) {
+	if hwnd == 0 || procDwmSetWindowAttr.Find() != nil {
+		return
+	}
+	var val int32
+	if g.darkMode {
+		val = 1
+	}
+	// DWMWA_USE_IMMERSIVE_DARK_MODE = 20 (Win11 / Win10 20H1+), fallback 19
+	r, _, _ := procDwmSetWindowAttr.Call(hwnd, 20, uintptr(unsafe.Pointer(&val)), unsafe.Sizeof(val))
+	if r != 0 {
+		procDwmSetWindowAttr.Call(hwnd, 19, uintptr(unsafe.Pointer(&val)), unsafe.Sizeof(val))
+	}
+}
+
+func (g *winAppGUI) applyTheme() {
+	dark := resolveDarkMode(g.cfg.GetTheme(), isSystemDarkMode())
+	g.rebuildThemeBrushes(dark)
+
+	const gclHbrBackground = ^uintptr(9) // GCLP_HBRBACKGROUND (-10)
+	if procSetClassLongPtrW.Find() == nil && g.hbrWindow != 0 {
+		for _, wnd := range []uintptr{g.mainHwnd} {
+			if wnd != 0 {
+				procSetClassLongPtrW.Call(wnd, gclHbrBackground, g.hbrWindow)
+			}
+		}
+	}
+
+	g.applyWindowDarkChrome(g.mainHwnd)
+	themeStr := "Explorer"
+	if dark {
+		themeStr = "DarkMode_Explorer"
+	}
+	if procSetWindowTheme.Find() == nil {
+		for _, ctrl := range []uintptr{g.listHwnd, g.sidebarHwnd, g.searchHwnd} {
+			if ctrl != 0 {
+				procSetWindowTheme.Call(ctrl, uintptr(unsafe.Pointer(utf16Ptr(themeStr))), 0)
+			}
+		}
+	}
+
+	if g.listHwnd != 0 {
+		procSendMessageW.Call(g.listHwnd, lvmSetBkColor, 0, uintptr(g.colors.Surface))
+		procSendMessageW.Call(g.listHwnd, lvmSetTextBkColor, 0, uintptr(g.colors.Surface))
+		procSendMessageW.Call(g.listHwnd, lvmSetTextColor, 0, uintptr(g.colors.Text))
+		procInvalidateRect.Call(g.listHwnd, 0, 1)
+	}
+	if g.sidebarHwnd != 0 {
+		procInvalidateRect.Call(g.sidebarHwnd, 0, 1)
+	}
+	if g.mainHwnd != 0 {
+		procInvalidateRect.Call(g.mainHwnd, 0, 1)
+	}
+	for hwnd := range g.popups {
+		g.applyWindowDarkChrome(hwnd)
+		procInvalidateRect.Call(hwnd, 0, 1)
+	}
+	if g.addDlg != nil && g.addDlg.hwnd != 0 {
+		g.applyWindowDarkChrome(g.addDlg.hwnd)
+		procInvalidateRect.Call(g.addDlg.hwnd, 0, 1)
+	}
+	g.refreshOptionMenuChecks()
+}
+
 func (g *winAppGUI) initAndRunMessageLoop(startInTray bool) {
 	procSetProcessDPIAware.Call()
 	procCoInitializeEx.Call(0, coinitApartment)
@@ -1060,8 +1361,8 @@ func (g *winAppGUI) initAndRunMessageLoop(startInTray bool) {
 	}
 	procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wcAdd)))
 
-	winW := g.scale(900)
-	winH := g.scale(520)
+	winW := g.scale(1060)
+	winH := g.scale(560)
 	scrW, _, _ := procGetSystemMetrics.Call(smCxScreen)
 	scrH, _, _ := procGetSystemMetrics.Call(smCyScreen)
 	posX := (int(scrW) - winW) / 2
@@ -1072,6 +1373,9 @@ func (g *winAppGUI) initAndRunMessageLoop(startInTray bool) {
 	if posY < 20 {
 		posY = 20
 	}
+
+	g.darkMode = resolveDarkMode(g.cfg.GetTheme(), isSystemDarkMode())
+	g.rebuildThemeBrushes(g.darkMode)
 
 	hMenu := g.buildMainMenu()
 	if tbMsg, _, _ := procRegisterWindowMessageW.Call(uintptr(unsafe.Pointer(utf16Ptr("TaskbarCreated")))); tbMsg != 0 {
@@ -1098,6 +1402,7 @@ func (g *winAppGUI) initAndRunMessageLoop(startInTray bool) {
 	if g.iconSmall != 0 {
 		procSendMessageW.Call(g.mainHwnd, wmSetIcon, iconSmallVal, g.iconSmall)
 	}
+	g.applyTheme()
 
 	if !g.addTrayIcon() {
 		go func() {
@@ -1169,6 +1474,20 @@ func (g *winAppGUI) buildMainMenu() uintptr {
 		procAppendMenuW.Call(hSpeed, mfString, uintptr(cmdGlobalLimit0+idx), uintptr(unsafe.Pointer(utf16Ptr(preset.label))))
 	}
 	procAppendMenuW.Call(hOpt, mfPopup, hSpeed, uintptr(unsafe.Pointer(utf16Ptr("Global Speed Limit"))))
+
+	hTheme, _, _ := procCreatePopupMenu.Call()
+	g.hMenuTheme = hTheme
+	procAppendMenuW.Call(hTheme, mfString, cmdThemeAuto, uintptr(unsafe.Pointer(utf16Ptr("Auto (Follow Windows)"))))
+	procAppendMenuW.Call(hTheme, mfString, cmdThemeLight, uintptr(unsafe.Pointer(utf16Ptr("Light Mode"))))
+	procAppendMenuW.Call(hTheme, mfString, cmdThemeDark, uintptr(unsafe.Pointer(utf16Ptr("Dark Mode"))))
+	procAppendMenuW.Call(hOpt, mfPopup, hTheme, uintptr(unsafe.Pointer(utf16Ptr("Theme"))))
+
+	hWD, _, _ := procCreatePopupMenu.Call()
+	g.hMenuWhenDone = hWD
+	for idx, preset := range whenDonePresets {
+		procAppendMenuW.Call(hWD, mfString, uintptr(cmdWhenDoneNone+idx), uintptr(unsafe.Pointer(utf16Ptr(preset.Label))))
+	}
+	procAppendMenuW.Call(hOpt, mfPopup, hWD, uintptr(unsafe.Pointer(utf16Ptr("When All Downloads Finish"))))
 
 	procAppendMenuW.Call(hOpt, mfSeparator, 0, 0)
 	procAppendMenuW.Call(hOpt, mfString, cmdToggleStartup, uintptr(unsafe.Pointer(utf16Ptr("Start GrabAll Automatically with Windows"))))
@@ -1242,6 +1561,36 @@ func (g *winAppGUI) refreshOptionMenuChecks() {
 			procCheckMenuItem.Call(g.hMenuSpeedLimit, uintptr(cmdGlobalLimit0+idx), flag)
 		}
 	}
+
+	if g.hMenuTheme != 0 {
+		curTheme := g.cfg.GetTheme()
+		themeCmds := []struct {
+			id  uintptr
+			val string
+		}{
+			{cmdThemeAuto, ThemeAuto},
+			{cmdThemeLight, ThemeLight},
+			{cmdThemeDark, ThemeDark},
+		}
+		for _, tc := range themeCmds {
+			flag := uintptr(mfByCommand | mfUnchecked)
+			if curTheme == tc.val {
+				flag = uintptr(mfByCommand | mfChecked)
+			}
+			procCheckMenuItem.Call(g.hMenuTheme, tc.id, flag)
+		}
+	}
+
+	if g.hMenuWhenDone != 0 {
+		curWD := g.qm.GetWhenDoneAction()
+		for idx, preset := range whenDonePresets {
+			flag := uintptr(mfByCommand | mfUnchecked)
+			if curWD == preset.Value {
+				flag = uintptr(mfByCommand | mfChecked)
+			}
+			procCheckMenuItem.Call(g.hMenuWhenDone, uintptr(cmdWhenDoneNone+idx), flag)
+		}
+	}
 }
 
 func (g *winAppGUI) createChildControl(className, text string, style, exStyle uint32, x, y, w, h int, parent, id uintptr, bold bool) uintptr {
@@ -1297,13 +1646,39 @@ func (g *winAppGUI) onCreateMainWindow(hwnd uintptr) {
 		)
 		x += bw + gap
 	}
+	g.toolbarEndX = x
+
+	// Live Search Edit Box on right side of toolbar
+	g.searchHwnd = g.createChildControl(
+		"EDIT", "",
+		wsChild|wsVisible|wsTabStop|esAutoHScroll, wsExClientEdge,
+		x, y+g.scale(2), g.scale(210), g.scale(26),
+		hwnd, idcSearchEdit, false,
+	)
+	if g.searchHwnd != 0 {
+		procSendMessageW.Call(g.searchHwnd, emSetCueBanner, 1, uintptr(unsafe.Pointer(utf16Ptr("Search downloads..."))))
+	}
+
+	// Left Categories Sidebar (LISTBOX)
+	g.sidebarHwnd = g.createChildControl(
+		"LISTBOX", "",
+		wsChild|wsVisible|wsTabStop|wsVScroll|lbsNotify|lbsNoIntegralHeight, wsExClientEdge,
+		g.scale(10), g.scale(46), g.scale(178), g.scale(420),
+		hwnd, idcSidebar, false,
+	)
+	for idx, cat := range uiCategories {
+		label := fmt.Sprintf("%s (0)", cat.Label)
+		g.sidebarLabels[idx] = label
+		procSendMessageW.Call(g.sidebarHwnd, lbAddString, 0, uintptr(unsafe.Pointer(utf16Ptr(label))))
+	}
+	procSendMessageW.Call(g.sidebarHwnd, lbSetCurSel, 0, 0)
 
 	// Main Download ListView (SysListView32)
 	lvStyle := uint32(wsChild | wsVisible | wsTabStop | lvsReport | lvsSingleSel | lvsShowSelAlways)
 	g.listHwnd = g.createChildControl(
 		"SysListView32", "",
 		lvStyle, wsExClientEdge,
-		g.scale(10), g.scale(46), g.scale(860), g.scale(380),
+		g.scale(196), g.scale(46), g.scale(840), g.scale(420),
 		hwnd, idcListView, false,
 	)
 
@@ -1315,10 +1690,10 @@ func (g *winAppGUI) onCreateMainWindow(hwnd uintptr) {
 		width int
 		right bool
 	}{
-		{"File / Video Title", 315, false},
+		{"File / Video Title", 295, false},
 		{"Size", 125, true},
-		{"Status", 125, false},
-		{"Transfer Rate", 115, true},
+		{"Progress / Status", 145, false},
+		{"Transfer Rate", 120, true},
 		{"Time Left", 80, true},
 		{"Quality", 95, false},
 	}
@@ -1342,7 +1717,7 @@ func (g *winAppGUI) onCreateMainWindow(hwnd uintptr) {
 	g.statusHwnd = g.createChildControl(
 		"STATIC", "Ready",
 		wsChild|wsVisible|ssLeftNoWrap|ssEndEllipsis, 0,
-		g.scale(12), g.scale(434), g.scale(860), g.scale(22),
+		g.scale(12), g.scale(474), g.scale(1020), g.scale(22),
 		hwnd, idcStatus, false,
 	)
 }
@@ -1363,16 +1738,46 @@ func (g *winAppGUI) layoutMainWindow(hwnd uintptr) {
 	if listH < g.scale(80) {
 		listH = g.scale(80)
 	}
-	listW := clientW - pad*2
-	if listW < g.scale(100) {
-		listW = g.scale(100)
+	fullW := clientW - pad*2
+	if fullW < g.scale(100) {
+		fullW = g.scale(100)
 	}
 
+	if g.searchHwnd != 0 {
+		avail := clientW - pad - g.toolbarEndX - g.scale(8)
+		searchW := g.scale(240)
+		if avail < searchW {
+			searchW = avail
+		}
+		if searchW < g.scale(90) {
+			searchW = g.scale(90)
+		}
+		searchX := clientW - pad - searchW
+		if searchX < g.toolbarEndX+g.scale(4) {
+			searchX = g.toolbarEndX + g.scale(4)
+			if clientW-pad-searchX > g.scale(60) {
+				searchW = clientW - pad - searchX
+			}
+		}
+		procMoveWindow.Call(g.searchHwnd, uintptr(searchX), uintptr(g.scale(10)), uintptr(searchW), uintptr(g.scale(26)), 1)
+	}
+
+	sidebarW := g.scale(178)
+	colGap := g.scale(8)
+	if g.sidebarHwnd != 0 {
+		procMoveWindow.Call(g.sidebarHwnd, uintptr(pad), uintptr(topY), uintptr(sidebarW), uintptr(listH), 1)
+	}
+
+	listX := pad + sidebarW + colGap
+	listW := clientW - pad - listX
+	if listW < g.scale(120) {
+		listW = g.scale(120)
+	}
 	if g.listHwnd != 0 {
-		procMoveWindow.Call(g.listHwnd, uintptr(pad), uintptr(topY), uintptr(listW), uintptr(listH), 1)
+		procMoveWindow.Call(g.listHwnd, uintptr(listX), uintptr(topY), uintptr(listW), uintptr(listH), 1)
 	}
 	if g.statusHwnd != 0 {
-		procMoveWindow.Call(g.statusHwnd, uintptr(pad+2), uintptr(topY+listH+g.scale(5)), uintptr(listW-4), uintptr(statusH), 1)
+		procMoveWindow.Call(g.statusHwnd, uintptr(pad+2), uintptr(topY+listH+g.scale(5)), uintptr(fullW-4), uintptr(statusH), 1)
 	}
 }
 
@@ -1535,7 +1940,8 @@ func (g *winAppGUI) selectRowIndex(row int) {
 	procSendMessageW.Call(g.listHwnd, lvmSetItemState, uintptr(row), uintptr(unsafe.Pointer(&item)))
 }
 
-// syncListView performs a flicker-free cell diff update on SysListView32 and updates open Progress Popups.
+// syncListView performs a flicker-free cell diff update on SysListView32,
+// updates category sidebar counts, and updates open Progress Popups.
 func (g *winAppGUI) syncListView() {
 	if g.listHwnd == 0 {
 		return
@@ -1543,18 +1949,54 @@ func (g *winAppGUI) syncListView() {
 	tasks := g.qm.GetAll()
 	prevSelectedID := g.getSelectedTaskID()
 
+	taskMap := make(map[string]*DownloadTask, len(tasks))
+	for _, t := range tasks {
+		taskMap[t.ID] = t
+	}
+
+	if g.sidebarHwnd != 0 {
+		counts := countTasksByCategory(tasks)
+		activeIdx := 0
+		var changedIdxs []int
+		newLabels := make([]string, len(uiCategories))
+		for idx, cat := range uiCategories {
+			if cat.Key == g.activeCategory {
+				activeIdx = idx
+			}
+			cnt := counts[cat.Key]
+			if cnt > 0 || cat.Key == CategoryAll {
+				newLabels[idx] = fmt.Sprintf("%s (%d)", cat.Label, cnt)
+			} else {
+				newLabels[idx] = cat.Label
+			}
+			if idx < len(g.sidebarLabels) && g.sidebarLabels[idx] != newLabels[idx] {
+				changedIdxs = append(changedIdxs, idx)
+			}
+		}
+		if len(changedIdxs) > 0 {
+			g.updatingSidebar = true
+			for _, idx := range changedIdxs {
+				procSendMessageW.Call(g.sidebarHwnd, lbDeleteString, uintptr(idx), 0)
+				procSendMessageW.Call(g.sidebarHwnd, lbInsertString, uintptr(idx), uintptr(unsafe.Pointer(utf16Ptr(newLabels[idx]))))
+				g.sidebarLabels[idx] = newLabels[idx]
+			}
+			procSendMessageW.Call(g.sidebarHwnd, lbSetCurSel, uintptr(activeIdx), 0)
+			g.updatingSidebar = false
+		}
+	}
+
+	visible := filterTasksForUI(tasks, g.activeCategory, g.searchQuery)
+
 	// Adjust row count
-	for len(g.rows) > len(tasks) {
+	for len(g.rows) > len(visible) {
 		last := len(g.rows) - 1
 		procSendMessageW.Call(g.listHwnd, lvmDeleteItem, uintptr(last), 0)
 		g.rows = g.rows[:last]
 	}
 
-	taskMap := make(map[string]*DownloadTask, len(tasks))
 	newSelectedRow := -1
 
-	for i, t := range tasks {
-		taskMap[t.ID] = t
+	for i, t := range visible {
 		title := t.Title
 		if title == "" {
 			title = t.FileName
@@ -1594,9 +2036,18 @@ func (g *winAppGUI) syncListView() {
 				}
 				procSendMessageW.Call(g.listHwnd, lvmSetItemTextW, uintptr(i), uintptr(unsafe.Pointer(&subItem)))
 			}
-			g.rows = append(g.rows, listRowCache{id: t.ID, cols: cols})
+			g.rows = append(g.rows, listRowCache{
+				id:       t.ID,
+				cols:     cols,
+				status:   t.Status,
+				progress: t.Progress,
+			})
+			procSendMessageW.Call(g.listHwnd, lvmRedrawItems, uintptr(i), uintptr(i))
 		} else {
+			needsRedraw := g.rows[i].id != t.ID || g.rows[i].status != t.Status || g.rows[i].progress != t.Progress
 			g.rows[i].id = t.ID
+			g.rows[i].status = t.Status
+			g.rows[i].progress = t.Progress
 			for sub := 0; sub < 6; sub++ {
 				if g.rows[i].cols[sub] != cols[sub] {
 					subItem := lvItemW{
@@ -1605,7 +2056,11 @@ func (g *winAppGUI) syncListView() {
 					}
 					procSendMessageW.Call(g.listHwnd, lvmSetItemTextW, uintptr(i), uintptr(unsafe.Pointer(&subItem)))
 					g.rows[i].cols[sub] = cols[sub]
+					needsRedraw = true
 				}
+			}
+			if needsRedraw {
+				procSendMessageW.Call(g.listHwnd, lvmRedrawItems, uintptr(i), uintptr(i))
 			}
 		}
 
@@ -1618,7 +2073,7 @@ func (g *winAppGUI) syncListView() {
 		g.selectRowIndex(newSelectedRow)
 	}
 
-	// Update any open Mini Progress Windows
+	// Update any open Mini Progress Windows (across all tasks, even if filtered out)
 	for _, pop := range g.popups {
 		if t, ok := taskMap[pop.taskID]; ok {
 			g.updateProgressPopup(pop, t)
@@ -1626,6 +2081,154 @@ func (g *winAppGUI) syncListView() {
 	}
 
 	g.refreshStatusBar()
+}
+
+func (g *winAppGUI) handleListViewCustomDraw(lParam uintptr) uintptr {
+	if lParam == 0 || g.listHwnd == 0 {
+		return cdrfDoDefault
+	}
+	var lvcd nmLvCustomDraw
+	procRtlMoveMemory.Call(uintptr(unsafe.Pointer(&lvcd)), lParam, unsafe.Sizeof(lvcd))
+
+	switch lvcd.Nmcd.DwDrawStage {
+	case cddsPrePaint:
+		return cdrfNotifyItemDraw
+	case cddsItemPrePaint:
+		return cdrfNotifySubItemDraw
+	case cddsItemPrePaint | cddsSubItem:
+		rowIdx := int(lvcd.Nmcd.DwItemSpec)
+		subIdx := int(lvcd.ISubItem)
+		if rowIdx < 0 || rowIdx >= len(g.rows) {
+			return cdrfDoDefault
+		}
+		row := g.rows[rowIdx]
+		state, _, _ := procSendMessageW.Call(g.listHwnd, lvmGetItemState, uintptr(rowIdx), lvisSelected)
+		selected := (state & lvisSelected) != 0
+
+		if subIdx != 2 {
+			if selected {
+				lvcd.ClrTextBk = g.colors.Selected
+			} else if rowIdx%2 == 1 {
+				lvcd.ClrTextBk = g.colors.SurfaceAlt
+			} else {
+				lvcd.ClrTextBk = g.colors.Surface
+			}
+			lvcd.ClrText = g.colors.Text
+			if !selected && (subIdx == 3 || subIdx == 4) {
+				switch row.status {
+				case StatusCompleted:
+					lvcd.ClrText = g.colors.TextGreen
+				case StatusError, StatusCanceled:
+					lvcd.ClrText = g.colors.TextRed
+				}
+			}
+			procRtlMoveMemory.Call(lParam, uintptr(unsafe.Pointer(&lvcd)), unsafe.Sizeof(lvcd))
+			return cdrfNewFont
+		}
+
+		rc := winRect{Top: 2, Left: lvirBounds}
+		ok, _, _ := procSendMessageW.Call(g.listHwnd, lvmGetSubItemRect, uintptr(rowIdx), uintptr(unsafe.Pointer(&rc)))
+		if ok == 0 || rc.Right <= rc.Left || rc.Bottom <= rc.Top {
+			rc = lvcd.Nmcd.Rc
+		}
+		if rc.Right <= rc.Left || rc.Bottom <= rc.Top {
+			return cdrfDoDefault
+		}
+
+		rowBg := g.hbrSurface
+		if selected {
+			rowBg = g.hbrSelected
+		} else if rowIdx%2 == 1 {
+			rowBg = g.hbrSurfaceAlt
+		}
+		if rowBg != 0 {
+			procFillRect.Call(lvcd.Nmcd.Hdc, uintptr(unsafe.Pointer(&rc)), rowBg)
+		}
+
+		padX := int32(g.scale(6))
+		padY := int32(g.scale(3))
+		if rc.Right-rc.Left <= padX*2+12 {
+			padX = 2
+		}
+		if rc.Bottom-rc.Top <= padY*2+6 {
+			padY = 1
+		}
+		barRc := winRect{
+			Left:   rc.Left + padX,
+			Top:    rc.Top + padY,
+			Right:  rc.Right - padX,
+			Bottom: rc.Bottom - padY,
+		}
+		if barRc.Right <= barRc.Left || barRc.Bottom <= barRc.Top {
+			return cdrfSkipDefault
+		}
+
+		if g.hbrTrack != 0 {
+			procFillRect.Call(lvcd.Nmcd.Hdc, uintptr(unsafe.Pointer(&barRc)), g.hbrTrack)
+		}
+
+		pct := row.progress
+		if row.status == StatusCompleted {
+			pct = 100
+		}
+		if pct < 0 {
+			pct = 0
+		}
+		if pct > 100 {
+			pct = 100
+		}
+
+		fillBrush := g.hbrFillBlue
+		switch row.status {
+		case StatusCompleted:
+			fillBrush = g.hbrFillGreen
+		case StatusPaused:
+			fillBrush = g.hbrFillAmber
+		case StatusError, StatusCanceled:
+			fillBrush = g.hbrFillRed
+		}
+		if pct > 0 && fillBrush != 0 {
+			fillW := int32(float64(barRc.Right-barRc.Left) * pct / 100.0)
+			if fillW < 2 && pct > 0 {
+				fillW = 2
+			}
+			if fillW > barRc.Right-barRc.Left {
+				fillW = barRc.Right - barRc.Left
+			}
+			fillRc := winRect{
+				Left:   barRc.Left,
+				Top:    barRc.Top,
+				Right:  barRc.Left + fillW,
+				Bottom: barRc.Bottom,
+			}
+			procFillRect.Call(lvcd.Nmcd.Hdc, uintptr(unsafe.Pointer(&fillRc)), fillBrush)
+		}
+
+		if g.hbrBorder != 0 {
+			procFrameRect.Call(lvcd.Nmcd.Hdc, uintptr(unsafe.Pointer(&barRc)), g.hbrBorder)
+		}
+
+		if label := row.cols[2]; label != "" {
+			if u16, err := syscall.UTF16FromString(label); err == nil && len(u16) > 1 {
+				procSetBkMode.Call(lvcd.Nmcd.Hdc, transparentBkMode)
+				procSetTextColor.Call(lvcd.Nmcd.Hdc, uintptr(g.colors.TextOnBar))
+				textRc := barRc
+				textRc.Left += 4
+				textRc.Right -= 4
+				procDrawTextW.Call(
+					lvcd.Nmcd.Hdc,
+					uintptr(unsafe.Pointer(&u16[0])),
+					uintptr(len(u16)-1),
+					uintptr(unsafe.Pointer(&textRc)),
+					dtCenter|dtVCenter|dtSingleLine|dtEndEllipsis,
+				)
+			}
+		}
+
+		return cdrfSkipDefault
+	}
+
+	return cdrfDoDefault
 }
 
 func (g *winAppGUI) refreshStatusBar() {
@@ -1674,11 +2277,15 @@ func (g *winAppGUI) refreshStatusBar() {
 	if lim := g.cfg.GetSpeedLimitKBps(); lim > 0 {
 		limitSeg = fmt.Sprintf("   •   Limit: %s/s", formatBytesHuman(lim*1024))
 	}
+	wdSeg := ""
+	if wd := g.qm.GetWhenDoneAction(); wd != WhenDoneNone {
+		wdSeg = "   •   When done: " + whenDoneLabel(wd)
+	}
 
 	status := fmt.Sprintf(
-		"Active: %d  |  Queued: %d  |  Completed: %d   •   Speed: %s%s   •   Folder: %s   •   yt-dlp: %s  |  FFmpeg: %s",
+		"Active: %d  |  Queued: %d  |  Completed: %d   •   Speed: %s%s%s   •   Folder: %s   •   yt-dlp: %s  |  FFmpeg: %s",
 		active, queued, done,
-		modeLabel, limitSeg,
+		modeLabel, limitSeg, wdSeg,
 		filepath.Clean(g.cfg.GetDownloadDir()),
 		ytState, ffState,
 	)
@@ -1706,7 +2313,7 @@ func (g *winAppGUI) openOrFocusProgressPopup(taskID string, autoTriggered bool) 
 	}
 
 	w := g.scale(485)
-	h := g.scale(248)
+	h := g.scale(326)
 	scrW, _, _ := procGetSystemMetrics.Call(smCxScreen)
 	scrH, _, _ := procGetSystemMetrics.Call(smCyScreen)
 	offset := len(g.popups) * g.scale(28)
@@ -1729,6 +2336,7 @@ func (g *winAppGUI) openOrFocusProgressPopup(taskID string, autoTriggered bool) 
 	if g.iconSmall != 0 {
 		procSendMessageW.Call(hwnd, wmSetIcon, iconSmallVal, g.iconSmall)
 	}
+	g.applyWindowDarkChrome(hwnd)
 
 	pad := g.scale(14)
 	contentW := w - pad*2 - g.scale(14)
@@ -1743,12 +2351,31 @@ func (g *winAppGUI) openOrFocusProgressPopup(taskID string, autoTriggered bool) 
 	pop.lblSize = g.createChildControl("STATIC", "", wsChild|wsVisible|ssLeftNoWrap|ssEndEllipsis, 0, pad, g.scale(82), contentW, g.scale(19), hwnd, 0, false)
 	pop.lblSpeed = g.createChildControl("STATIC", "", wsChild|wsVisible|ssLeftNoWrap|ssEndEllipsis, 0, pad, g.scale(104), contentW, g.scale(19), hwnd, 0, false)
 
-	pop.progBar = g.createChildControl("msctls_progress32", "", wsChild|wsVisible|pbsSmooth, 0, pad, g.scale(132), contentW, g.scale(22), hwnd, 0, false)
+	pop.progBar = g.createChildControl("msctls_progress32", "", wsChild|wsVisible|pbsSmooth, 0, pad, g.scale(130), contentW, g.scale(20), hwnd, 0, false)
 	procSendMessageW.Call(pop.progBar, pbmSetRange32, 0, 1000)
+
+	pop.lblConns = g.createChildControl("STATIC", "Connections: preparing...", wsChild|wsVisible|ssLeftNoWrap|ssEndEllipsis, 0, pad, g.scale(156), contentW, g.scale(18), hwnd, 0, false)
+	pop.segRect = winRect{
+		Left:   int32(pad),
+		Top:    int32(g.scale(178)),
+		Right:  int32(pad + contentW),
+		Bottom: int32(g.scale(200)),
+	}
+
+	g.createChildControl("STATIC", "When all finish:", wsChild|wsVisible, 0, pad, g.scale(212), g.scale(112), g.scale(20), hwnd, 0, false)
+	pop.comboWhenDone = g.createChildControl("COMBOBOX", "", wsChild|wsVisible|wsTabStop|cbsDropDownList|wsVScroll, 0, pad+g.scale(116), g.scale(209), contentW-g.scale(116), g.scale(180), hwnd, idcProgComboWhenDone, false)
+	curWD := g.qm.GetWhenDoneAction()
+	for idx, preset := range whenDonePresets {
+		procSendMessageW.Call(pop.comboWhenDone, cbAddString, 0, uintptr(unsafe.Pointer(utf16Ptr(preset.Label))))
+		if preset.Value == curWD {
+			procSendMessageW.Call(pop.comboWhenDone, cbSetCurSel, uintptr(idx), 0)
+		}
+	}
+	pop.lastWhenDone = curWD
 
 	btnW := g.scale(106)
 	btnH := g.scale(30)
-	btnY := g.scale(166)
+	btnY := g.scale(246)
 	gap := g.scale(8)
 	startX := pad + contentW - (btnW*3 + gap*2)
 
@@ -1763,6 +2390,18 @@ func (g *winAppGUI) openOrFocusProgressPopup(taskID string, autoTriggered bool) 
 	procShowWindow.Call(hwnd, swShowNormal)
 	procUpdateWindow.Call(hwnd)
 	procSetForegroundWindow.Call(hwnd)
+}
+
+func segmentsEqual(a, b []SegmentProgress) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Start != b[i].Start || a[i].Current != b[i].Current || a[i].End != b[i].End || a[i].Active != b[i].Active {
+			return false
+		}
+	}
+	return true
 }
 
 func (g *winAppGUI) updateProgressPopup(pop *progressPopup, t *DownloadTask) {
@@ -1866,6 +2505,55 @@ func (g *winAppGUI) updateProgressPopup(pop *progressPopup, t *DownloadTask) {
 		pop.lastPos = pos
 	}
 
+	connLine := "Connections: single stream"
+	if n := len(t.Segments); n > 0 {
+		activeSegs := 0
+		for _, seg := range t.Segments {
+			if seg.Active {
+				activeSegs++
+			}
+		}
+		if activeSegs > 0 {
+			connLine = fmt.Sprintf("Connections: %d active / %d segments", activeSegs, n)
+		} else {
+			connLine = fmt.Sprintf("Connections: %d segments", n)
+		}
+	} else if t.Status == StatusCompleted {
+		connLine = "Connections: finished"
+	} else if t.Status == StatusPaused {
+		connLine = "Connections: paused"
+	} else if t.Status == StatusError || t.Status == StatusCanceled {
+		connLine = "Connections: stopped"
+	} else if t.Status == StatusQueued {
+		connLine = "Connections: waiting in queue"
+	}
+	if pop.lastConns != connLine {
+		setWindowString(pop.lblConns, connLine)
+		pop.lastConns = connLine
+	}
+
+	curWD := g.qm.GetWhenDoneAction()
+	if pop.comboWhenDone != 0 && pop.lastWhenDone != curWD {
+		for idx, preset := range whenDonePresets {
+			if preset.Value == curWD {
+				procSendMessageW.Call(pop.comboWhenDone, cbSetCurSel, uintptr(idx), 0)
+				break
+			}
+		}
+		pop.lastWhenDone = curWD
+	}
+
+	if pop.lastStatusCode != t.Status || pop.lastTotalBytes != t.TotalBytes || !segmentsEqual(pop.lastSegments, t.Segments) {
+		pop.lastStatusCode = t.Status
+		pop.lastTotalBytes = t.TotalBytes
+		if len(t.Segments) > 0 {
+			pop.lastSegments = append([]SegmentProgress(nil), t.Segments...)
+		} else {
+			pop.lastSegments = nil
+		}
+		procInvalidateRect.Call(pop.hwnd, uintptr(unsafe.Pointer(&pop.segRect)), 0)
+	}
+
 	if pop.lastMode != mode {
 		switch mode {
 		case "completed":
@@ -1950,6 +2638,7 @@ func (g *winAppGUI) openAddURLDialog() {
 	if g.iconSmall != 0 {
 		procSendMessageW.Call(hwnd, wmSetIcon, iconSmallVal, g.iconSmall)
 	}
+	g.applyWindowDarkChrome(hwnd)
 
 	pad := g.scale(14)
 	contentW := w - pad*2 - g.scale(14)
@@ -2539,6 +3228,24 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 			g.qm.SetTaskSpeedLimitKBps(selID, speedLimitPresets[idx].kbps)
 		}
 
+	case cmdThemeAuto, cmdThemeLight, cmdThemeDark:
+		theme := ThemeAuto
+		if cmdID == cmdThemeLight {
+			theme = ThemeLight
+		} else if cmdID == cmdThemeDark {
+			theme = ThemeDark
+		}
+		g.cfg.SetTheme(theme)
+		g.applyTheme()
+
+	case cmdWhenDoneNone, cmdWhenDoneOpenFile, cmdWhenDoneOpenFolder, cmdWhenDoneSleep, cmdWhenDoneShutdown:
+		idx := int(cmdID - cmdWhenDoneNone)
+		if idx >= 0 && idx < len(whenDonePresets) {
+			g.qm.SetWhenDoneAction(whenDonePresets[idx].Value)
+			g.refreshOptionMenuChecks()
+			g.refreshStatusBar()
+		}
+
 	case cmdOpenWeb:
 		openURLDefault(fmt.Sprintf("http://127.0.0.1:%d", g.cfg.Port))
 
@@ -2558,6 +3265,7 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 		for hwnd := range g.popups {
 			procDestroyWindow.Call(hwnd)
 		}
+		g.destroyThemeBrushes()
 		g.removeTrayIcon()
 		g.qm.Stop()
 		g.qm.save()
@@ -2593,19 +3301,58 @@ func mainWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 		if lParam != 0 {
 			var mmi winMinMaxInfo
 			procRtlMoveMemory.Call(uintptr(unsafe.Pointer(&mmi)), lParam, unsafe.Sizeof(mmi))
-			mmi.PtMinTrackSize.X = int32(g.scale(680))
-			mmi.PtMinTrackSize.Y = int32(g.scale(340))
+			mmi.PtMinTrackSize.X = int32(g.scale(780))
+			mmi.PtMinTrackSize.Y = int32(g.scale(380))
 			procRtlMoveMemory.Call(lParam, uintptr(unsafe.Pointer(&mmi)), unsafe.Sizeof(mmi))
 		}
 		return 0
 
-	case wmCtlColorStatic:
+	case wmEraseBkgnd:
+		if wParam != 0 && g.hbrWindow != 0 {
+			var rc winRect
+			procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&rc)))
+			procFillRect.Call(wParam, uintptr(unsafe.Pointer(&rc)), g.hbrWindow)
+			return 1
+		}
+
+	case wmCtlColorEdit, wmCtlColorListBox:
+		procSetTextColor.Call(wParam, uintptr(g.colors.Text))
+		procSetBkColor.Call(wParam, uintptr(g.colors.Surface))
+		if g.hbrSurface != 0 {
+			return g.hbrSurface
+		}
+
+	case wmCtlColorStatic, wmCtlColorBtn:
 		procSetBkMode.Call(wParam, transparentBkMode)
+		procSetTextColor.Call(wParam, uintptr(g.colors.Text))
+		procSetBkColor.Call(wParam, uintptr(g.colors.Window))
+		if g.hbrWindow != 0 {
+			return g.hbrWindow
+		}
 		br, _, _ := procGetSysColorBrush.Call(colorBtnFace)
 		return br
 
 	case wmCommand:
 		cmdID := wParam & 0xFFFF
+		notif := (wParam >> 16) & 0xFFFF
+		if cmdID == idcSearchEdit {
+			if notif == enChange {
+				g.searchQuery = strings.TrimSpace(getWindowString(g.searchHwnd))
+				g.syncListView()
+			}
+			return 0
+		}
+		if cmdID == idcSidebar {
+			if notif == lbnSelChange && !g.updatingSidebar {
+				idx, _, _ := procSendMessageW.Call(g.sidebarHwnd, lbGetCurSel, 0, 0)
+				intIdx := int(int32(idx))
+				if intIdx >= 0 && intIdx < len(uiCategories) {
+					g.activeCategory = uiCategories[intIdx].Key
+					g.syncListView()
+				}
+			}
+			return 0
+		}
 		g.handleCommand(cmdID)
 		return 0
 
@@ -2615,6 +3362,8 @@ func mainWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 			procRtlMoveMemory.Call(uintptr(unsafe.Pointer(&hdr)), lParam, unsafe.Sizeof(hdr))
 			if hdr.IdFrom == idcListView {
 				switch hdr.Code {
+				case nmCustomDraw:
+					return g.handleListViewCustomDraw(lParam)
 				case nmDblClk:
 					var act nmItemActivate
 					procRtlMoveMemory.Call(uintptr(unsafe.Pointer(&act)), lParam, unsafe.Sizeof(act))
@@ -2743,10 +3492,101 @@ func progressWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 	}
 
 	switch msg {
-	case wmCtlColorStatic:
+	case wmEraseBkgnd:
+		if wParam != 0 && g.hbrWindow != 0 {
+			var rc winRect
+			procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&rc)))
+			procFillRect.Call(wParam, uintptr(unsafe.Pointer(&rc)), g.hbrWindow)
+			return 1
+		}
+
+	case wmCtlColorEdit, wmCtlColorListBox:
+		procSetTextColor.Call(wParam, uintptr(g.colors.Text))
+		procSetBkColor.Call(wParam, uintptr(g.colors.Surface))
+		if g.hbrSurface != 0 {
+			return g.hbrSurface
+		}
+
+	case wmCtlColorStatic, wmCtlColorBtn:
 		procSetBkMode.Call(wParam, transparentBkMode)
+		procSetTextColor.Call(wParam, uintptr(g.colors.Text))
+		procSetBkColor.Call(wParam, uintptr(g.colors.Window))
+		if g.hbrWindow != 0 {
+			return g.hbrWindow
+		}
 		br, _, _ := procGetSysColorBrush.Call(colorBtnFace)
 		return br
+
+	case wmPaint:
+		pop, ok := g.popups[hwnd]
+		if !ok {
+			break
+		}
+		var ps paintStruct
+		hdc, _, _ := procBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
+		if hdc != 0 {
+			rc := pop.segRect
+			if rc.Right > rc.Left && rc.Bottom > rc.Top {
+				if g.hbrTrack != 0 {
+					procFillRect.Call(hdc, uintptr(unsafe.Pointer(&rc)), g.hbrTrack)
+				}
+				barW := rc.Right - rc.Left
+				if len(pop.lastSegments) > 0 && pop.lastTotalBytes > 0 {
+					totalF := float64(pop.lastTotalBytes)
+					for _, seg := range pop.lastSegments {
+						if seg.End < seg.Start || seg.Current <= seg.Start {
+							continue
+						}
+						cur := seg.Current
+						if cur > seg.End+1 {
+							cur = seg.End + 1
+						}
+						x1 := rc.Left + int32(float64(seg.Start)/totalF*float64(barW))
+						x2 := rc.Left + int32(float64(cur)/totalF*float64(barW))
+						if x2 <= x1 {
+							x2 = x1 + 2
+						}
+						if x1 < rc.Left {
+							x1 = rc.Left
+						}
+						if x2 > rc.Right {
+							x2 = rc.Right
+						}
+						brush := g.hbrFillGreen
+						if seg.Active {
+							brush = g.hbrFillBlue
+						}
+						if brush != 0 {
+							segRc := winRect{Left: x1, Top: rc.Top + 1, Right: x2, Bottom: rc.Bottom - 1}
+							procFillRect.Call(hdc, uintptr(unsafe.Pointer(&segRc)), brush)
+						}
+					}
+				} else if pop.lastPos > 0 {
+					fillW := int32(float64(barW) * float64(pop.lastPos) / 1000.0)
+					if fillW > barW {
+						fillW = barW
+					}
+					brush := g.hbrFillBlue
+					switch pop.lastStatusCode {
+					case StatusCompleted:
+						brush = g.hbrFillGreen
+					case StatusPaused:
+						brush = g.hbrFillAmber
+					case StatusError, StatusCanceled:
+						brush = g.hbrFillRed
+					}
+					if fillW > 0 && brush != 0 {
+						segRc := winRect{Left: rc.Left, Top: rc.Top + 1, Right: rc.Left + fillW, Bottom: rc.Bottom - 1}
+						procFillRect.Call(hdc, uintptr(unsafe.Pointer(&segRc)), brush)
+					}
+				}
+				if g.hbrBorder != 0 {
+					procFrameRect.Call(hdc, uintptr(unsafe.Pointer(&rc)), g.hbrBorder)
+				}
+			}
+			procEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
+			return 0
+		}
 
 	case wmCommand:
 		pop, ok := g.popups[hwnd]
@@ -2757,6 +3597,18 @@ func progressWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 		cmdID := wParam & 0xFFFF
 
 		switch cmdID {
+		case idcProgComboWhenDone:
+			if ((wParam >> 16) & 0xFFFF) == cbnSelChange {
+				selIdx, _, _ := procSendMessageW.Call(pop.comboWhenDone, cbGetCurSel, 0, 0)
+				idx := int(int32(selIdx))
+				if idx >= 0 && idx < len(whenDonePresets) {
+					wd := g.qm.SetWhenDoneAction(whenDonePresets[idx].Value)
+					pop.lastWhenDone = wd
+					g.refreshOptionMenuChecks()
+					g.refreshStatusBar()
+				}
+			}
+
 		case idcProgBtnPrimary:
 			if snap == nil {
 				return 0
@@ -2807,8 +3659,28 @@ func addDlgWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 	}
 
 	switch msg {
-	case wmCtlColorStatic:
+	case wmEraseBkgnd:
+		if wParam != 0 && g.hbrWindow != 0 {
+			var rc winRect
+			procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&rc)))
+			procFillRect.Call(wParam, uintptr(unsafe.Pointer(&rc)), g.hbrWindow)
+			return 1
+		}
+
+	case wmCtlColorEdit, wmCtlColorListBox:
+		procSetTextColor.Call(wParam, uintptr(g.colors.Text))
+		procSetBkColor.Call(wParam, uintptr(g.colors.Surface))
+		if g.hbrSurface != 0 {
+			return g.hbrSurface
+		}
+
+	case wmCtlColorStatic, wmCtlColorBtn:
 		procSetBkMode.Call(wParam, transparentBkMode)
+		procSetTextColor.Call(wParam, uintptr(g.colors.Text))
+		procSetBkColor.Call(wParam, uintptr(g.colors.Window))
+		if g.hbrWindow != 0 {
+			return g.hbrWindow
+		}
 		br, _, _ := procGetSysColorBrush.Call(colorBtnFace)
 		return br
 
@@ -3039,6 +3911,7 @@ func (g *winAppGUI) performGracefulRestartForUpdate() {
 	for hwnd := range g.popups {
 		procDestroyWindow.Call(hwnd)
 	}
+	g.destroyThemeBrushes()
 	g.removeTrayIcon()
 	g.qm.Stop()
 	g.qm.save()

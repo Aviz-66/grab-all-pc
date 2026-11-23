@@ -322,3 +322,69 @@ func startDetachedExecutable(exePath string, args []string) error {
 	}
 	return cmd.Start()
 }
+
+// isSystemDarkMode reads Windows's AppsUseLightTheme DWORD from Personalize registry settings.
+func isSystemDarkMode() bool {
+	subKey, _ := syscall.UTF16PtrFromString(`Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`)
+	valName, _ := syscall.UTF16PtrFromString("AppsUseLightTheme")
+	var hKey uintptr
+	ret, _, _ := procRegOpenKeyExW.Call(
+		hkeyCurrentUser,
+		uintptr(unsafe.Pointer(subKey)),
+		0,
+		keyRead,
+		uintptr(unsafe.Pointer(&hKey)),
+	)
+	if ret != 0 {
+		return false
+	}
+	defer procRegCloseKey.Call(hKey)
+
+	var buf [4]byte
+	dataLen := uint32(len(buf))
+	ret, _, _ = procRegQueryValueW.Call(
+		hKey,
+		uintptr(unsafe.Pointer(valName)),
+		0,
+		0,
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(unsafe.Pointer(&dataLen)),
+	)
+	if ret != 0 || dataLen < 4 {
+		return false
+	}
+	val := uint32(buf[0]) | uint32(buf[1])<<8 | uint32(buf[2])<<16 | uint32(buf[3])<<24
+	return val == 0
+}
+
+func triggerSystemSleep() error {
+	modPowrprof := syscall.NewLazyDLL("powrprof.dll")
+	procSetSuspendState := modPowrprof.NewProc("SetSuspendState")
+	if err := procSetSuspendState.Find(); err != nil {
+		return err
+	}
+	ret, _, callErr := procSetSuspendState.Call(0, 0, 0)
+	if ret == 0 {
+		return fmt.Errorf("failed to suspend PC: %v", callErr)
+	}
+	return nil
+}
+
+func triggerSystemShutdown(delaySeconds int) error {
+	if delaySeconds <= 0 {
+		delaySeconds = 30
+	} else if delaySeconds < 10 {
+		delaySeconds = 10
+	}
+	cmd := exec.Command(
+		"shutdown.exe",
+		"/s",
+		"/t", strconv.Itoa(delaySeconds),
+		"/c", "GrabAll Download Manager finished all downloads. Run 'shutdown /a' to cancel.",
+	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: createNoWindow,
+	}
+	return cmd.Start()
+}

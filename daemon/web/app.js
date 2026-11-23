@@ -2,6 +2,7 @@
 
 let tasks = [];
 let currentFilter = 'all';
+let searchQuery = '';
 let sseConnection = null;
 let defaultVideoCodec = 'h264';
 let latestUpdateInfo = null;
@@ -118,6 +119,41 @@ function initFilters() {
       showToast('Failed to clear completed', true);
     }
   });
+
+  const searchInputEl = document.getElementById('search-input');
+  if (searchInputEl) {
+    searchInputEl.addEventListener('input', (e) => {
+      searchQuery = e.target.value.trim().toLowerCase();
+      renderQueue();
+    });
+  }
+
+  const whenDoneEl = document.getElementById('when-done-select');
+  if (whenDoneEl) {
+    whenDoneEl.addEventListener('change', async (e) => {
+      const action = e.target.value;
+      try {
+        const res = await fetch('/api/when-done', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          whenDoneEl.value = data.whenDoneAction || 'none';
+          showToast(
+            data.whenDoneAction && data.whenDoneAction !== 'none'
+              ? `When done set: ${data.whenDoneAction.replace('_', ' ')}`
+              : 'Post-download action cleared'
+          );
+        } else {
+          showToast('Failed to update post-download action', true);
+        }
+      } catch (err) {
+        showToast('Failed to update post-download action', true);
+      }
+    });
+  }
 }
 
 function updateCounts() {
@@ -150,16 +186,55 @@ function updateCounts() {
   speedBadgeEl.textContent = activeSpeeds.length > 0 ? activeSpeeds.join(', ') : '0 KB/s';
 }
 
+function renderSegmentMapHtml(task) {
+  if (
+    task.status !== 'downloading' ||
+    !Array.isArray(task.segments) ||
+    task.segments.length === 0 ||
+    !(task.totalBytes > 0)
+  ) {
+    return '';
+  }
+  const activeCount = task.segments.filter((s) => s.active).length;
+  const blocks = task.segments
+    .map((seg) => {
+      const start = seg.start || 0;
+      const cur = Math.min(seg.current || 0, (seg.end || 0) + 1);
+      const done = Math.max(0, cur - start);
+      if (done <= 0) return '';
+      const leftPct = Math.max(0, Math.min(100, (start / task.totalBytes) * 100));
+      const widthPct = Math.max(0.2, Math.min(100 - leftPct, (done / task.totalBytes) * 100));
+      const cls = seg.active ? 'segment-map-fill active' : 'segment-map-fill';
+      return `<span class="${cls}" style="left:${leftPct.toFixed(2)}%;width:${widthPct.toFixed(2)}%;"></span>`;
+    })
+    .join('');
+  if (!blocks) return '';
+  return `<div class="segment-map-bar" title="Connections: ${activeCount} active / ${task.segments.length} segments">${blocks}</div>`;
+}
+
 function renderQueue() {
   updateCounts();
 
+  const searchTokens = searchQuery ? searchQuery.split(/\s+/).filter(Boolean) : [];
   const filtered = tasks.filter((t) => {
-    if (currentFilter === 'all') return true;
-    if (currentFilter === 'downloading') return t.status === 'downloading';
-    if (currentFilter === 'queued') return t.status === 'queued';
-    if (currentFilter === 'completed') return t.status === 'completed';
-    if (currentFilter === 'error') return t.status === 'error' || t.status === 'canceled';
-    return true;
+    let statusOk = true;
+    if (currentFilter === 'downloading') statusOk = t.status === 'downloading';
+    else if (currentFilter === 'queued') statusOk = t.status === 'queued';
+    else if (currentFilter === 'completed') statusOk = t.status === 'completed';
+    else if (currentFilter === 'error') statusOk = t.status === 'error' || t.status === 'canceled';
+    if (!statusOk) return false;
+
+    if (searchTokens.length === 0) return true;
+    const haystack = [
+      t.title || '',
+      t.fileName || '',
+      t.url || '',
+      t.subDir || '',
+      t.quality || '',
+      t.status || '',
+      t.errorMessage || '',
+    ].join('\n').toLowerCase();
+    return searchTokens.every((tok) => haystack.includes(tok));
   });
 
   if (filtered.length === 0) {
@@ -221,6 +296,7 @@ function createTaskCard(task) {
       <div class="progress-bar-bg">
         <div class="progress-bar-fill ${task.status}" style="width: ${task.progress.toFixed(1)}%;"></div>
       </div>
+      <div class="segment-map-container">${renderSegmentMapHtml(task)}</div>
     </div>
 
     <div class="task-footer">
@@ -269,6 +345,11 @@ function updateTaskCard(card, task) {
   if (fill) {
     fill.className = `progress-bar-fill ${task.status}`;
     fill.style.width = `${task.progress.toFixed(1)}%`;
+  }
+
+  const segContainer = card.querySelector('.segment-map-container');
+  if (segContainer) {
+    segContainer.innerHTML = renderSegmentMapHtml(task);
   }
 
   const statProgress = card.querySelector('.stat-progress');
@@ -572,6 +653,10 @@ async function loadSettings() {
     const speedLimEl = document.getElementById('setting-speed-limit');
     if (speedLimEl) {
       speedLimEl.value = cfg.speedLimitKBps || 0;
+    }
+    const whenDoneEl = document.getElementById('when-done-select');
+    if (whenDoneEl) {
+      whenDoneEl.value = cfg.whenDoneAction || 'none';
     }
     defaultVideoCodec = cfg.videoCodec || 'h264';
     const codecEl = document.getElementById('setting-video-codec');

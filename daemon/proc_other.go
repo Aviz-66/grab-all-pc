@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -68,4 +69,29 @@ func startDetachedExecutable(exePath string, args []string) error {
 	cmd.Stderr = os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	return cmd.Start()
+}
+
+func isSystemDarkMode() bool {
+	return false
+}
+
+func openFileDefault(filePath string) error {
+	if filePath == "" {
+		return fmt.Errorf("file path is empty")
+	}
+	if _, err := os.Stat(filePath); err != nil {
+		return err
+	}
+	if runtime.GOOS == "darwin" {
+		return exec.Command("open", filePath).Start()
+	}
+	return exec.Command("xdg-open", filePath).Start()
+}
+
+func triggerSystemSleep() error {
+	return fmt.Errorf("not supported on %s", runtime.GOOS)
+}
+
+func triggerSystemShutdown(delaySeconds int) error {
+	return fmt.Errorf("not supported on %s", runtime.GOOS)
 }

@@ -907,6 +907,69 @@ func (s *rangeScheduler) Stats() (steals, preemptions int64) {
 	return s.steals.Load(), s.preemptions.Load()
 }
 
+// SnapshotSegments returns a sorted, capped view of completed and active byte segments
+// for per-connection UI telemetry.
+func (s *rangeScheduler) SnapshotSegments() []SegmentProgress {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	active := make([]SegmentProgress, 0, len(s.segments))
+	pending := make([]SegmentProgress, 0, len(s.segments))
+	for _, seg := range s.segments {
+		if seg.done || seg.start > seg.end {
+			continue
+		}
+		item := SegmentProgress{
+			Start:   seg.start,
+			Current: seg.current,
+			End:     seg.end,
+			Active:  seg.assigned,
+			RateBps: seg.emaBps,
+		}
+		if seg.assigned {
+			active = append(active, item)
+		} else {
+			pending = append(pending, item)
+		}
+	}
+
+	done := make([]SegmentProgress, 0, len(s.completed))
+	for _, r := range s.completed {
+		done = append(done, SegmentProgress{
+			Start:   r.Start,
+			Current: r.End + 1,
+			End:     r.End,
+			Active:  false,
+		})
+	}
+
+	const maxSegments = 24
+	out := make([]SegmentProgress, 0, maxSegments)
+	for _, item := range active {
+		if len(out) >= maxSegments {
+			break
+		}
+		out = append(out, item)
+	}
+	for _, item := range done {
+		if len(out) >= maxSegments {
+			break
+		}
+		out = append(out, item)
+	}
+	for _, item := range pending {
+		if len(out) >= maxSegments {
+			break
+		}
+		out = append(out, item)
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Start < out[j].Start
+	})
+	return out
+}
+
 // --- 1D. Unified Work-Stealing Parallel Downloader ---
 
 type workStealingOptions struct {
@@ -934,6 +997,7 @@ type workStealingOptions struct {
 	ProbeEnd      int64
 
 	OnProgress func(downloaded, total int64, rateBytesPerSec float64, workers int)
+	OnSegments func(segs []SegmentProgress)
 	OnStats    func(steals, preemptions int64)
 }
 
@@ -1029,7 +1093,17 @@ func runWorkStealingDownload(ctx context.Context, opts workStealingOptions) erro
 		})
 	}
 
-	stopTicker := startStreamProgressTicker(&totalPtr, &liveBytes, initialDone, workerCount, opts.OnProgress, saveMetaSafe)
+	progCb := opts.OnProgress
+	if opts.OnSegments != nil {
+		progCb = func(downloaded, total int64, rate float64, workers int) {
+			opts.OnSegments(sched.SnapshotSegments())
+			if opts.OnProgress != nil {
+				opts.OnProgress(downloaded, total, rate, workers)
+			}
+		}
+	}
+
+	stopTicker := startStreamProgressTicker(&totalPtr, &liveBytes, initialDone, workerCount, progCb, saveMetaSafe)
 	defer stopTicker()
 
 	var (

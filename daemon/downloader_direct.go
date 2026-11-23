@@ -678,6 +678,13 @@ func runTurboDirectDownload(ctx context.Context, client *http.Client, qm *QueueM
 				qm.BroadcastUpdate()
 			}
 		},
+		OnSegments: func(segs []SegmentProgress) {
+			task.mu.Lock()
+			if task.Status == StatusDownloading {
+				task.Segments = segs
+			}
+			task.mu.Unlock()
+		},
 	})
 	firstBlockBody = nil
 

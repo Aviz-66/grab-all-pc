@@ -51,9 +51,10 @@ type Config struct {
 	YtDlpPath         string `json:"ytDlpPath"`
 	FFmpegPath        string `json:"ffmpegPath"`
 	DefaultEngine     string `json:"defaultEngine"`       // "auto", "direct", "ytdlp"
-	SpeedMode           string `json:"speedMode,omitempty"`  // "turbo" (default 6x) or "regular" (1x sequential watch-live)
-	VideoCodec          string `json:"videoCodec,omitempty"` // "h264" (default), "vp9", "av1", "auto"
+	SpeedMode           string `json:"speedMode,omitempty"`      // "turbo" (default 6x) or "regular" (1x sequential watch-live)
+	VideoCodec          string `json:"videoCodec,omitempty"`     // "h264" (default), "vp9", "av1", "auto"
 	SpeedLimitKBps      int64  `json:"speedLimitKBps,omitempty"` // 0 = unlimited
+	Theme               string `json:"theme,omitempty"`          // "auto" (default), "light", "dark"
 	ShowProgressPopup   *bool  `json:"showProgressPopup,omitempty"`
 	FirstRunPromptShown bool   `json:"firstRunPromptShown,omitempty"`
 	AutoCheckUpdates    *bool  `json:"autoCheckUpdates,omitempty"`
@@ -98,6 +99,7 @@ func LoadConfig(configPath string) (*Config, error) {
 		DefaultEngine: "auto",
 		SpeedMode:     SpeedModeTurbo,
 		VideoCodec:    VideoCodecH264,
+		Theme:         ThemeAuto,
 		configPath:    configPath,
 	}
 
@@ -108,6 +110,7 @@ func LoadConfig(configPath string) (*Config, error) {
 		}
 		cfg.configPath = configPath
 		cfg.VideoCodec = normalizeVideoCodec(cfg.VideoCodec)
+		cfg.Theme = normalizeTheme(cfg.Theme)
 		if cfg.SpeedLimitKBps < 0 {
 			cfg.SpeedLimitKBps = 0
 		}
@@ -259,6 +262,21 @@ func (c *Config) SetSpeedLimitKBps(kbps int64) {
 	}
 	c.mu.Lock()
 	c.SpeedLimitKBps = kbps
+	c.mu.Unlock()
+	_ = c.Save()
+}
+
+// GetTheme returns the normalized UI theme preference ("auto", "light", or "dark").
+func (c *Config) GetTheme() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return normalizeTheme(c.Theme)
+}
+
+// SetTheme updates the UI theme preference and persists config.
+func (c *Config) SetTheme(theme string) {
+	c.mu.Lock()
+	c.Theme = normalizeTheme(theme)
 	c.mu.Unlock()
 	_ = c.Save()
 }
