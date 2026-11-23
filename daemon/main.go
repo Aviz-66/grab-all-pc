@@ -66,6 +66,11 @@ func main() {
 	if *waitPIDFlag > 0 {
 		waitForParentPIDExit(*waitPIDFlag, 6*time.Second)
 	}
+	if runtime.GOOS == "windows" {
+		if exeDir := executableDir(); exeDir != "" {
+			_ = os.Chdir(exeDir)
+		}
+	}
 	go cleanupOldUpdatedBinary()
 
 	if runtime.GOOS != "windows" || *headlessFlag {

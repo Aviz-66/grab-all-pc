@@ -1165,5 +1165,39 @@ func TestFormatYtDlpStderrAndPostMergeIntegrity(t *testing.T) {
 	}
 }
 
+func TestAutoStartParsingAndStartupApproved(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want string
+	}{
+		{`"C:\Program Files\GrabAll\graball.exe" --tray`, `C:\Program Files\GrabAll\graball.exe`},
+		{`"C:\Users\User Name\Desktop\graball.exe"`, `C:\Users\User Name\Desktop\graball.exe`},
+		{`C:\GrabAll\graball.exe --tray`, `C:\GrabAll\graball.exe`},
+		{`C:\GrabAll\graball.exe`, `C:\GrabAll\graball.exe`},
+		{`   `, ``},
+	}
+	for _, tc := range cases {
+		if got := parseAutoStartExePath(tc.raw); got != tc.want {
+			t.Errorf("parseAutoStartExePath(%q) = %q, want %q", tc.raw, got, tc.want)
+		}
+	}
+
+	if !isStartupApprovedBytesEnabled(nil) {
+		t.Errorf("empty StartupApproved data should default to enabled")
+	}
+	if !isStartupApprovedBytesEnabled([]byte{0x02, 0x00, 0x00, 0x00}) {
+		t.Errorf("0x02 StartupApproved byte should be enabled")
+	}
+	if !isStartupApprovedBytesEnabled([]byte{0x06, 0x00, 0x00, 0x00}) {
+		t.Errorf("0x06 StartupApproved byte should be enabled")
+	}
+	for _, b := range []byte{0x03, 0x01, 0x07} {
+		if isStartupApprovedBytesEnabled([]byte{b, 0x00, 0x00, 0x00}) {
+			t.Errorf("0x%02x StartupApproved byte should be disabled", b)
+		}
+	}
+}
+
+
 
 

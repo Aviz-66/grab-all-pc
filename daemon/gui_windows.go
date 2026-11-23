@@ -85,6 +85,7 @@ const (
 	wmAppShowMain         = wmApp + 5
 	wmAppStatusMsg        = wmApp + 6
 	wmAppRestartForUpdate = wmApp + 7
+	wmAppRetryTray        = wmApp + 8
 
 	// Button / Edit / Static / Combo Styles
 	bsPushButton    = 0x00000000
@@ -306,6 +307,7 @@ var (
 	procGetClipboardData     = modUser32.NewProc("GetClipboardData")
 	procSetClipboardData     = modUser32.NewProc("SetClipboardData")
 	procFindWindowW          = modUser32.NewProc("FindWindowW")
+	procRegisterWindowMessageW = modUser32.NewProc("RegisterWindowMessageW")
 
 	procGetModuleHandleW = modKernel32.NewProc("GetModuleHandleW")
 	procCreateMutexW     = modKernel32.NewProc("CreateMutexW")
@@ -582,8 +584,10 @@ type winAppGUI struct {
 	taskPop  map[string]uintptr         // taskID -> hwnd
 	addDlg   *addDialogControls
 
-	updateQueued atomic.Bool
-	updating     atomic.Bool
+	updateQueued      atomic.Bool
+	updating          atomic.Bool
+	trayAdded         atomic.Bool
+	msgTaskbarCreated uint32
 
 	eventsMu        sync.Mutex
 	pendingTaskIDs  []string
@@ -1045,6 +1049,11 @@ func (g *winAppGUI) initAndRunMessageLoop(startInTray bool) {
 	}
 
 	hMenu := g.buildMainMenu()
+	if tbMsg, _, _ := procRegisterWindowMessageW.Call(uintptr(unsafe.Pointer(utf16Ptr("TaskbarCreated")))); tbMsg != 0 {
+		g.msgTaskbarCreated = uint32(tbMsg)
+	}
+	syncAutoStartPathIfEnabled()
+	g.refreshOptionMenuChecks()
 
 	g.mainHwnd, _, _ = procCreateWindowExW.Call(
 		wsExAppWindow,
@@ -1065,7 +1074,19 @@ func (g *winAppGUI) initAndRunMessageLoop(startInTray bool) {
 		procSendMessageW.Call(g.mainHwnd, wmSetIcon, iconSmallVal, g.iconSmall)
 	}
 
-	g.addTrayIcon()
+	if !g.addTrayIcon() {
+		go func() {
+			for i := 0; i < 30; i++ {
+				time.Sleep(2 * time.Second)
+				if g.quitting || g.trayAdded.Load() {
+					return
+				}
+				if g.mainHwnd != 0 {
+					procPostMessageW.Call(g.mainHwnd, wmAppRetryTray, 0, 0)
+				}
+			}
+		}()
+	}
 	g.syncListView()
 	g.refreshStatusBar()
 	go g.autoUpgradeSlowYtDlpIfNeeded()
@@ -1311,7 +1332,10 @@ func (g *winAppGUI) layoutMainWindow(hwnd uintptr) {
 	}
 }
 
-func (g *winAppGUI) addTrayIcon() {
+func (g *winAppGUI) addTrayIcon() bool {
+	if g.trayAdded.Load() {
+		return true
+	}
 	var nid notifyIconDataW
 	nid.CbSize = uint32(unsafe.Sizeof(nid))
 	nid.HWnd = g.mainHwnd
@@ -1320,10 +1344,16 @@ func (g *winAppGUI) addTrayIcon() {
 	nid.UCallbackMessage = wmAppTray
 	nid.HIcon = g.iconSmall
 	copyUTF16Fixed(nid.SzTip[:], "GrabAll Download Manager — Ready")
-	procShellNotifyIconW.Call(nimAdd, uintptr(unsafe.Pointer(&nid)))
+	ret, _, _ := procShellNotifyIconW.Call(nimAdd, uintptr(unsafe.Pointer(&nid)))
+	if ret != 0 {
+		g.trayAdded.Store(true)
+		return true
+	}
+	return false
 }
 
 func (g *winAppGUI) removeTrayIcon() {
+	g.trayAdded.Store(false)
 	var nid notifyIconDataW
 	nid.CbSize = uint32(unsafe.Sizeof(nid))
 	nid.HWnd = g.mainHwnd
@@ -2413,6 +2443,10 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 		next := !isAutoStartEnabled()
 		if err := setAutoStartEnabled(next); err != nil {
 			procMessageBoxW.Call(g.mainHwnd, uintptr(unsafe.Pointer(utf16Ptr("Could not update startup setting:\n"+err.Error()))), uintptr(unsafe.Pointer(utf16Ptr("GrabAll"))), mbOK|mbIconError)
+		} else if next {
+			g.postStatusMessage("Auto-start with Windows enabled (starts in system tray)")
+		} else {
+			g.postStatusMessage("Auto-start with Windows disabled")
 		}
 		g.refreshOptionMenuChecks()
 
@@ -2465,6 +2499,12 @@ func mainWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 	if g == nil {
 		ret, _, _ := procDefWindowProcW.Call(hwnd, uintptr(msg), wParam, lParam)
 		return ret
+	}
+
+	if g.msgTaskbarCreated != 0 && msg == g.msgTaskbarCreated && !g.quitting {
+		g.trayAdded.Store(false)
+		g.addTrayIcon()
+		return 0
 	}
 
 	switch msg {
@@ -2594,6 +2634,12 @@ func mainWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 
 	case wmAppRestartForUpdate:
 		g.performGracefulRestartForUpdate()
+		return 0
+
+	case wmAppRetryTray:
+		if !g.trayAdded.Load() && !g.quitting {
+			g.addTrayIcon()
+		}
 		return 0
 
 	case wmClose:

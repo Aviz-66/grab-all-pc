@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -98,24 +99,27 @@ func openURLDefault(rawURL string) {
 }
 
 const (
-	hkeyCurrentUser = uintptr(0x80000001)
-	keyRead         = 0x20019
-	keySetValue     = 0x0002
-	regSZ           = 1
-	runRegistryPath = `Software\Microsoft\Windows\CurrentVersion\Run`
-	runRegistryName = "GrabAll"
+	hkeyCurrentUser        = uintptr(0x80000001)
+	keyRead                = 0x20019
+	keySetValue            = 0x0002
+	keyReadWrite           = keyRead | keySetValue
+	regSZ                  = 1
+	runRegistryPath        = `Software\Microsoft\Windows\CurrentVersion\Run`
+	startupApprovedRunPath = `Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run`
+	runRegistryName        = "GrabAll"
 )
 
 var (
 	modAdvapi32        = syscall.NewLazyDLL("advapi32.dll")
 	procRegOpenKeyExW  = modAdvapi32.NewProc("RegOpenKeyExW")
+	procRegCreateKeyExW = modAdvapi32.NewProc("RegCreateKeyExW")
 	procRegQueryValueW = modAdvapi32.NewProc("RegQueryValueExW")
 	procRegSetValueExW = modAdvapi32.NewProc("RegSetValueExW")
 	procRegDeleteValW  = modAdvapi32.NewProc("RegDeleteValueW")
 	procRegCloseKey    = modAdvapi32.NewProc("RegCloseKey")
 )
 
-func isAutoStartEnabled() bool {
+func readAutoStartRegistryValue() string {
 	subKey, _ := syscall.UTF16PtrFromString(runRegistryPath)
 	valName, _ := syscall.UTF16PtrFromString(runRegistryName)
 	var hKey uintptr
@@ -127,7 +131,7 @@ func isAutoStartEnabled() bool {
 		uintptr(unsafe.Pointer(&hKey)),
 	)
 	if ret != 0 {
-		return false
+		return ""
 	}
 	defer procRegCloseKey.Call(hKey)
 
@@ -140,11 +144,60 @@ func isAutoStartEnabled() bool {
 		0,
 		uintptr(unsafe.Pointer(&dataLen)),
 	)
-	return ret == 0 && dataLen > 0
+	if ret != 0 || dataLen < 2 || dataLen > 4096 {
+		return ""
+	}
+
+	buf := make([]uint16, (dataLen/2)+1)
+	bufBytes := uint32(len(buf) * 2)
+	ret, _, _ = procRegQueryValueW.Call(
+		hKey,
+		uintptr(unsafe.Pointer(valName)),
+		0,
+		0,
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(unsafe.Pointer(&bufBytes)),
+	)
+	if ret != 0 {
+		return ""
+	}
+	return strings.TrimSpace(syscall.UTF16ToString(buf))
 }
 
-func setAutoStartEnabled(enable bool) error {
-	subKey, _ := syscall.UTF16PtrFromString(runRegistryPath)
+func isStartupApprovedEnabled() bool {
+	subKey, _ := syscall.UTF16PtrFromString(startupApprovedRunPath)
+	valName, _ := syscall.UTF16PtrFromString(runRegistryName)
+	var hKey uintptr
+	ret, _, _ := procRegOpenKeyExW.Call(
+		hkeyCurrentUser,
+		uintptr(unsafe.Pointer(subKey)),
+		0,
+		keyRead,
+		uintptr(unsafe.Pointer(&hKey)),
+	)
+	if ret != 0 {
+		return true
+	}
+	defer procRegCloseKey.Call(hKey)
+
+	var buf [64]byte
+	dataLen := uint32(len(buf))
+	ret, _, _ = procRegQueryValueW.Call(
+		hKey,
+		uintptr(unsafe.Pointer(valName)),
+		0,
+		0,
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(unsafe.Pointer(&dataLen)),
+	)
+	if ret != 0 || dataLen == 0 {
+		return true
+	}
+	return isStartupApprovedBytesEnabled(buf[:dataLen])
+}
+
+func clearStartupApprovedEntry() {
+	subKey, _ := syscall.UTF16PtrFromString(startupApprovedRunPath)
 	valName, _ := syscall.UTF16PtrFromString(runRegistryName)
 	var hKey uintptr
 	ret, _, _ := procRegOpenKeyExW.Call(
@@ -155,18 +208,59 @@ func setAutoStartEnabled(enable bool) error {
 		uintptr(unsafe.Pointer(&hKey)),
 	)
 	if ret != 0 {
+		return
+	}
+	defer procRegCloseKey.Call(hKey)
+	procRegDeleteValW.Call(hKey, uintptr(unsafe.Pointer(valName)))
+}
+
+func isAutoStartEnabled() bool {
+	raw := readAutoStartRegistryValue()
+	if raw == "" {
+		return false
+	}
+	exePath := parseAutoStartExePath(raw)
+	if exePath == "" {
+		return false
+	}
+	if _, err := os.Stat(exePath); err != nil {
+		return false
+	}
+	return isStartupApprovedEnabled()
+}
+
+func setAutoStartEnabled(enable bool) error {
+	subKey, _ := syscall.UTF16PtrFromString(runRegistryPath)
+	valName, _ := syscall.UTF16PtrFromString(runRegistryName)
+	var hKey uintptr
+	ret, _, _ := procRegCreateKeyExW.Call(
+		hkeyCurrentUser,
+		uintptr(unsafe.Pointer(subKey)),
+		0,
+		0,
+		0,
+		keyReadWrite,
+		0,
+		uintptr(unsafe.Pointer(&hKey)),
+		0,
+	)
+	if ret != 0 {
 		return fmt.Errorf("failed to open Run registry key (code %d)", ret)
 	}
 	defer procRegCloseKey.Call(hKey)
 
 	if !enable {
 		procRegDeleteValW.Call(hKey, uintptr(unsafe.Pointer(valName)))
+		clearStartupApprovedEntry()
 		return nil
 	}
 
-	exePath, err := os.Executable()
-	if err != nil {
-		return err
+	exePath, err := currentExecutablePath()
+	if err != nil || exePath == "" {
+		exePath, err = os.Executable()
+		if err != nil {
+			return err
+		}
 	}
 	cmdStr := fmt.Sprintf(`"%s" --tray`, filepath.Clean(exePath))
 	utf16Val, err := syscall.UTF16FromString(cmdStr)
@@ -185,7 +279,25 @@ func setAutoStartEnabled(enable bool) error {
 	if ret != 0 {
 		return fmt.Errorf("failed to write Run registry value (code %d)", ret)
 	}
+	clearStartupApprovedEntry()
 	return nil
+}
+
+// syncAutoStartPathIfEnabled heals stale Run\GrabAll paths if graball.exe was moved
+// or replaced in a new folder while Windows auto-start was previously enabled.
+func syncAutoStartPathIfEnabled() {
+	raw := readAutoStartRegistryValue()
+	if raw == "" || !isStartupApprovedEnabled() {
+		return
+	}
+	regExe := parseAutoStartExePath(raw)
+	curExe, err := currentExecutablePath()
+	if err != nil || curExe == "" {
+		return
+	}
+	if !strings.EqualFold(filepath.Clean(regExe), filepath.Clean(curExe)) {
+		_ = setAutoStartEnabled(true)
+	}
 }
 
 func waitForParentPIDExit(pid int, maxWait time.Duration) {

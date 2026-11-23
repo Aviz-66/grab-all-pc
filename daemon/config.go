@@ -237,3 +237,33 @@ func (c *Config) SetAutoCheckUpdates(v bool) {
 	c.mu.Unlock()
 	_ = c.Save()
 }
+
+// parseAutoStartExePath extracts the executable path from a Windows Run registry command string
+// (handling both quoted `"C:\Program Files\GrabAll\graball.exe" --tray` and unquoted values).
+func parseAutoStartExePath(cmdStr string) string {
+	s := strings.TrimSpace(cmdStr)
+	if s == "" {
+		return ""
+	}
+	if strings.HasPrefix(s, `"`) {
+		rest := s[1:]
+		if end := strings.IndexByte(rest, '"'); end >= 0 {
+			return strings.TrimSpace(rest[:end])
+		}
+		return strings.TrimSpace(rest)
+	}
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+// isStartupApprovedBytesEnabled interprets Windows Task Manager / Settings StartupApproved\Run binary bytes.
+// Byte 0 == 0x02 or 0x06 (or missing/empty entry) means enabled; odd values like 0x03/0x01/0x07 mean disabled.
+func isStartupApprovedBytesEnabled(data []byte) bool {
+	if len(data) == 0 {
+		return true
+	}
+	return data[0] == 0x02 || data[0] == 0x06
+}
