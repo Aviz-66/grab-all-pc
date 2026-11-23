@@ -526,8 +526,8 @@ func ExpandYtDlpPlaylist(ctx context.Context, cfg *Config, req AddRequest) (stri
 
 	targetURL := normalizePlaylistURL(req.URL)
 	title, entries, err := runFlatPlaylist(ctx, binPath, targetURL, cookieFile, req)
-	if err != nil && ctx.Err() == nil && cookieFile != "" && isYouTubeURL(targetURL) {
-		// Retry without cookies if YouTube rejected cookie session
+	if err != nil && ctx.Err() == nil && cookieFile != "" && isYouTubeURL(targetURL) && !isYouTubeSignInRequiredError(err.Error()) {
+		// Retry without cookies if YouTube rejected cookie session (unless private/age/members-only)
 		title, entries, err = runFlatPlaylist(ctx, binPath, targetURL, "", req)
 	}
 	return title, entries, err
@@ -695,6 +695,13 @@ func runYtDlpDownload(ctx context.Context, qm *QueueManager, task *DownloadTask)
 	noProgressRetries := 0
 	retriedWithoutCookies := false
 
+	if isYouTubeURL(task.URL) {
+		handled, hybridErr := runHybridYouTubeDownload(ctx, qm, task, binPath, downloadDir, &currentCookieFile)
+		if handled {
+			return hybridErr
+		}
+	}
+
 	for {
 		task.mu.Lock()
 		bytesBefore := task.DownloadedBytes
@@ -706,11 +713,9 @@ func runYtDlpDownload(ctx context.Context, qm *QueueManager, task *DownloadTask)
 		}
 
 		errMsg := err.Error()
-		// Retry without cookies ONLY if YouTube served SABR-only / empty formats to web cookies
-		// (do NOT retry without cookies on "not a bot", which would just double startup wait time)
+		// Retry without cookies when YouTube refuses a signed-in request on a public video
 		if !retriedWithoutCookies && currentCookieFile != "" && isYouTubeURL(task.URL) &&
-			(strings.Contains(errMsg, "Requested format is not available") ||
-				strings.Contains(errMsg, "Only images are available")) {
+			isYouTubeSignedInRefusalError(errMsg) {
 			retriedWithoutCookies = true
 			currentCookieFile = ""
 			continue
@@ -959,6 +964,12 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 	scanner := bufio.NewScanner(stdout)
 	var lastUpdate time.Time
 	skippedFragments := 0
+	var stopMergeWatcher func()
+	defer func() {
+		if stopMergeWatcher != nil {
+			stopMergeWatcher()
+		}
+	}()
 
 	for scanner.Scan() {
 		if ctx.Err() != nil {
@@ -1135,9 +1146,28 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 					task.FileName = filepath.Base(mergedFile)
 					task.Speed = "Merging Video + Audio..."
 				}
+				expMergeBytes := sizes.combinedExact
+				if expMergeBytes <= 0 {
+					expMergeBytes = sizes.combined
+				}
+				if expMergeBytes <= 0 {
+					expMergeBytes = task.TotalBytes
+				}
 				task.mu.Unlock()
 				if stillActive {
 					qm.BroadcastUpdate()
+					if mergedFile != "" {
+						absMerged := mergedFile
+						if !filepath.IsAbs(absMerged) {
+							absMerged = filepath.Join(downloadDir, absMerged)
+						}
+						ext := filepath.Ext(absMerged)
+						tempPath := strings.TrimSuffix(absMerged, ext) + ".temp" + ext
+						if stopMergeWatcher != nil {
+							stopMergeWatcher()
+						}
+						stopMergeWatcher = startMergeProgressWatcher(ctx, qm, task, tempPath, expMergeBytes)
+					}
 				}
 			}
 		} else if strings.Contains(line, "has already been downloaded") {
@@ -1206,6 +1236,10 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 
 	wg.Wait()
 	cmdErr := cmd.Wait()
+	if stopMergeWatcher != nil {
+		stopMergeWatcher()
+		stopMergeWatcher = nil
+	}
 	if ctx.Err() != nil {
 		task.mu.Lock()
 		task.FileName = origFileName

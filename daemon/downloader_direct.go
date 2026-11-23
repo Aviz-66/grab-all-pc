@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -31,11 +32,16 @@ var (
 	multiSpaceRe       = regexp.MustCompile(`\s+`)
 
 	directHTTPTransport = &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		MaxIdleConns:          32,
-		MaxIdleConnsPerHost:   8,
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   20 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		MaxIdleConns:          64,
+		MaxIdleConnsPerHost:   16,
 		IdleConnTimeout:       60 * time.Second,
 		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     true,
 	}
@@ -797,7 +803,7 @@ func runTurboDirectDownload(ctx context.Context, client *http.Client, qm *QueueM
 
 var (
 	ytTitleTokenRe      = regexp.MustCompile(`%\(title\)(?:\.\d+)?s`)
-	ytFormatCodeExtRe   = regexp.MustCompile(`\.f[0-9A-Za-z_-]{1,12}$`)
+	ytFormatCodeExtRe   = regexp.MustCompile(`\.f[0-9A-Za-z_-]{1,24}$`)
 	trailingBracketIDRe = regexp.MustCompile(` \[([A-Za-z0-9_-]{6,16})\]$`)
 )
 
@@ -931,7 +937,7 @@ func fitDirectFileName(downloadDir, fileName string) string {
 
 func isKnownYtMediaExt(ext string) bool {
 	switch strings.ToLower(ext) {
-	case ".webm", ".mp4", ".m4a", ".mp3", ".opus", ".mkv", ".ogg", ".wav", ".aac", ".flv", ".ts", ".mov":
+	case ".webm", ".mp4", ".m4a", ".mp3", ".opus", ".mkv", ".ogg", ".wav", ".aac", ".flv", ".ts", ".mov", ".3gp":
 		return true
 	}
 	return false

@@ -1017,6 +1017,8 @@ func isPartialOrTempPath(name string) bool {
 	if strings.HasSuffix(lower, ".part") ||
 		strings.Contains(lower, ".part.") ||
 		strings.Contains(lower, ".part-frag") ||
+		strings.Contains(lower, ".temp.") ||
+		strings.HasSuffix(lower, ".merge.json") ||
 		strings.HasSuffix(lower, ".ytdl") ||
 		strings.HasSuffix(lower, ".temp") ||
 		strings.HasSuffix(lower, ".tmp") {
@@ -1057,6 +1059,7 @@ func extractCandidateStems(inputs ...string) []string {
 		for strings.HasSuffix(strings.ToLower(base), ".part") {
 			base = base[:len(base)-5]
 		}
+		base = strings.TrimSuffix(base, ".merge.json")
 		base = strings.TrimSuffix(base, ".turbo")
 		base = strings.TrimSuffix(base, ".tmp")
 		base = strings.TrimSuffix(base, ".ytdl")
@@ -1064,6 +1067,7 @@ func extractCandidateStems(inputs ...string) []string {
 		ext := filepath.Ext(base)
 		if isKnownYtMediaExt(ext) {
 			base = strings.TrimSuffix(base, ext)
+			base = strings.TrimSuffix(base, ".temp")
 		}
 		base = ytFormatCodeExtRe.ReplaceAllString(base, "")
 		base = strings.TrimSpace(base)
