@@ -584,6 +584,9 @@ if (typeof document !== 'undefined') {
       preferredQuality: 'best',
       preferredVideoCodec: 'h264',
       preferredSpeedMode: 'turbo',
+      preferredEmbedSubs: false,
+      preferredSubLangs: 'en',
+      preferredEmbedChapters: false,
     });
 
     daemonUrl = (cfg.daemonUrl || 'http://127.0.0.1:17890').replace(/\/+$/, '');
@@ -603,6 +606,18 @@ if (typeof document !== 'undefined') {
     const speedSel = document.getElementById('select-speed-mode');
     if (speedSel) {
       speedSel.value = cfg.preferredSpeedMode === 'regular' ? 'regular' : 'turbo';
+    }
+    const subsCheck = document.getElementById('check-embed-subs');
+    if (subsCheck) {
+      subsCheck.checked = Boolean(cfg.preferredEmbedSubs);
+    }
+    const subLangInput = document.getElementById('input-sub-langs');
+    if (subLangInput) {
+      subLangInput.value = cfg.preferredSubLangs || 'en';
+    }
+    const chapCheck = document.getElementById('check-embed-chapters');
+    if (chapCheck) {
+      chapCheck.checked = Boolean(cfg.preferredEmbedChapters);
     }
 
     const hasList = activeTab && activeTab.url && activeTab.url.includes('list=');
@@ -731,6 +746,118 @@ if (typeof document !== 'undefined') {
       await chrome.storage.local.set({ preferredSpeedMode: e.target.value });
     });
 
+    document.getElementById('check-embed-subs')?.addEventListener('change', async (e) => {
+      await chrome.storage.local.set({ preferredEmbedSubs: e.target.checked });
+    });
+
+    document.getElementById('input-sub-langs')?.addEventListener('change', async (e) => {
+      await chrome.storage.local.set({ preferredSubLangs: (e.target.value || 'en').trim() || 'en' });
+    });
+
+    document.getElementById('check-embed-chapters')?.addEventListener('change', async (e) => {
+      await chrome.storage.local.set({ preferredEmbedChapters: e.target.checked });
+    });
+
+    const qualitySelect = document.getElementById('select-quality');
+    const origQualityLabels = new Map();
+    if (qualitySelect) {
+      Array.from(qualitySelect.options).forEach((opt) => {
+        origQualityLabels.set(opt.value, opt.textContent);
+      });
+    }
+
+    document.getElementById('btn-preview-page')?.addEventListener('click', () => {
+      if (!activeTab || !activeTab.url) return;
+      const box = document.getElementById('page-preview-box');
+      const btn = document.getElementById('btn-preview-page');
+      const videoCodec = document.getElementById('select-video-codec')?.value || 'h264';
+      if (!box) return;
+
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = '⏳';
+      }
+      box.classList.remove('hidden');
+      box.innerHTML = '<div class="popup-preview-meta">Fetching resolutions & sizes...</div>';
+
+      chrome.runtime.sendMessage(
+        {
+          type: 'PREVIEW_MEDIA',
+          payload: {
+            url: activeTab.url,
+            pageUrl: activeTab.url,
+            videoCodec,
+          },
+        },
+        (res) => {
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = '🔍 Size';
+          }
+          if (chrome.runtime.lastError || !res || !res.success || !res.preview) {
+            const msg = res?.error || chrome.runtime.lastError?.message || 'Preview unavailable';
+            box.innerHTML = `<div class="popup-preview-meta" style="color:#fca5a5;">${escapeHtml(msg)}</div>`;
+            return;
+          }
+
+          const prev = res.preview;
+          const sizeMap = new Map();
+          (prev.options || []).forEach((opt) => sizeMap.set(opt.quality, opt));
+
+          if (qualitySelect) {
+            Array.from(qualitySelect.options).forEach((optEl) => {
+              const baseLabel = origQualityLabels.get(optEl.value) || optEl.textContent;
+              const lookup = optEl.value.startsWith('audio-') ? 'audio-best' : optEl.value;
+              const match = sizeMap.get(lookup);
+              if (match && match.sizeBytes > 0) {
+                const prefix = match.approx ? '~' : '';
+                optEl.textContent = `${baseLabel} (${prefix}${formatBytes(match.sizeBytes)})`;
+              } else {
+                optEl.textContent = baseLabel;
+              }
+            });
+          }
+
+          const metaBits = [];
+          if (prev.durationText) metaBits.push(`⏱ ${prev.durationText}`);
+          if (Array.isArray(prev.chapters) && prev.chapters.length > 0) {
+            metaBits.push(`🏷 ${prev.chapters.length} ch`);
+          }
+          const subCount = (prev.subtitleLangs?.length || 0) + (prev.autoSubtitleLangs?.length || 0);
+          if (subCount > 0) {
+            metaBits.push('💬 subs');
+          }
+
+          const curQual = qualitySelect ? qualitySelect.value : 'best';
+          const pillsHtml = (prev.options || [])
+            .map((opt) => {
+              const sz = opt.sizeBytes > 0 ? `${opt.approx ? '~' : ''}${formatBytes(opt.sizeBytes)}` : 'N/A';
+              const activeCls = opt.quality === curQual ? ' active' : '';
+              return `<button type="button" class="popup-preview-pill${activeCls}" data-q="${escapeHtml(opt.quality)}">${escapeHtml(opt.label)}: <strong>${escapeHtml(sz)}</strong></button>`;
+            })
+            .join('');
+
+          box.innerHTML = `
+            <div class="popup-preview-title" title="${escapeHtml(prev.title || '')}">${escapeHtml(prev.title || activeTab.title || activeTab.url)}</div>
+            <div class="popup-preview-meta">${escapeHtml(metaBits.join('  •  '))}</div>
+            ${pillsHtml ? `<div class="popup-preview-pills">${pillsHtml}</div>` : ''}
+          `;
+
+          box.querySelectorAll('.popup-preview-pill').forEach((pill) => {
+            pill.addEventListener('click', async () => {
+              const q = pill.getAttribute('data-q') || 'best';
+              if (qualitySelect) {
+                qualitySelect.value = q;
+                await chrome.storage.local.set({ preferredQuality: q });
+              }
+              box.querySelectorAll('.popup-preview-pill').forEach((p) => p.classList.remove('active'));
+              pill.classList.add('active');
+            });
+          });
+        }
+      );
+    });
+
     const plCheck = document.getElementById('check-playlist');
     const plRow = document.getElementById('playlist-range-row');
     if (plCheck && plRow) {
@@ -842,6 +969,9 @@ if (typeof document !== 'undefined') {
 
   function sendDownload(url, title, engine, quality, playlist = false, playlistStart = 1, playlistCount = 0, speedMode = 'turbo', videoCodec = 'h264') {
     showAlert(playlist ? 'Scanning playlist...' : 'Sending to GrabAll...', false);
+    const embedSubs = document.getElementById('check-embed-subs')?.checked || false;
+    const subLangs = (document.getElementById('input-sub-langs')?.value || 'en').trim() || 'en';
+    const embedChapters = document.getElementById('check-embed-chapters')?.checked || false;
 
     chrome.runtime.sendMessage(
       {
@@ -858,6 +988,9 @@ if (typeof document !== 'undefined') {
           playlist: Boolean(playlist),
           playlistStart: playlist ? playlistStart : 0,
           playlistCount: playlist ? playlistCount : 0,
+          embedSubs: Boolean(embedSubs),
+          subLangs: subLangs,
+          embedChapters: Boolean(embedChapters),
         },
       },
       (res) => {

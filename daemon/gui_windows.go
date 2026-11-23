@@ -91,6 +91,7 @@ const (
 	wmAppStatusMsg        = wmApp + 6
 	wmAppRestartForUpdate = wmApp + 7
 	wmAppRetryTray        = wmApp + 8
+	wmAppAddPreviewReady  = wmApp + 9
 
 	// Button / Edit / Static / Combo Styles
 	bsPushButton    = 0x00000000
@@ -120,6 +121,7 @@ const (
 	cbsDropDownList = 0x0003
 	cbAddString     = 0x0143
 	cbGetCurSel     = 0x0147
+	cbResetContent  = 0x014B
 	cbSetCurSel     = 0x014E
 	cbnSelChange    = 1
 
@@ -304,14 +306,18 @@ const (
 	idcProgComboWhenDone = 3004
 
 	// Add Dialog Control IDs
-	idcAddEditURL   = 4001
-	idcAddComboQual = 4002
-	idcAddChkPlay   = 4003
-	idcAddBtnStart  = 4004
-	idcAddBtnCancel = 4005
-	idcAddEditStart = 4006
-	idcAddEditCount = 4007
-	idcAddChkStream = 4008
+	idcAddEditURL     = 4001
+	idcAddComboQual   = 4002
+	idcAddChkPlay     = 4003
+	idcAddBtnStart    = 4004
+	idcAddBtnCancel   = 4005
+	idcAddEditStart   = 4006
+	idcAddEditCount   = 4007
+	idcAddChkStream   = 4008
+	idcAddBtnPreview  = 4009
+	idcAddChkSubs     = 4010
+	idcAddEditSubLang = 4011
+	idcAddChkChapters = 4012
 )
 
 var (
@@ -712,13 +718,21 @@ type progressPopup struct {
 }
 
 type addDialogControls struct {
-	hwnd      uintptr
-	editURL   uintptr
-	comboQual uintptr
-	chkPlay   uintptr
-	chkStream uintptr
-	editStart uintptr
-	editCount uintptr
+	hwnd        uintptr
+	editURL     uintptr
+	btnPreview  uintptr
+	lblPreview  uintptr
+	comboQual   uintptr
+	chkPlay     uintptr
+	chkStream   uintptr
+	editStart   uintptr
+	editCount   uintptr
+	chkSubs     uintptr
+	editSubLang uintptr
+	chkChapters uintptr
+	previewMu   sync.Mutex
+	lastPreview *MediaPreview
+	previewErr  string
 }
 
 var qualityPresets = []struct {
@@ -2615,8 +2629,8 @@ func (g *winAppGUI) openAddURLDialog() {
 		return
 	}
 
-	w := g.scale(480)
-	h := g.scale(312)
+	w := g.scale(500)
+	h := g.scale(372)
 	scrW, _, _ := procGetSystemMetrics.Call(smCxScreen)
 	scrH, _, _ := procGetSystemMetrics.Call(smCyScreen)
 	posX := (int(scrW) - w) / 2
@@ -2642,33 +2656,41 @@ func (g *winAppGUI) openAddURLDialog() {
 
 	pad := g.scale(14)
 	contentW := w - pad*2 - g.scale(14)
+	prevBtnW := g.scale(98)
 
-	g.createChildControl("STATIC", "Video / Playlist / File URL:", wsChild|wsVisible, 0, pad, g.scale(14), contentW, g.scale(18), hwnd, 0, true)
-	editURL := g.createChildControl("EDIT", "", wsChild|wsVisible|wsTabStop|esAutoHScroll, wsExClientEdge, pad, g.scale(35), contentW, g.scale(26), hwnd, idcAddEditURL, false)
+	g.createChildControl("STATIC", "Video / Playlist / File URL:", wsChild|wsVisible, 0, pad, g.scale(12), contentW, g.scale(18), hwnd, 0, true)
+	editURL := g.createChildControl("EDIT", "", wsChild|wsVisible|wsTabStop|esAutoHScroll, wsExClientEdge, pad, g.scale(33), contentW-prevBtnW-g.scale(6), g.scale(26), hwnd, idcAddEditURL, false)
+	btnPreview := g.createChildControl("BUTTON", "Preview Size", wsChild|wsVisible|wsTabStop|bsPushButton, 0, pad+contentW-prevBtnW, g.scale(32), prevBtnW, g.scale(28), hwnd, idcAddBtnPreview, false)
+	lblPreview := g.createChildControl("STATIC", "Tip: Click Preview Size to check available resolutions, sizes, subtitles & chapters.", wsChild|wsVisible|ssLeftNoWrap|ssEndEllipsis, 0, pad, g.scale(63), contentW, g.scale(18), hwnd, 0, false)
 
-	g.createChildControl("STATIC", "Format / Quality:", wsChild|wsVisible, 0, pad, g.scale(72), g.scale(130), g.scale(20), hwnd, 0, false)
-	combo := g.createChildControl("COMBOBOX", "", wsChild|wsVisible|wsTabStop|cbsDropDownList|wsVScroll, 0, pad+g.scale(125), g.scale(68), contentW-g.scale(125), g.scale(220), hwnd, idcAddComboQual, false)
+	g.createChildControl("STATIC", "Format / Quality:", wsChild|wsVisible, 0, pad, g.scale(90), g.scale(120), g.scale(20), hwnd, 0, false)
+	combo := g.createChildControl("COMBOBOX", "", wsChild|wsVisible|wsTabStop|cbsDropDownList|wsVScroll, 0, pad+g.scale(122), g.scale(86), contentW-g.scale(122), g.scale(220), hwnd, idcAddComboQual, false)
 	for _, qp := range qualityPresets {
 		procSendMessageW.Call(combo, cbAddString, 0, uintptr(unsafe.Pointer(utf16Ptr(qp.label))))
 	}
 	procSendMessageW.Call(combo, cbSetCurSel, 0, 0)
 
-	chkPlay := g.createChildControl("BUTTON", "Download YouTube playlist (saves into subfolder)", wsChild|wsVisible|wsTabStop|bsAutoCheckBox, 0, pad, g.scale(106), contentW, g.scale(22), hwnd, idcAddChkPlay, false)
+	chkPlay := g.createChildControl("BUTTON", "Download YouTube playlist (saves into subfolder)", wsChild|wsVisible|wsTabStop|bsAutoCheckBox, 0, pad, g.scale(122), contentW, g.scale(22), hwnd, idcAddChkPlay, false)
 
-	g.createChildControl("STATIC", "Playlist Start #:", wsChild|wsVisible, 0, pad, g.scale(138), g.scale(105), g.scale(20), hwnd, 0, false)
-	editStart := g.createChildControl("EDIT", "1", wsChild|wsVisible|wsTabStop|esAutoHScroll, wsExClientEdge, pad+g.scale(108), g.scale(135), g.scale(56), g.scale(24), hwnd, idcAddEditStart, false)
+	g.createChildControl("STATIC", "Playlist Start #:", wsChild|wsVisible, 0, pad, g.scale(152), g.scale(105), g.scale(20), hwnd, 0, false)
+	editStart := g.createChildControl("EDIT", "1", wsChild|wsVisible|wsTabStop|esAutoHScroll, wsExClientEdge, pad+g.scale(108), g.scale(149), g.scale(56), g.scale(24), hwnd, idcAddEditStart, false)
 
-	g.createChildControl("STATIC", "Max Videos (0 = All):", wsChild|wsVisible, 0, pad+g.scale(182), g.scale(138), g.scale(145), g.scale(20), hwnd, 0, false)
-	editCount := g.createChildControl("EDIT", "0", wsChild|wsVisible|wsTabStop|esAutoHScroll, wsExClientEdge, pad+g.scale(330), g.scale(135), g.scale(66), g.scale(24), hwnd, idcAddEditCount, false)
+	g.createChildControl("STATIC", "Max Videos (0 = All):", wsChild|wsVisible, 0, pad+g.scale(182), g.scale(152), g.scale(145), g.scale(20), hwnd, 0, false)
+	editCount := g.createChildControl("EDIT", "0", wsChild|wsVisible|wsTabStop|esAutoHScroll, wsExClientEdge, pad+g.scale(330), g.scale(149), g.scale(66), g.scale(24), hwnd, idcAddEditCount, false)
 
-	chkStream := g.createChildControl("BUTTON", "Watch while downloading (Regular 1-stream live mode)", wsChild|wsVisible|wsTabStop|bsAutoCheckBox, 0, pad, g.scale(170), contentW, g.scale(22), hwnd, idcAddChkStream, false)
+	chkStream := g.createChildControl("BUTTON", "Watch while downloading (Regular 1-stream live mode)", wsChild|wsVisible|wsTabStop|bsAutoCheckBox, 0, pad, g.scale(182), contentW, g.scale(22), hwnd, idcAddChkStream, false)
 	if g.cfg.GetSpeedMode() == SpeedModeRegular {
 		procSendMessageW.Call(chkStream, bmSetCheck, bstChecked, 0)
 	}
 
+	chkSubs := g.createChildControl("BUTTON", "Embed Subtitles", wsChild|wsVisible|wsTabStop|bsAutoCheckBox, 0, pad, g.scale(212), g.scale(130), g.scale(22), hwnd, idcAddChkSubs, false)
+	g.createChildControl("STATIC", "Lang:", wsChild|wsVisible, 0, pad+g.scale(136), g.scale(215), g.scale(38), g.scale(18), hwnd, 0, false)
+	editSubLang := g.createChildControl("EDIT", "en", wsChild|wsVisible|wsTabStop|esAutoHScroll, wsExClientEdge, pad+g.scale(176), g.scale(211), g.scale(64), g.scale(24), hwnd, idcAddEditSubLang, false)
+	chkChapters := g.createChildControl("BUTTON", "Embed Chapters", wsChild|wsVisible|wsTabStop|bsAutoCheckBox, 0, pad+g.scale(258), g.scale(212), g.scale(150), g.scale(22), hwnd, idcAddChkChapters, false)
+
 	btnW := g.scale(130)
 	btnH := g.scale(32)
-	btnY := g.scale(208)
+	btnY := g.scale(254)
 	g.createChildControl("BUTTON", "Start Download", wsChild|wsVisible|wsTabStop|bsDefPushButton, 0, pad+contentW-btnW*2-g.scale(8), btnY, btnW, btnH, hwnd, idcAddBtnStart, true)
 	g.createChildControl("BUTTON", "Cancel", wsChild|wsVisible|wsTabStop|bsPushButton, 0, pad+contentW-btnW, btnY, btnW, btnH, hwnd, idcAddBtnCancel, false)
 
@@ -2683,13 +2705,18 @@ func (g *winAppGUI) openAddURLDialog() {
 	}
 
 	g.addDlg = &addDialogControls{
-		hwnd:      hwnd,
-		editURL:   editURL,
-		comboQual: combo,
-		chkPlay:   chkPlay,
-		chkStream: chkStream,
-		editStart: editStart,
-		editCount: editCount,
+		hwnd:        hwnd,
+		editURL:     editURL,
+		btnPreview:  btnPreview,
+		lblPreview:  lblPreview,
+		comboQual:   combo,
+		chkPlay:     chkPlay,
+		chkStream:   chkStream,
+		editStart:   editStart,
+		editCount:   editCount,
+		chkSubs:     chkSubs,
+		editSubLang: editSubLang,
+		chkChapters: chkChapters,
 	}
 
 	procShowWindow.Call(hwnd, swShowNormal)
@@ -3684,9 +3711,103 @@ func addDlgWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 		br, _, _ := procGetSysColorBrush.Call(colorBtnFace)
 		return br
 
+	case wmAppAddPreviewReady:
+		dlg := g.addDlg
+		if dlg == nil || dlg.hwnd != hwnd {
+			return 0
+		}
+		dlg.previewMu.Lock()
+		prev := dlg.lastPreview
+		pErr := dlg.previewErr
+		dlg.previewMu.Unlock()
+
+		procEnableWindow.Call(dlg.btnPreview, 1)
+		setWindowString(dlg.btnPreview, "Preview Size")
+		if pErr != "" {
+			setWindowString(dlg.lblPreview, "Preview error: "+pErr)
+			return 0
+		}
+		if prev == nil {
+			return 0
+		}
+
+		sizeByQual := make(map[string]PreviewOption, len(prev.Options))
+		for _, opt := range prev.Options {
+			sizeByQual[opt.Quality] = opt
+		}
+
+		curSel, _, _ := procSendMessageW.Call(dlg.comboQual, cbGetCurSel, 0, 0)
+		procSendMessageW.Call(dlg.comboQual, cbResetContent, 0, 0)
+		for _, qp := range qualityPresets {
+			label := qp.label
+			lookupKey := qp.value
+			if strings.HasPrefix(lookupKey, "audio-") {
+				lookupKey = "audio-best"
+			}
+			if opt, ok := sizeByQual[lookupKey]; ok && opt.SizeBytes > 0 {
+				prefix := ""
+				if opt.Approx {
+					prefix = "~"
+				}
+				label = fmt.Sprintf("%s  —  %s%s", qp.label, prefix, formatBytesHuman(opt.SizeBytes))
+			}
+			procSendMessageW.Call(dlg.comboQual, cbAddString, 0, uintptr(unsafe.Pointer(utf16Ptr(label))))
+		}
+		if int(curSel) >= 0 && int(curSel) < len(qualityPresets) {
+			procSendMessageW.Call(dlg.comboQual, cbSetCurSel, curSel, 0)
+		} else {
+			procSendMessageW.Call(dlg.comboQual, cbSetCurSel, 0, 0)
+		}
+
+		metaBits := []string{}
+		if prev.Title != "" {
+			metaBits = append(metaBits, prev.Title)
+		}
+		if prev.DurationText != "" {
+			metaBits = append(metaBits, prev.DurationText)
+		}
+		if len(prev.Chapters) > 0 {
+			metaBits = append(metaBits, fmt.Sprintf("%d chapters", len(prev.Chapters)))
+		}
+		if len(prev.SubtitleLangs)+len(prev.AutoSubtitleLangs) > 0 {
+			metaBits = append(metaBits, "subtitles available")
+		}
+		setWindowString(dlg.lblPreview, strings.Join(metaBits, "  •  "))
+		return 0
+
 	case wmCommand:
 		cmdID := wParam & 0xFFFF
 		switch cmdID {
+		case idcAddBtnPreview:
+			dlg := g.addDlg
+			if dlg == nil {
+				return 0
+			}
+			rawURL := strings.TrimSpace(getWindowString(dlg.editURL))
+			if rawURL == "" {
+				procMessageBoxW.Call(hwnd, uintptr(unsafe.Pointer(utf16Ptr("Please paste a valid HTTP/HTTPS URL first."))), uintptr(unsafe.Pointer(utf16Ptr("GrabAll"))), mbOK|mbIconWarning)
+				return 0
+			}
+			procEnableWindow.Call(dlg.btnPreview, 0)
+			setWindowString(dlg.btnPreview, "Checking...")
+			setWindowString(dlg.lblPreview, "Fetching video resolutions, file sizes, subtitles & chapters...")
+			targetHwnd := hwnd
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
+				defer cancel()
+				prev, err := g.qm.PreviewMedia(ctx, AddRequest{URL: rawURL})
+				dlg.previewMu.Lock()
+				dlg.lastPreview = prev
+				if err != nil {
+					dlg.previewErr = err.Error()
+				} else {
+					dlg.previewErr = ""
+				}
+				dlg.previewMu.Unlock()
+				procPostMessageW.Call(targetHwnd, wmAppAddPreviewReady, 0, 0)
+			}()
+			return 0
+
 		case idcAddBtnStart:
 			if g.addDlg == nil {
 				return 0
@@ -3708,6 +3829,11 @@ func addDlgWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 			if chkStream == bstChecked {
 				speedMode = SpeedModeRegular
 			}
+			chkSubs, _, _ := procSendMessageW.Call(g.addDlg.chkSubs, bmGetCheck, 0, 0)
+			embedSubs := chkSubs == bstChecked
+			subLangs := normalizeSubLangs(getWindowString(g.addDlg.editSubLang))
+			chkChaps, _, _ := procSendMessageW.Call(g.addDlg.chkChapters, bmGetCheck, 0, 0)
+			embedChapters := chkChaps == bstChecked
 			plStart, _ := strconv.Atoi(strings.TrimSpace(getWindowString(g.addDlg.editStart)))
 			plCount, _ := strconv.Atoi(strings.TrimSpace(getWindowString(g.addDlg.editCount)))
 			if plStart < 1 {
@@ -3728,6 +3854,9 @@ func addDlgWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 				Playlist:      isPlaylist,
 				PlaylistStart: plStart,
 				PlaylistCount: plCount,
+				EmbedSubs:     embedSubs,
+				SubLangs:      subLangs,
+				EmbedChapters: embedChapters,
 			}
 
 			if isPlaylist {

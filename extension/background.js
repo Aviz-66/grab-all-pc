@@ -300,9 +300,19 @@ async function sendToDaemon({
   playlistEnd = 0,
   playlistCount = 0,
   playlistItems = null,
+  embedSubs = false,
+  subLangs = '',
+  embedChapters = false,
   storeId = null,
 }) {
-  const config = await chrome.storage.local.get({ ...DEFAULT_CONFIG, preferredSpeedMode: '', preferredVideoCodec: 'h264' });
+  const config = await chrome.storage.local.get({
+    ...DEFAULT_CONFIG,
+    preferredSpeedMode: '',
+    preferredVideoCodec: 'h264',
+    preferredEmbedSubs: false,
+    preferredSubLangs: 'en',
+    preferredEmbedChapters: false,
+  });
   const daemonUrl = config.daemonUrl || 'http://127.0.0.1:17890';
   let token = config.authToken || '';
   if (!token) {
@@ -325,6 +335,9 @@ async function sendToDaemon({
     playlistEnd: Number(playlistEnd) || 0,
     playlistCount: Number(playlistCount) || 0,
     playlistItems: Array.isArray(playlistItems) ? playlistItems : undefined,
+    embedSubs: Boolean(embedSubs),
+    subLangs: subLangs || config.preferredSubLangs || 'en',
+    embedChapters: Boolean(embedChapters),
     userAgent: navigator.userAgent,
     referer: referer || pageUrl || '',
     cookies: cookies,
@@ -460,6 +473,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendToDaemon(payload)
       .then((res) => sendResponse({ success: true, data: res }))
       .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === 'PREVIEW_MEDIA') {
+    (async () => {
+      try {
+        const storeId = sender?.tab?.cookieStoreId || null;
+        const cookies = await collectBrowserCookies(message.payload?.url, message.payload?.pageUrl, storeId);
+        const res = await daemonRequest('/api/media/preview', {
+          method: 'POST',
+          body: {
+            url: message.payload?.url || '',
+            videoCodec: message.payload?.videoCodec || 'h264',
+            userAgent: navigator.userAgent,
+            referer: message.payload?.pageUrl || '',
+            cookies,
+          },
+        });
+        sendResponse({ success: true, preview: res.data?.preview });
+      } catch (err) {
+        sendResponse({ success: false, error: err.message });
+      }
+    })();
     return true;
   }
 

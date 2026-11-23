@@ -711,8 +711,19 @@ func runYtDlpDownload(ctx context.Context, qm *QueueManager, task *DownloadTask)
 		if err == nil || ctx.Err() != nil {
 			return err
 		}
+		dropPreviewCache(task.URL)
 
 		errMsg := err.Error()
+		// If subtitle track download failed (e.g. HTTP 429 on timedtext), retry once without subtitles
+		task.mu.Lock()
+		hadSubs := task.EmbedSubs
+		if hadSubs && isYtDlpSubtitleDownloadError(errMsg) {
+			task.EmbedSubs = false
+		}
+		task.mu.Unlock()
+		if hadSubs && isYtDlpSubtitleDownloadError(errMsg) {
+			continue
+		}
 		// Retry without cookies when YouTube refuses a signed-in request on a public video
 		if !retriedWithoutCookies && currentCookieFile != "" && isYouTubeURL(task.URL) &&
 			isYouTubeSignedInRefusalError(errMsg) {
@@ -796,7 +807,16 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 		quality = "best"
 	}
 
-	needsFFmpeg := quality == "2160" || quality == "4k" || quality == "1080" || quality == "audio-mp3"
+	task.mu.Lock()
+	customFile := task.CustomFileName
+	origFileName := task.FileName
+	taskCodec := task.VideoCodec
+	embedSubs := task.EmbedSubs
+	subLangs := task.SubLangs
+	embedChapters := task.EmbedChapters
+	task.mu.Unlock()
+
+	needsFFmpeg := quality == "2160" || quality == "4k" || quality == "1080" || quality == "audio-mp3" || embedSubs || embedChapters
 	if needsFFmpeg && resolveFFmpegBinary(qm.config) == "" {
 		_, _ = ensureFFmpegBinary(ctx, qm.config, func(msg string) {
 			task.mu.Lock()
@@ -810,12 +830,6 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 
 	ffmpegBin := resolveFFmpegBinary(qm.config)
 	hasFFmpeg := ffmpegBin != ""
-
-	task.mu.Lock()
-	customFile := task.CustomFileName
-	origFileName := task.FileName
-	taskCodec := task.VideoCodec
-	task.mu.Unlock()
 
 	if strings.TrimSpace(taskCodec) == "" && qm.config != nil {
 		qm.config.mu.RLock()
@@ -890,6 +904,9 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 	if hasFFmpeg {
 		args = append(args, "--ffmpeg-location", ffmpegBin)
 	}
+	if embedArgs := buildYtDlpEmbedArgs(embedSubs, subLangs, embedChapters, strings.HasPrefix(quality, "audio"), hasFFmpeg); len(embedArgs) > 0 {
+		args = append(args, embedArgs...)
+	}
 
 	// Write the exact combined (video + audio) size to a tiny side file right before the download
 	// starts. --print-to-file (unlike --print) does NOT force quiet/simulate mode.
@@ -898,7 +915,16 @@ func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTa
 	defer os.Remove(sizeFile)
 	args = append(args, "--print-to-file", "before_dl:%(filesize)s|%(filesize_approx)s|%(requested_formats.0.filesize)s|%(requested_formats.1.filesize)s", sizeFile)
 
-	args = append(args, task.URL)
+	if ytDashySort == "" {
+		if infoPath := writeCachedInfoJSON(task.URL, task.ID); infoPath != "" {
+			defer os.Remove(infoPath)
+			args = append(args, "--load-info-json", infoPath)
+		} else {
+			args = append(args, task.URL)
+		}
+	} else {
+		args = append(args, task.URL)
+	}
 
 	sizes := &ytSizeTracker{}
 

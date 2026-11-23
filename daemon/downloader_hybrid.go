@@ -180,9 +180,13 @@ type ytDlpInfoJSON struct {
 	ACodec             string            `json:"acodec"`
 	Filesize           flexInt64         `json:"filesize"`
 	FilesizeApprox     flexInt64         `json:"filesize_approx"`
-	HTTPHeaders        map[string]string `json:"http_headers"`
-	Cookies            string            `json:"cookies"`
-	RequestedFormats   []ytDlpFormatJSON `json:"requested_formats"`
+	HTTPHeaders        map[string]string             `json:"http_headers"`
+	Cookies            string                        `json:"cookies"`
+	Duration           float64                       `json:"duration"`
+	RequestedFormats   []ytDlpFormatJSON             `json:"requested_formats"`
+	Subtitles          map[string][]ytSubtitleFormat `json:"subtitles"`
+	AutomaticCaptions  map[string][]ytSubtitleFormat `json:"automatic_captions"`
+	Chapters           []ytChapter                   `json:"chapters"`
 }
 
 func parseYtDlpInfoJSON(raw []byte) (*ytDlpInfoJSON, error) {
@@ -470,10 +474,7 @@ func evaluateHybridPlan(info *ytDlpInfoJSON, downloadDir, customFile string, has
 
 // --- 2C. Hybrid Metadata Resolver ---
 
-func resolveHybridMediaPlan(ctx context.Context, binPath, cacheDir, downloadDir, taskURL, customFile, quality, videoCodec, cookieFile string, hasFFmpeg bool) (*ytDlpInfoJSON, error) {
-	probeCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
-	defer cancel()
-
+func buildYtDlpProbeArgs(cacheDir, downloadDir, customFile, quality, videoCodec, cookieFile string, hasFFmpeg bool) []string {
 	args := []string{
 		"--force-ipv4",
 		"--socket-timeout", "30",
@@ -512,7 +513,12 @@ func resolveHybridMediaPlan(ctx context.Context, binPath, cacheDir, downloadDir,
 		args = append(args, "--cookies", cookieFile)
 	}
 
-	args = append(args, taskURL)
+	return args
+}
+
+func runYtDlpJSONCommand(ctx context.Context, binPath string, args []string) (*ytDlpInfoJSON, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
 
 	cmd := exec.CommandContext(probeCtx, binPath, args...)
 	configureSubprocess(cmd)
@@ -584,6 +590,31 @@ func resolveHybridMediaPlan(ctx context.Context, binPath, cacheDir, downloadDir,
 	}
 
 	return parseYtDlpInfoJSON(rawOut)
+}
+
+func resolveHybridMediaPlan(ctx context.Context, binPath, cacheDir, downloadDir, taskURL, customFile, quality, videoCodec, cookieFile string, hasFFmpeg bool) (*ytDlpInfoJSON, error) {
+	baseArgs := buildYtDlpProbeArgs(cacheDir, downloadDir, customFile, quality, videoCodec, cookieFile, hasFFmpeg)
+
+	// Reuse cached preview metadata when available to avoid a duplicate YouTube extraction round-trip.
+	if infoPath := writeCachedInfoJSON(taskURL, "hybrid"); infoPath != "" {
+		defer os.Remove(infoPath)
+		qNorm := strings.ToLower(strings.TrimSpace(quality))
+		if (qNorm == "" || qNorm == "best") && strings.TrimSpace(customFile) == "" {
+			if raw := lookupPreviewCache(taskURL); len(raw) > 0 {
+				if info, err := parseYtDlpInfoJSON(raw); err == nil && info != nil && len(info.RequestedFormats) > 0 {
+					return info, nil
+				}
+			}
+		}
+		cachedArgs := append(append([]string(nil), baseArgs...), "--load-info-json", infoPath)
+		if info, err := runYtDlpJSONCommand(ctx, binPath, cachedArgs); err == nil && info != nil {
+			return info, nil
+		}
+		dropPreviewCache(taskURL)
+	}
+
+	liveArgs := append(baseArgs, taskURL)
+	return runYtDlpJSONCommand(ctx, binPath, liveArgs)
 }
 
 // --- 2D. Reusable Multi-Connection Go HTTP Stream Fetcher ---
@@ -1498,14 +1529,17 @@ func fetchStreamTurbo(ctx context.Context, opts streamFetchOptions, endpoint *st
 // --- 2E. Merge-Ready Checkpoint, Live Merge % Watcher & Stream-Preserving FFmpeg Merge ---
 
 type hybridMergeState struct {
-	FinalPath  string `json:"finalPath"`
-	VideoPath  string `json:"videoPath"`
-	VideoSize  int64  `json:"videoSize"`
-	AudioPath  string `json:"audioPath"`
-	AudioSize  int64  `json:"audioSize"`
-	Quality    string `json:"quality"`
-	VideoCodec string `json:"videoCodec"`
-	Title      string `json:"title"`
+	FinalPath     string   `json:"finalPath"`
+	VideoPath     string   `json:"videoPath"`
+	VideoSize     int64    `json:"videoSize"`
+	AudioPath     string   `json:"audioPath"`
+	AudioSize     int64    `json:"audioSize"`
+	Quality       string   `json:"quality"`
+	VideoCodec    string   `json:"videoCodec"`
+	Title         string   `json:"title"`
+	SubtitlePaths []string `json:"subtitlePaths,omitempty"`
+	SubtitleLangs []string `json:"subtitleLangs,omitempty"`
+	ChaptersPath  string   `json:"chaptersPath,omitempty"`
 }
 
 func mergeStatePathForFinal(finalPath string) string {
@@ -1740,63 +1774,66 @@ func mergeHybridStreamsWithProgress(ctx context.Context, qm *QueueManager, task 
 	stopWatcher := startMergeProgressWatcher(ctx, qm, task, tempMergedPath, expectedCombined)
 	defer stopWatcher()
 
-	cmd := exec.CommandContext(
-		ctx,
-		ffmpegBin,
-		"-y",
-		"-hide_banner",
-		"-loglevel", "error",
-		"-i", st.VideoPath,
-		"-i", st.AudioPath,
-		"-c", "copy",
-		"-map", "0:v:0",
-		"-map", "1:a:0",
-		"-strict", "-2",
-		tempMergedPath,
-	)
-	configureSubprocess(cmd)
+	pruneMissingSidecars(st)
 
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return err
-	}
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start FFmpeg: %w", err)
-	}
+	runFFmpegMux := func(includeSidecars bool) ([]string, error) {
+		ffArgs := buildHybridMergeArgs(st, tempMergedPath, includeSidecars)
+		cmd := exec.CommandContext(ctx, ffmpegBin, ffArgs...)
+		configureSubprocess(cmd)
 
-	stopPipeClose := context.AfterFunc(ctx, func() {
-		time.Sleep(250 * time.Millisecond)
-		_ = stderr.Close()
-	})
-	defer stopPipeClose()
-
-	var (
-		stderrMu    sync.Mutex
-		stderrLines []string
-		wg          sync.WaitGroup
-	)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		sc := bufio.NewScanner(stderr)
-		for sc.Scan() {
-			if ctx.Err() != nil {
-				break
-			}
-			line := cleanOutput(sc.Text())
-			if line != "" {
-				stderrMu.Lock()
-				stderrLines = append(stderrLines, line)
-				if len(stderrLines) > 20 {
-					stderrLines = stderrLines[len(stderrLines)-20:]
-				}
-				stderrMu.Unlock()
-			}
+		stderr, err := cmd.StderrPipe()
+		if err != nil {
+			return nil, err
 		}
-	}()
+		if err := cmd.Start(); err != nil {
+			return nil, fmt.Errorf("failed to start FFmpeg: %w", err)
+		}
 
-	wg.Wait()
-	cmdErr := cmd.Wait()
+		stopPipeClose := context.AfterFunc(ctx, func() {
+			time.Sleep(250 * time.Millisecond)
+			_ = stderr.Close()
+		})
+		defer stopPipeClose()
+
+		var (
+			stderrMu    sync.Mutex
+			stderrLines []string
+			wg          sync.WaitGroup
+		)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sc := bufio.NewScanner(stderr)
+			for sc.Scan() {
+				if ctx.Err() != nil {
+					break
+				}
+				line := cleanOutput(sc.Text())
+				if line != "" {
+					stderrMu.Lock()
+					stderrLines = append(stderrLines, line)
+					if len(stderrLines) > 20 {
+						stderrLines = stderrLines[len(stderrLines)-20:]
+					}
+					stderrMu.Unlock()
+				}
+			}
+		}()
+
+		wg.Wait()
+		cErr := cmd.Wait()
+		stderrMu.Lock()
+		linesCopy := append([]string(nil), stderrLines...)
+		stderrMu.Unlock()
+		return linesCopy, cErr
+	}
+
+	hasSidecars := len(hybridSidecarPaths(st)) > 0
+	stderrLines, cmdErr := runFFmpegMux(hasSidecars)
+	if cmdErr != nil && hasSidecars && ctx.Err() == nil && !isDiskSpaceError(strings.Join(stderrLines, "; ")) {
+		_ = removeFileWithRetry(tempMergedPath, 3, 50*time.Millisecond)
+		stderrLines, cmdErr = runFFmpegMux(false)
+	}
 	stopWatcher()
 
 	if ctx.Err() != nil {
@@ -1807,9 +1844,7 @@ func mergeHybridStreamsWithProgress(ctx context.Context, qm *QueueManager, task 
 
 	if cmdErr != nil {
 		_ = removeFileWithRetry(tempMergedPath, 4, 100*time.Millisecond)
-		stderrMu.Lock()
 		detail := strings.Join(stderrLines, "; ")
-		stderrMu.Unlock()
 		if detail == "" {
 			detail = cmdErr.Error()
 		}
@@ -1837,6 +1872,9 @@ func mergeHybridStreamsWithProgress(ctx context.Context, qm *QueueManager, task 
 
 	_ = removeFileWithRetry(st.VideoPath, 4, 60*time.Millisecond)
 	_ = removeFileWithRetry(st.AudioPath, 4, 60*time.Millisecond)
+	for _, sp := range hybridSidecarPaths(st) {
+		_ = removeFileWithRetry(sp, 3, 40*time.Millisecond)
+	}
 	_ = removeFileWithRetry(statePath, 4, 60*time.Millisecond)
 
 	task.mu.Lock()
@@ -1924,6 +1962,9 @@ func runHybridYouTubeDownload(ctx context.Context, qm *QueueManager, task *Downl
 	}
 	customFile := task.CustomFileName
 	taskCodec := task.VideoCodec
+	embedSubs := task.EmbedSubs
+	subLangs := task.SubLangs
+	embedChapters := task.EmbedChapters
 	task.mu.Unlock()
 
 	if strings.TrimSpace(taskCodec) == "" && qm.config != nil {
@@ -1970,8 +2011,8 @@ func runHybridYouTubeDownload(ctx context.Context, qm *QueueManager, task *Downl
 		return false, nil
 	}
 
-	// 3. Ensure FFmpeg upfront for HD qualities so yt-dlp -J picks dual high-res streams.
-	needsFFmpeg := quality == "best" || quality == "2160" || quality == "4k" || quality == "1080" || quality == "720"
+	// 3. Ensure FFmpeg upfront for HD qualities or subtitle/chapter embedding so yt-dlp -J picks dual high-res streams.
+	needsFFmpeg := quality == "best" || quality == "2160" || quality == "4k" || quality == "1080" || quality == "720" || embedSubs || embedChapters
 	if needsFFmpeg && resolveFFmpegBinary(qm.config) == "" {
 		_, _ = ensureFFmpegBinary(ctx, qm.config, func(msg string) {
 			task.mu.Lock()
@@ -2021,6 +2062,9 @@ func runHybridYouTubeDownload(ctx context.Context, qm *QueueManager, task *Downl
 
 	plan, _ := evaluateHybridPlan(info, downloadDir, customFile, hasFFmpeg)
 	if plan == nil {
+		return false, nil
+	}
+	if len(plan.Streams) == 1 && (embedSubs || embedChapters) && hasFFmpeg {
 		return false, nil
 	}
 
@@ -2190,6 +2234,7 @@ func runHybridYouTubeDownload(ctx context.Context, qm *QueueManager, task *Downl
 				}
 			},
 			RefreshURL: func(rCtx context.Context) (string, map[string]string, error) {
+				dropPreviewCache(task.URL)
 				freshInfo, rErr := resolveHybridMediaPlan(rCtx, binPath, cacheDir, downloadDir, task.URL, customFile, quality, videoCodec, *cookieFilePtr, hasFFmpeg)
 				if rErr != nil {
 					return "", nil, rErr
@@ -2260,15 +2305,30 @@ func runHybridYouTubeDownload(ctx context.Context, qm *QueueManager, task *Downl
 		return true, fmt.Errorf("downloaded stream file missing before merge")
 	}
 
+	var subPaths, subLangsOut []string
+	var chaptersPath string
+	if embedSubs || embedChapters {
+		task.mu.Lock()
+		if task.Status == StatusDownloading {
+			task.Speed = "Preparing subtitles & chapters..."
+		}
+		task.mu.Unlock()
+		qm.BroadcastUpdate()
+		subPaths, subLangsOut, chaptersPath = prepareHybridSidecars(ctx, info, plan.FinalPath, embedSubs, subLangs, embedChapters)
+	}
+
 	mState := &hybridMergeState{
-		FinalPath:  plan.FinalPath,
-		VideoPath:  vPath,
-		VideoSize:  vFi.Size(),
-		AudioPath:  aPath,
-		AudioSize:  aFi.Size(),
-		Quality:    quality,
-		VideoCodec: videoCodec,
-		Title:      plan.Title,
+		FinalPath:     plan.FinalPath,
+		VideoPath:     vPath,
+		VideoSize:     vFi.Size(),
+		AudioPath:     aPath,
+		AudioSize:     aFi.Size(),
+		Quality:       quality,
+		VideoCodec:    videoCodec,
+		Title:         plan.Title,
+		SubtitlePaths: subPaths,
+		SubtitleLangs: subLangsOut,
+		ChaptersPath:  chaptersPath,
 	}
 	statePath := mergeStatePathForFinal(plan.FinalPath)
 	_ = saveMergeState(statePath, mState)

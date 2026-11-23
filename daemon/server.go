@@ -110,6 +110,8 @@ func (s *Server) setupRoutes() http.Handler {
 	mux.HandleFunc("/api/queue", s.handleQueue)
 	mux.HandleFunc("/api/add", s.handleAdd)
 	mux.HandleFunc("/api/playlist/preview", s.handlePlaylistPreview)
+	mux.HandleFunc("/api/media/preview", s.handleMediaPreview)
+	mux.HandleFunc("/api/preview", s.handleMediaPreview)
 	mux.HandleFunc("/api/pause", s.handlePause)
 	mux.HandleFunc("/api/resume", s.handleResume)
 	mux.HandleFunc("/api/speed-mode", s.handleSpeedMode)
@@ -433,6 +435,33 @@ func (s *Server) handlePlaylistPreview(w http.ResponseWriter, r *http.Request) {
 		"playlistTitle": plTitle,
 		"count":         len(entries),
 		"entries":       entries,
+	})
+}
+
+func (s *Server) handleMediaPreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req AddRequest
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request JSON: " + err.Error()})
+		return
+	}
+
+	preview, err := s.queue.PreviewMedia(r.Context(), req)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"preview": preview,
 	})
 }
 

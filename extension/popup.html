@@ -292,6 +292,83 @@
       outline: none;
     }
 
+    .embed-options-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--text);
+      padding: 2px;
+    }
+    .embed-opt-group {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .sub-lang-input {
+      width: 58px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 2px 5px;
+      border-radius: 4px;
+      font-size: 11px;
+      outline: none;
+    }
+    .sub-lang-input:focus {
+      border-color: var(--primary);
+    }
+
+    .capture-actions-row {
+      display: flex;
+      gap: 6px;
+    }
+
+    .popup-preview-box {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 9px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      font-size: 11px;
+    }
+    .popup-preview-box.hidden {
+      display: none;
+    }
+    .popup-preview-title {
+      font-weight: 600;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .popup-preview-meta {
+      font-size: 10px;
+      color: var(--muted);
+    }
+    .popup-preview-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+    .popup-preview-pill {
+      background: #0b0f19;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 3px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      cursor: pointer;
+    }
+    .popup-preview-pill:hover,
+    .popup-preview-pill.active {
+      border-color: var(--primary);
+      background: rgba(59, 130, 246, 0.2);
+    }
+
     .section-title {
       font-size: 11px;
       font-weight: 600;
@@ -729,9 +806,28 @@
       <input type="number" id="input-pl-count" class="playlist-num-input" min="0" value="10" style="width:58px;">
     </div>
 
-    <button type="button" id="btn-download-page" class="btn btn-primary">
-      🎬 Download Current Page Video
-    </button>
+    <div class="embed-options-row">
+      <div class="embed-opt-group">
+        <input type="checkbox" id="check-embed-subs">
+        <label for="check-embed-subs" style="cursor:pointer;">💬 Subtitles</label>
+        <input type="text" id="input-sub-langs" class="sub-lang-input" value="en" placeholder="en,es" title="Subtitle language codes (e.g. en, en,es, all)">
+      </div>
+      <div class="embed-opt-group">
+        <input type="checkbox" id="check-embed-chapters">
+        <label for="check-embed-chapters" style="cursor:pointer;">🏷️ Chapters</label>
+      </div>
+    </div>
+
+    <div class="capture-actions-row">
+      <button type="button" id="btn-download-page" class="btn btn-primary" style="flex:1;">
+        🎬 Download Current Page Video
+      </button>
+      <button type="button" id="btn-preview-page" class="btn btn-secondary" style="width:auto; padding:8px 10px;" title="Preview available video resolutions & file sizes">
+        🔍 Size
+      </button>
+    </div>
+
+    <div id="page-preview-box" class="popup-preview-box hidden"></div>
 
     <div class="section-title">Detected Media on Tab</div>
     <div id="media-container" class="media-list">

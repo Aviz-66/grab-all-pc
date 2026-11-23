@@ -481,13 +481,133 @@ async function doAction(url, body) {
 
 // Modals Setup
 function initModals() {
+  const qualitySelect = document.getElementById('input-quality');
+  const origQualityLabels = new Map();
+  if (qualitySelect) {
+    Array.from(qualitySelect.options).forEach((opt) => {
+      origQualityLabels.set(opt.value, opt.textContent);
+    });
+  }
+
+  function resetPreviewUI() {
+    const box = document.getElementById('add-preview-box');
+    if (box) {
+      box.classList.add('hidden');
+      box.innerHTML = '';
+    }
+    if (qualitySelect) {
+      Array.from(qualitySelect.options).forEach((opt) => {
+        if (origQualityLabels.has(opt.value)) {
+          opt.textContent = origQualityLabels.get(opt.value);
+        }
+      });
+    }
+  }
+
   document.getElementById('btn-add-modal').addEventListener('click', () => {
     const codecSelect = document.getElementById('input-video-codec');
     if (codecSelect) {
       codecSelect.value = defaultVideoCodec || 'h264';
     }
+    resetPreviewUI();
     modalAdd.classList.remove('hidden');
     document.getElementById('input-url').focus();
+  });
+
+  document.getElementById('btn-preview-url')?.addEventListener('click', async () => {
+    const url = document.getElementById('input-url').value.trim();
+    const videoCodec = document.getElementById('input-video-codec')?.value || defaultVideoCodec || 'h264';
+    const box = document.getElementById('add-preview-box');
+    const btn = document.getElementById('btn-preview-url');
+    if (!url || !box) {
+      showToast('Paste a video URL first', true);
+      return;
+    }
+
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Checking...';
+    }
+    box.classList.remove('hidden');
+    box.innerHTML = '<div class="preview-meta">Fetching video quality & size metadata...</div>';
+
+    try {
+      const res = await fetch('/api/media/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, videoCodec }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.preview) {
+        box.innerHTML = `<div class="preview-meta" style="color:var(--danger);">${escapeHtml(data.error || 'Preview unavailable for this URL')}</div>`;
+        return;
+      }
+
+      const prev = data.preview;
+      const sizeMap = new Map();
+      (prev.options || []).forEach((opt) => {
+        sizeMap.set(opt.quality, opt);
+      });
+
+      if (qualitySelect) {
+        Array.from(qualitySelect.options).forEach((optEl) => {
+          const baseLabel = origQualityLabels.get(optEl.value) || optEl.textContent;
+          const lookup = optEl.value.startsWith('audio-') ? 'audio-best' : optEl.value;
+          const match = sizeMap.get(lookup);
+          if (match && match.sizeBytes > 0) {
+            const prefix = match.approx ? '~' : '';
+            optEl.textContent = `${baseLabel} (${prefix}${formatBytes(match.sizeBytes)})`;
+          } else {
+            optEl.textContent = baseLabel;
+          }
+        });
+      }
+
+      const metaParts = [];
+      if (prev.uploader) metaParts.push(prev.uploader);
+      if (prev.durationText) metaParts.push(`⏱️ ${prev.durationText}`);
+      if (Array.isArray(prev.chapters) && prev.chapters.length > 0) {
+        metaParts.push(`🏷️ ${prev.chapters.length} chapters`);
+      }
+      const subCount = (prev.subtitleLangs?.length || 0) + (prev.autoSubtitleLangs?.length || 0);
+      if (subCount > 0) {
+        metaParts.push(`💬 Subtitles available`);
+      }
+
+      const curQual = qualitySelect ? qualitySelect.value : 'best';
+      const pillsHtml = (prev.options || [])
+        .map((opt) => {
+          const sz = opt.sizeBytes > 0 ? `${opt.approx ? '~' : ''}${formatBytes(opt.sizeBytes)}` : 'size N/A';
+          const codecTag = opt.videoCodec ? ` • ${opt.videoCodec}` : '';
+          const activeCls = opt.quality === curQual ? ' active' : '';
+          return `<button type="button" class="preview-pill${activeCls}" data-q="${escapeHtml(opt.quality)}">${escapeHtml(opt.label)} — <strong>${escapeHtml(sz)}</strong>${escapeHtml(codecTag)}</button>`;
+        })
+        .join('');
+
+      box.innerHTML = `
+        <div class="preview-title">${escapeHtml(prev.title || url)}</div>
+        <div class="preview-meta">${escapeHtml(metaParts.join('  •  '))}</div>
+        ${pillsHtml ? `<div class="preview-pills">${pillsHtml}</div>` : ''}
+      `;
+
+      box.querySelectorAll('.preview-pill').forEach((pill) => {
+        pill.addEventListener('click', () => {
+          const q = pill.getAttribute('data-q') || 'best';
+          if (qualitySelect) {
+            qualitySelect.value = q;
+          }
+          box.querySelectorAll('.preview-pill').forEach((p) => p.classList.remove('active'));
+          pill.classList.add('active');
+        });
+      });
+    } catch (err) {
+      box.innerHTML = '<div class="preview-meta" style="color:var(--danger);">Network error while fetching preview</div>';
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = '🔍 Preview Size';
+      }
+    }
   });
 
   document.querySelectorAll('[data-close]').forEach((btn) => {
@@ -505,6 +625,9 @@ function initModals() {
     const videoCodec = document.getElementById('input-video-codec')?.value || defaultVideoCodec || 'h264';
     const fileName = document.getElementById('input-filename').value.trim();
     const playlist = document.getElementById('input-playlist')?.checked || false;
+    const embedSubs = document.getElementById('input-embed-subs')?.checked || false;
+    const subLangs = (document.getElementById('input-sub-langs')?.value || 'en').trim() || 'en';
+    const embedChapters = document.getElementById('input-embed-chapters')?.checked || false;
 
     if (!url) return;
 
@@ -518,7 +641,17 @@ function initModals() {
       const res = await fetch('/api/add', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, engine, quality, videoCodec, fileName, playlist }),
+        body: JSON.stringify({
+          url,
+          engine,
+          quality,
+          videoCodec,
+          fileName,
+          playlist,
+          embedSubs,
+          subLangs,
+          embedChapters,
+        }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -529,6 +662,7 @@ function initModals() {
         }
         modalAdd.classList.add('hidden');
         formAdd.reset();
+        resetPreviewUI();
       } else {
         showToast(data.error || 'Failed to add download', true);
       }

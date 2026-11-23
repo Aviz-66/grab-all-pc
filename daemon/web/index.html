@@ -84,7 +84,11 @@
         <form id="form-add">
           <div class="form-group">
             <label for="input-url">Download or Video URL *</label>
-            <input type="url" id="input-url" placeholder="https://example.com/file.zip or video page" required autofocus>
+            <div class="token-copy-box">
+              <input type="url" id="input-url" placeholder="https://example.com/file.zip or video page" required autofocus>
+              <button type="button" id="btn-preview-url" class="btn btn-secondary">🔍 Preview Size</button>
+            </div>
+            <div id="add-preview-box" class="media-preview-box hidden"></div>
           </div>
           <div class="form-row">
             <div class="form-group">
@@ -133,6 +137,17 @@
           <div class="form-group" style="flex-direction: row; align-items: center; gap: 8px;">
             <input type="checkbox" id="input-playlist" style="width: 16px; height: 16px; cursor: pointer;">
             <label for="input-playlist" style="cursor: pointer;">📑 Download entire playlist (queues each video into a playlist subfolder)</label>
+          </div>
+          <div class="form-row">
+            <div class="form-group" style="flex-direction: row; align-items: center; gap: 8px;">
+              <input type="checkbox" id="input-embed-subs" style="width: 16px; height: 16px; cursor: pointer;">
+              <label for="input-embed-subs" style="cursor: pointer;">💬 Embed Subtitles</label>
+              <input type="text" id="input-sub-langs" value="en" placeholder="en,es" title="Subtitle language codes (e.g. en, en,es, all)" style="width: 82px; padding: 4px 8px; font-size: 12px;">
+            </div>
+            <div class="form-group" style="flex-direction: row; align-items: center; gap: 8px;">
+              <input type="checkbox" id="input-embed-chapters" style="width: 16px; height: 16px; cursor: pointer;">
+              <label for="input-embed-chapters" style="cursor: pointer;">🏷️ Embed Chapters</label>
+            </div>
           </div>
           <div class="modal-actions">
             <button type="button" class="btn btn-secondary" data-close="modal-add">Cancel</button>

@@ -51,6 +51,9 @@ type DownloadTask struct {
 	UserAgent      string            `json:"userAgent,omitempty"`
 	Referer        string            `json:"referer,omitempty"`
 	SavePath       string            `json:"savePath,omitempty"`
+	EmbedSubs      bool              `json:"embedSubs,omitempty"`
+	SubLangs       string            `json:"subLangs,omitempty"`
+	EmbedChapters  bool              `json:"embedChapters,omitempty"`
 	Segments       []SegmentProgress `json:"segments,omitempty"`
 
 	// Runtime controls
@@ -89,6 +92,9 @@ type AddRequest struct {
 	PlaylistCount  int             `json:"playlistCount,omitempty"`  // Max number of videos to queue from PlaylistStart
 	PlaylistItems  []PlaylistEntry `json:"playlistItems,omitempty"`  // Pre-selected entries from checklist UI
 	SubDir         string          `json:"subDir,omitempty"`
+	EmbedSubs      bool            `json:"embedSubs,omitempty"`
+	SubLangs       string          `json:"subLangs,omitempty"`
+	EmbedChapters  bool            `json:"embedChapters,omitempty"`
 	Cookies        []Cookie        `json:"cookies,omitempty"`
 	UserAgent      string          `json:"userAgent,omitempty"`
 	Referer        string          `json:"referer,omitempty"`
@@ -231,6 +237,9 @@ func snapshotTask(t *DownloadTask, includeCookies bool) *DownloadTask {
 		UserAgent:       t.UserAgent,
 		Referer:         t.Referer,
 		SavePath:        t.SavePath,
+		EmbedSubs:       t.EmbedSubs,
+		SubLangs:        t.SubLangs,
+		EmbedChapters:   t.EmbedChapters,
 	}
 	if !includeCookies && len(t.Segments) > 0 {
 		cp.Segments = make([]SegmentProgress, len(t.Segments))
@@ -361,6 +370,11 @@ func (qm *QueueManager) AddTask(req AddRequest) (*DownloadTask, error) {
 		reqLimitKBps = 0
 	}
 
+	reqSubLangs := ""
+	if req.EmbedSubs || strings.TrimSpace(req.SubLangs) != "" {
+		reqSubLangs = normalizeSubLangs(req.SubLangs)
+	}
+
 	task := &DownloadTask{
 		ID:             taskID,
 		URL:            req.URL,
@@ -372,13 +386,16 @@ func (qm *QueueManager) AddTask(req AddRequest) (*DownloadTask, error) {
 		VideoCodec:     reqVideoCodec,
 		SpeedMode:      reqSpeedMode,
 		SpeedLimitKBps: reqLimitKBps,
-		SubDir:    req.SubDir,
-		Status:    StatusQueued,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-		Cookies:   req.Cookies,
-		UserAgent: req.UserAgent,
-		Referer:   req.Referer,
+		SubDir:         req.SubDir,
+		EmbedSubs:      req.EmbedSubs,
+		SubLangs:       reqSubLangs,
+		EmbedChapters:  req.EmbedChapters,
+		Status:         StatusQueued,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+		Cookies:        req.Cookies,
+		UserAgent:      req.UserAgent,
+		Referer:        req.Referer,
 	}
 
 	qm.tasksMu.Lock()
@@ -511,22 +528,30 @@ func (qm *QueueManager) AddPlaylistTasks(ctx context.Context, req AddRequest) ([
 			qm.config.mu.RUnlock()
 		}
 
+		plSubLangs := ""
+		if req.EmbedSubs || strings.TrimSpace(req.SubLangs) != "" {
+			plSubLangs = normalizeSubLangs(req.SubLangs)
+		}
+
 		task := &DownloadTask{
-			ID:         fmt.Sprintf("dl_%d_%s", now.Unix(), generateToken()[:6]),
-			URL:        entry.URL,
-			Title:      displayTitle,
-			FileName:   outputTemplate,
-			Engine:     EngineYtDlp,
-			Quality:    req.Quality,
-			VideoCodec: reqVideoCodec,
-			SpeedMode:  reqSpeedMode,
-			SubDir:    subDir,
-			Status:    StatusQueued,
-			CreatedAt: now,
-			UpdatedAt: now,
-			Cookies:   req.Cookies,
-			UserAgent: req.UserAgent,
-			Referer:   req.Referer,
+			ID:            fmt.Sprintf("dl_%d_%s", now.Unix(), generateToken()[:6]),
+			URL:           entry.URL,
+			Title:         displayTitle,
+			FileName:      outputTemplate,
+			Engine:        EngineYtDlp,
+			Quality:       req.Quality,
+			VideoCodec:    reqVideoCodec,
+			SpeedMode:     reqSpeedMode,
+			SubDir:        subDir,
+			EmbedSubs:     req.EmbedSubs,
+			SubLangs:      plSubLangs,
+			EmbedChapters: req.EmbedChapters,
+			Status:        StatusQueued,
+			CreatedAt:     now,
+			UpdatedAt:     now,
+			Cookies:       req.Cookies,
+			UserAgent:     req.UserAgent,
+			Referer:       req.Referer,
 		}
 		batch = append(batch, task)
 		publicSnapshots = append(publicSnapshots, snapshotTask(task, false))
@@ -1238,6 +1263,7 @@ func isPartialOrTempPath(name string) bool {
 		strings.Contains(lower, ".part.") ||
 		strings.Contains(lower, ".part-frag") ||
 		strings.Contains(lower, ".temp.") ||
+		strings.Contains(lower, ".graball.") ||
 		strings.HasSuffix(lower, ".merge.json") ||
 		strings.HasSuffix(lower, ".ytdl") ||
 		strings.HasSuffix(lower, ".temp") ||
