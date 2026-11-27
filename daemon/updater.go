@@ -24,11 +24,13 @@ import (
 )
 
 const (
-	AppVersion = "2.5.2"
+	AppVersion = "2.5.3"
 
-	defaultUpdateManifestURL = "https://raw.githubusercontent.com/Avishka-55/graball-website/main/latest.json"
-	defaultUpdateReleasesURL = "https://api.github.com/repos/Avishka-55/graball-website/releases?per_page=30"
-	defaultReleaseTagURLBase = "https://github.com/Avishka-55/graball-website/releases/tag/"
+	defaultUpdateReleasesURL       = "https://api.github.com/repos/Aviz-66/grab-all-pc/releases?per_page=15"
+	defaultUpdateLatestRedirectURL = "https://github.com/Aviz-66/grab-all-pc/releases/latest"
+	defaultReleaseTagURLBase       = "https://github.com/Aviz-66/grab-all-pc/releases/tag/"
+	defaultReleaseDownloadBase     = "https://github.com/Aviz-66/grab-all-pc/releases/download/"
+	defaultUpdateManifestURL       = "https://raw.githubusercontent.com/Avishka-55/graball-website/main/latest.json"
 
 	updateCheckCacheTTL = 10 * time.Minute
 	maxUpdateEntryBytes = 128 << 20 // 128 MiB safety cap per extracted entry
@@ -49,11 +51,14 @@ type UpdateInfo struct {
 	CanAutoUpdate   bool   `json:"canAutoUpdate"`
 }
 
-// Updater checks the public graball-website repository for PC releases and applies self-updates.
+// Updater checks the public GrabAll PC GitHub releases directly (with zero-rate-limit
+// redirect fallback and graball-website manifest fallback) and applies self-updates.
 type Updater struct {
-	manifestURL           string
 	releasesURL           string
+	latestRedirectURL     string
 	releaseTagURLBase     string
+	releaseDownloadBase   string
+	manifestURL           string
 	currentVersion        string
 	goos                  string
 	goarch                string
@@ -69,13 +74,15 @@ type Updater struct {
 // NewUpdater creates an Updater configured for the running OS/architecture.
 func NewUpdater() *Updater {
 	return &Updater{
-		manifestURL:       defaultUpdateManifestURL,
-		releasesURL:       defaultUpdateReleasesURL,
-		releaseTagURLBase: defaultReleaseTagURLBase,
-		currentVersion:    AppVersion,
-		goos:              runtime.GOOS,
-		goarch:            runtime.GOARCH,
-		httpClient:        &http.Client{Timeout: 20 * time.Second},
+		releasesURL:         defaultUpdateReleasesURL,
+		latestRedirectURL:   defaultUpdateLatestRedirectURL,
+		releaseTagURLBase:   defaultReleaseTagURLBase,
+		releaseDownloadBase: defaultReleaseDownloadBase,
+		manifestURL:         defaultUpdateManifestURL,
+		currentVersion:      AppVersion,
+		goos:                runtime.GOOS,
+		goarch:              runtime.GOARCH,
+		httpClient:          &http.Client{Timeout: 20 * time.Second},
 	}
 }
 
@@ -243,7 +250,8 @@ func cloneUpdateInfo(src *UpdateInfo) *UpdateInfo {
 	return &cp
 }
 
-// CheckForUpdate queries graball-website for the latest PC release (ignoring Android releases).
+// CheckForUpdate queries Aviz-66/grab-all-pc releases directly (falling back to a
+// rate-limit-free /releases/latest HEAD redirect, then latest.json), ignoring Android releases.
 func (u *Updater) CheckForUpdate(ctx context.Context, force bool) (*UpdateInfo, error) {
 	u.mu.Lock()
 	if !force && u.cached != nil && time.Since(u.cachedAt) < updateCheckCacheTTL {
@@ -254,27 +262,38 @@ func (u *Updater) CheckForUpdate(ctx context.Context, force bool) (*UpdateInfo, 
 	u.mu.Unlock()
 
 	var info *UpdateInfo
-	var primaryErr, fallbackErr error
+	var errs []string
 
-	info, primaryErr = u.fetchFromLatestJSON(ctx)
-	if primaryErr != nil || info == nil || info.LatestVersion == "" || info.DownloadURL == "" {
-		fallbackInfo, fErr := u.fetchFromGitHubReleases(ctx)
-		if fErr == nil && fallbackInfo != nil && fallbackInfo.LatestVersion != "" && fallbackInfo.DownloadURL != "" {
-			info = fallbackInfo
-		} else {
-			fallbackErr = fErr
+	// 1. Primary: GitHub Releases API on Aviz-66/grab-all-pc (includes SHA-256 digest & exact asset size)
+	if strings.TrimSpace(u.releasesURL) != "" {
+		if relInfo, err := u.fetchFromGitHubReleases(ctx); err == nil && relInfo != nil && relInfo.LatestVersion != "" && relInfo.DownloadURL != "" {
+			info = relInfo
+		} else if err != nil {
+			errs = append(errs, "releases: "+err.Error())
+		}
+	}
+
+	// 2. Fallback #1: Rate-limit-free HEAD redirect on /releases/latest (works even on VPN-limited IPs)
+	if info == nil && strings.TrimSpace(u.latestRedirectURL) != "" {
+		if redInfo, err := u.fetchFromLatestRedirect(ctx); err == nil && redInfo != nil && redInfo.LatestVersion != "" && redInfo.DownloadURL != "" {
+			info = redInfo
+		} else if err != nil {
+			errs = append(errs, "redirect: "+err.Error())
+		}
+	}
+
+	// 3. Fallback #2: latest.json manifest (pc section only)
+	if info == nil && strings.TrimSpace(u.manifestURL) != "" {
+		if manInfo, err := u.fetchFromLatestJSON(ctx); err == nil && manInfo != nil && manInfo.LatestVersion != "" && manInfo.DownloadURL != "" {
+			info = manInfo
+		} else if err != nil {
+			errs = append(errs, "manifest: "+err.Error())
 		}
 	}
 
 	if info == nil || info.LatestVersion == "" || info.DownloadURL == "" {
-		if primaryErr != nil && fallbackErr != nil {
-			return nil, fmt.Errorf("update check failed (%v; fallback: %v)", primaryErr, fallbackErr)
-		}
-		if fallbackErr != nil {
-			return nil, fallbackErr
-		}
-		if primaryErr != nil {
-			return nil, primaryErr
+		if len(errs) > 0 {
+			return nil, fmt.Errorf("update check failed (%s)", strings.Join(errs, "; "))
 		}
 		return nil, fmt.Errorf("no PC release asset available for %s/%s", u.goos, u.goarch)
 	}
@@ -293,6 +312,79 @@ func (u *Updater) CheckForUpdate(ctx context.Context, force bool) (*UpdateInfo, 
 	u.mu.Unlock()
 
 	return cloneUpdateInfo(info), nil
+}
+
+func isPCReleaseTag(tag string) bool {
+	lower := strings.ToLower(strings.TrimSpace(tag))
+	if lower == "" || strings.HasPrefix(lower, "android-") {
+		return false
+	}
+	return strings.HasPrefix(lower, "v") || strings.HasPrefix(lower, "pc-v")
+}
+
+func (u *Updater) fetchFromLatestRedirect(ctx context.Context) (*UpdateInfo, error) {
+	wantAsset := platformAssetName(u.goos, u.goarch)
+	if wantAsset == "" {
+		return nil, fmt.Errorf("unsupported platform %s/%s for auto-update", u.goos, u.goarch)
+	}
+	noRedirectClient := &http.Client{
+		Timeout:   u.httpClient.Timeout,
+		Transport: u.httpClient.Transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, u.latestRedirectURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "GrabAll-PC/"+normalizeVersionString(u.currentVersion))
+
+	resp, err := noRedirectClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	_ = resp.Body.Close()
+
+	loc := strings.TrimSpace(resp.Header.Get("Location"))
+	if loc == "" {
+		return nil, fmt.Errorf("HTTP %d with no redirect Location", resp.StatusCode)
+	}
+	const marker = "/releases/tag/"
+	idx := strings.LastIndex(loc, marker)
+	if idx < 0 {
+		return nil, fmt.Errorf("unexpected redirect Location %q", loc)
+	}
+	tag := strings.TrimSpace(loc[idx+len(marker):])
+	if q := strings.IndexByte(tag, '?'); q >= 0 {
+		tag = tag[:q]
+	}
+	tag = strings.TrimRight(tag, "/")
+	if !isPCReleaseTag(tag) {
+		return nil, fmt.Errorf("ignored non-PC release tag %q", tag)
+	}
+	ver := normalizeVersionString(tag)
+	if ver == "" {
+		return nil, fmt.Errorf("empty version from tag %q", tag)
+	}
+
+	dlBase := strings.TrimRight(u.releaseDownloadBase, "/")
+	if dlBase == "" {
+		dlBase = strings.TrimRight(defaultReleaseDownloadBase, "/")
+	}
+	tagBase := strings.TrimRight(u.releaseTagURLBase, "/")
+	if tagBase == "" {
+		tagBase = strings.TrimRight(defaultReleaseTagURLBase, "/")
+	}
+
+	return &UpdateInfo{
+		LatestVersion: ver,
+		Tag:           tag,
+		DownloadURL:   dlBase + "/" + url.PathEscape(tag) + "/" + wantAsset,
+		FileName:      wantAsset,
+		ReleaseURL:    tagBase + "/" + url.PathEscape(tag),
+	}, nil
 }
 
 type websiteLatestManifest struct {
@@ -411,7 +503,7 @@ func (u *Updater) fetchFromGitHubReleases(ctx context.Context) (*UpdateInfo, err
 		if rel.Draft || rel.Prerelease {
 			continue
 		}
-		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(rel.TagName)), "pc-v") {
+		if !isPCReleaseTag(rel.TagName) {
 			continue
 		}
 		ver := normalizeVersionString(rel.TagName)

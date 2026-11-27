@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "GrabAll Download Manager",
-  "version": "2.5.2",
+  "version": "2.5.3",
   "description": "Ultra-lean download manager extension with yt-dlp & cookie handoff for Brave & Chromium",
   "permissions": [
     "cookies",

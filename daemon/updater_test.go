@@ -135,6 +135,7 @@ func TestCheckForUpdateFromLatestJSONIgnoresAndroid(t *testing.T) {
 	uWin := NewUpdater()
 	uWin.manifestURL = srv.URL
 	uWin.releasesURL = ""
+	uWin.latestRedirectURL = ""
 	uWin.currentVersion = "2.2.9"
 	uWin.goos = "windows"
 	uWin.goarch = "amd64"
@@ -154,6 +155,7 @@ func TestCheckForUpdateFromLatestJSONIgnoresAndroid(t *testing.T) {
 	uLin := NewUpdater()
 	uLin.manifestURL = srv.URL
 	uLin.releasesURL = ""
+	uLin.latestRedirectURL = ""
 	uLin.currentVersion = "2.3.0"
 	uLin.goos = "linux"
 	uLin.goarch = "amd64"
@@ -251,6 +253,7 @@ func TestCheckForUpdateFallbackToGitHubReleasesAPI(t *testing.T) {
 	u := NewUpdater()
 	u.manifestURL = srv.URL + "/latest.json"
 	u.releasesURL = srv.URL + "/releases"
+	u.latestRedirectURL = ""
 	u.currentVersion = "2.2.9"
 	u.goos = "windows"
 	u.goarch = "amd64"
@@ -270,6 +273,81 @@ func TestCheckForUpdateFallbackToGitHubReleasesAPI(t *testing.T) {
 	}
 	if info.ReleaseURL != "https://github.com/Avishka-55/graball-website/releases/tag/pc-v2.3.1" {
 		t.Errorf("unexpected releaseUrl: %q", info.ReleaseURL)
+	}
+}
+
+func TestCheckForUpdateDirectMainRepoAndRedirectFallback(t *testing.T) {
+	mainReleasesJSON := `[
+  {
+    "tag_name": "v2.5.3",
+    "draft": false,
+    "prerelease": false,
+    "html_url": "https://github.com/Aviz-66/grab-all-pc/releases/tag/v2.5.3",
+    "assets": [
+      {
+        "name": "graball-windows-amd64.zip",
+        "size": 3500000,
+        "digest": "sha256:feedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface",
+        "browser_download_url": "https://github.com/Aviz-66/grab-all-pc/releases/download/v2.5.3/graball-windows-amd64.zip"
+      }
+    ]
+  }
+]`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/releases":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(mainReleasesJSON))
+		case "/rate-limited":
+			http.Error(w, "API rate limit exceeded", http.StatusForbidden)
+		case "/releases/latest":
+			w.Header().Set("Location", "https://github.com/Aviz-66/grab-all-pc/releases/tag/v2.5.4")
+			w.WriteHeader(http.StatusFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	// 1. Direct Aviz-66/grab-all-pc v* release via API
+	u := NewUpdater()
+	u.releasesURL = srv.URL + "/releases"
+	u.latestRedirectURL = srv.URL + "/releases/latest"
+	u.manifestURL = ""
+	u.currentVersion = "2.5.2"
+	u.goos = "windows"
+	u.goarch = "amd64"
+
+	info, err := u.CheckForUpdate(context.Background(), true)
+	if err != nil {
+		t.Fatalf("direct main repo CheckForUpdate failed: %v", err)
+	}
+	if info.LatestVersion != "2.5.3" || info.Tag != "v2.5.3" || !info.UpdateAvailable {
+		t.Fatalf("unexpected direct release info: %+v", info)
+	}
+	if info.SHA256 != "feedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface" {
+		t.Errorf("unexpected SHA256: %q", info.SHA256)
+	}
+
+	// 2. When API is 403 rate-limited, zero-limit HEAD redirect fallback must succeed!
+	u2 := NewUpdater()
+	u2.releasesURL = srv.URL + "/rate-limited"
+	u2.latestRedirectURL = srv.URL + "/releases/latest"
+	u2.manifestURL = ""
+	u2.currentVersion = "2.5.2"
+	u2.goos = "windows"
+	u2.goarch = "amd64"
+
+	info2, err := u2.CheckForUpdate(context.Background(), true)
+	if err != nil {
+		t.Fatalf("HEAD redirect fallback CheckForUpdate failed: %v", err)
+	}
+	if info2.LatestVersion != "2.5.4" || info2.Tag != "v2.5.4" || !info2.UpdateAvailable {
+		t.Fatalf("unexpected redirect fallback info: %+v", info2)
+	}
+	wantDL := "https://github.com/Aviz-66/grab-all-pc/releases/download/v2.5.4/graball-windows-amd64.zip"
+	if info2.DownloadURL != wantDL {
+		t.Errorf("DownloadURL = %q, want %q", info2.DownloadURL, wantDL)
 	}
 }
 
@@ -457,6 +535,7 @@ func TestUpdateAPIEndpointsAndActiveDownloadGuard(t *testing.T) {
 	srv := NewServer(cfg, qm, NewSSEBroker())
 	srv.updater.manifestURL = metaSrv.URL
 	srv.updater.releasesURL = ""
+	srv.updater.latestRedirectURL = ""
 	srv.updater.currentVersion = "2.2.9"
 	handler := srv.setupRoutes()
 
