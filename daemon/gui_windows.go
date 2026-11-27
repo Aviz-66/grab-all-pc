@@ -62,6 +62,8 @@ const (
 	wmCreate         = 0x0001
 	wmDestroy        = 0x0002
 	wmSize           = 0x0005
+	wmSetFocus       = 0x0007
+	wmKillFocus      = 0x0008
 	wmSetText        = 0x000C
 	wmPaint          = 0x000F
 	wmClose          = 0x0010
@@ -356,6 +358,7 @@ var (
 	modOle32    = syscall.NewLazyDLL("ole32.dll")
 	modDwmapi   = syscall.NewLazyDLL("dwmapi.dll")
 	modUxtheme  = syscall.NewLazyDLL("uxtheme.dll")
+	modMsimg32  = syscall.NewLazyDLL("msimg32.dll")
 
 	procSetProcessDPIAware   = modUser32.NewProc("SetProcessDPIAware")
 	procRegisterClassExW     = modUser32.NewProc("RegisterClassExW")
@@ -425,10 +428,12 @@ var (
 	procGlobalSize       = modKernel32.NewProc("GlobalSize")
 	procRtlMoveMemory    = modKernel32.NewProc("RtlMoveMemory")
 
-	procCreateFontW      = modGdi32.NewProc("CreateFontW")
-	procCreateDIBSection = modGdi32.NewProc("CreateDIBSection")
-	procCreateBitmap     = modGdi32.NewProc("CreateBitmap")
-	procDeleteObject     = modGdi32.NewProc("DeleteObject")
+	procCreateFontW        = modGdi32.NewProc("CreateFontW")
+	procCreateDIBSection   = modGdi32.NewProc("CreateDIBSection")
+	procCreateBitmap       = modGdi32.NewProc("CreateBitmap")
+	procCreateCompatibleDC = modGdi32.NewProc("CreateCompatibleDC")
+	procDeleteDC           = modGdi32.NewProc("DeleteDC")
+	procDeleteObject       = modGdi32.NewProc("DeleteObject")
 	procGetDeviceCaps    = modGdi32.NewProc("GetDeviceCaps")
 	procSetBkMode        = modGdi32.NewProc("SetBkMode")
 	procCreateSolidBrush = modGdi32.NewProc("CreateSolidBrush")
@@ -448,6 +453,7 @@ var (
 	procSetWindowTheme       = modUxtheme.NewProc("SetWindowTheme")
 	procSetPreferredAppMode  = modUxtheme.NewProc("#135")
 	procFlushMenuThemes      = modUxtheme.NewProc("#136")
+	procAlphaBlend           = modMsimg32.NewProc("AlphaBlend")
 
 	procShellNotifyIconW      = modShell32.NewProc("Shell_NotifyIconW")
 	procShellExecuteW         = modShell32.NewProc("ShellExecuteW")
@@ -849,13 +855,19 @@ type winAppGUI struct {
 	fontBold  uintptr
 	fontSmall uintptr
 
-	mainHwnd        uintptr
-	sidebarHwnd     uintptr
-	searchHwnd      uintptr
-	listHwnd        uintptr
-	headerHwnd      uintptr
-	origListWndProc uintptr
-	statusHwnd      uintptr
+	mainHwnd          uintptr
+	sidebarHwnd       uintptr
+	searchHwnd        uintptr
+	searchBoxRc       winRect
+	origSearchWndProc uintptr
+	listHwnd          uintptr
+	headerHwnd        uintptr
+	origListWndProc   uintptr
+	statusHwnd        uintptr
+	toolbarIcons      map[uintptr]uintptr
+	toolbarIconSz     int
+	searchIconBmp     uintptr
+	searchIconSz      int
 	hMenuTasks      uintptr
 	hMenuTools      uintptr
 	hMenuOpt        uintptr
@@ -1275,13 +1287,19 @@ func (g *winAppGUI) destroyThemeBrushes() {
 	ptrs := []*uintptr{
 		&g.hbrWindow, &g.hbrSurface, &g.hbrSurfaceAlt, &g.hbrSelected,
 		&g.hbrTrack, &g.hbrBorder, &g.hbrFillBlue, &g.hbrFillGreen,
-		&g.hbrFillAmber, &g.hbrFillRed,
+		&g.hbrFillAmber, &g.hbrFillRed, &g.searchIconBmp,
 	}
 	for _, p := range ptrs {
 		if *p != 0 {
 			procDeleteObject.Call(*p)
 			*p = 0
 		}
+	}
+	for k, bmp := range g.toolbarIcons {
+		if bmp != 0 {
+			procDeleteObject.Call(bmp)
+		}
+		delete(g.toolbarIcons, k)
 	}
 }
 
@@ -1305,6 +1323,23 @@ func (g *winAppGUI) rebuildThemeBrushes(dark bool) {
 	g.hbrFillGreen = mk(c.FillGreen)
 	g.hbrFillAmber = mk(c.FillAmber)
 	g.hbrFillRed = mk(c.FillRed)
+
+	// Pre-render crisp 4x4 supersampled anti-aliased toolbar & search icons for current theme
+	if g.toolbarIcons == nil {
+		g.toolbarIcons = make(map[uintptr]uintptr, 8)
+	}
+	g.toolbarIconSz = g.scale(30)
+	if g.toolbarIconSz < 24 {
+		g.toolbarIconSz = 24
+	}
+	for _, cmdID := range []uintptr{cmdAddURL, cmdResume, cmdPause, cmdCancel, cmdDelete, cmdOpenFolder, cmdClearDone, cmdToolsMenu} {
+		g.toolbarIcons[cmdID] = createAntiAliasedIconBitmap(cmdID, g.toolbarIconSz, dark)
+	}
+	g.searchIconSz = g.scale(15)
+	if g.searchIconSz < 14 {
+		g.searchIconSz = 14
+	}
+	g.searchIconBmp = createAntiAliasedIconBitmap(0, g.searchIconSz, dark)
 }
 
 func (g *winAppGUI) applyWindowDarkChrome(hwnd uintptr) {
@@ -1380,6 +1415,13 @@ func (g *winAppGUI) applyTheme() {
 	if g.sidebarHwnd != 0 {
 		procInvalidateRect.Call(g.sidebarHwnd, 0, 1)
 	}
+	if g.searchHwnd != 0 {
+		procInvalidateRect.Call(g.searchHwnd, 0, 1)
+		procUpdateWindow.Call(g.searchHwnd)
+	}
+	if g.statusHwnd != 0 {
+		procInvalidateRect.Call(g.statusHwnd, 0, 1)
+	}
 	for _, b := range g.menuBtns {
 		if b.hwnd != 0 {
 			procInvalidateRect.Call(b.hwnd, 0, 1)
@@ -1392,6 +1434,7 @@ func (g *winAppGUI) applyTheme() {
 	}
 	if g.mainHwnd != 0 {
 		procInvalidateRect.Call(g.mainHwnd, 0, 1)
+		procUpdateWindow.Call(g.mainHwnd)
 	}
 	for hwnd := range g.popups {
 		g.applyWindowDarkChrome(hwnd)
@@ -1488,8 +1531,8 @@ func (g *winAppGUI) initAndRunMessageLoop(startInTray bool) {
 	}
 	procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wcAdd)))
 
-	winW := g.scale(790)
-	winH := g.scale(485)
+	winW := g.scale(810)
+	winH := g.scale(490)
 	scrW, _, _ := procGetSystemMetrics.Call(smCxScreen)
 	scrH, _, _ := procGetSystemMetrics.Call(smCyScreen)
 	posX := (int(scrW) - winW) / 2
@@ -1779,21 +1822,21 @@ func (g *winAppGUI) onCreateMainWindow(hwnd uintptr) {
 		mx += mw + g.scale(2)
 	}
 
-	// Owner-draw flat vector icon toolbar (classic compact download manager style)
+	// Owner-draw flat anti-aliased vector icon toolbar (classic compact download manager style)
 	g.toolbar = []toolbarButtonDef{
-		{id: cmdAddURL, label: "Add URL", width: 58},
-		{id: cmdResume, label: "Resume", width: 56},
-		{id: cmdPause, label: "Pause", width: 54},
-		{id: cmdCancel, label: "Stop", width: 52},
-		{id: cmdDelete, label: "Delete", width: 54},
-		{id: cmdOpenFolder, label: "Folder", width: 54},
-		{id: cmdClearDone, label: "Clear", width: 52},
-		{id: cmdToolsMenu, label: "Engine", width: 56},
+		{id: cmdAddURL, label: "Add URL", width: 64},
+		{id: cmdResume, label: "Resume", width: 60},
+		{id: cmdPause, label: "Pause", width: 58},
+		{id: cmdCancel, label: "Stop", width: 56},
+		{id: cmdDelete, label: "Delete", width: 58},
+		{id: cmdOpenFolder, label: "Folder", width: 58},
+		{id: cmdClearDone, label: "Clear", width: 56},
+		{id: cmdToolsMenu, label: "Engine", width: 60},
 	}
 
 	x := g.scale(6)
 	y := g.scale(28)
-	btnH := g.scale(52)
+	btnH := g.scale(58)
 	gap := g.scale(2)
 
 	for i := range g.toolbar {
@@ -1808,22 +1851,23 @@ func (g *winAppGUI) onCreateMainWindow(hwnd uintptr) {
 	}
 	g.toolbarEndX = x
 
-	// Live Search Edit Box on right side of toolbar
+	// Borderless Live Search Edit Box seated inside a flat theme-colored search container
 	g.searchHwnd = g.createChildControl(
 		"EDIT", "",
-		wsChild|wsVisible|wsTabStop|esAutoHScroll, wsExClientEdge,
-		x, g.scale(41), g.scale(175), g.scale(24),
+		wsChild|wsVisible|wsTabStop|esAutoHScroll, 0,
+		x+g.scale(26), g.scale(48), g.scale(160), g.scale(18),
 		hwnd, idcSearchEdit, false,
 	)
-	if g.searchHwnd != 0 {
-		procSendMessageW.Call(g.searchHwnd, emSetCueBanner, 1, uintptr(unsafe.Pointer(utf16Ptr("Search downloads..."))))
+	if g.searchHwnd != 0 && procSetWindowLongPtrW.Find() == nil {
+		const gwlpWndProc = ^uintptr(3) // -4
+		g.origSearchWndProc, _, _ = procSetWindowLongPtrW.Call(g.searchHwnd, gwlpWndProc, syscall.NewCallback(searchEditSubProc))
 	}
 
 	// Left Categories Sidebar (owner-draw dark LISTBOX with category icons)
 	g.sidebarHwnd = g.createChildControl(
 		"LISTBOX", "",
 		wsChild|wsVisible|wsTabStop|wsVScroll|lbsNotify|lbsOwnerDrawFixed|lbsHasStrings|lbsNoIntegralHeight, wsExClientEdge,
-		g.scale(6), g.scale(86), g.scale(142), g.scale(336),
+		g.scale(6), g.scale(92), g.scale(142), g.scale(336),
 		hwnd, idcSidebar, false,
 	)
 	if g.sidebarHwnd != 0 {
@@ -1841,7 +1885,7 @@ func (g *winAppGUI) onCreateMainWindow(hwnd uintptr) {
 	g.listHwnd = g.createChildControl(
 		"SysListView32", "",
 		lvStyle, wsExClientEdge,
-		g.scale(154), g.scale(86), g.scale(614), g.scale(336),
+		g.scale(154), g.scale(92), g.scale(634), g.scale(336),
 		hwnd, idcListView, false,
 	)
 
@@ -1890,7 +1934,7 @@ func (g *winAppGUI) layoutMainWindow(hwnd uintptr) {
 	}
 
 	pad := g.scale(6)
-	topY := g.scale(86)
+	topY := g.scale(92)
 	statusH := g.scale(18)
 	listH := clientH - topY - statusH - g.scale(10)
 	if listH < g.scale(80) {
@@ -1902,22 +1946,38 @@ func (g *winAppGUI) layoutMainWindow(hwnd uintptr) {
 	}
 
 	if g.searchHwnd != 0 {
-		avail := clientW - pad - g.toolbarEndX - g.scale(8)
-		searchW := g.scale(200)
-		if avail < searchW {
-			searchW = avail
+		avail := clientW - pad - g.toolbarEndX - g.scale(10)
+		boxW := g.scale(220)
+		if avail < boxW {
+			boxW = avail
 		}
-		if searchW < g.scale(80) {
-			searchW = g.scale(80)
+		if boxW < g.scale(110) {
+			boxW = g.scale(110)
 		}
-		searchX := clientW - pad - searchW
-		if searchX < g.toolbarEndX+g.scale(4) {
-			searchX = g.toolbarEndX + g.scale(4)
-			if clientW-pad-searchX > g.scale(50) {
-				searchW = clientW - pad - searchX
+		boxX := clientW - pad - boxW
+		if boxX < g.toolbarEndX+g.scale(6) {
+			boxX = g.toolbarEndX + g.scale(6)
+			if clientW-pad-boxX > g.scale(70) {
+				boxW = clientW - pad - boxX
 			}
 		}
-		procMoveWindow.Call(g.searchHwnd, uintptr(searchX), uintptr(g.scale(41)), uintptr(searchW), uintptr(g.scale(24)), 1)
+		boxY := g.scale(43)
+		boxH := g.scale(28)
+		g.searchBoxRc = winRect{
+			Left:   int32(boxX),
+			Top:    int32(boxY),
+			Right:  int32(boxX + boxW),
+			Bottom: int32(boxY + boxH),
+		}
+		iconPad := g.scale(26)
+		editW := boxW - iconPad - g.scale(6)
+		if editW < g.scale(40) {
+			editW = g.scale(40)
+		}
+		editH := g.scale(18)
+		editY := boxY + (boxH-editH)/2
+		procMoveWindow.Call(g.searchHwnd, uintptr(boxX+iconPad), uintptr(editY), uintptr(editW), uintptr(editH), 1)
+		procInvalidateRect.Call(hwnd, uintptr(unsafe.Pointer(&g.searchBoxRc)), 1)
 	}
 
 	sidebarW := g.scale(142)
@@ -2734,21 +2794,31 @@ func (g *winAppGUI) drawOwnerItem(lParam uintptr) uintptr {
 		}
 	}
 
-	cx := (rc.Left + rc.Right) / 2
-	cy := rc.Top + int32(g.scale(19))
-	if pressed {
-		cy++
+	icoSz := int32(g.toolbarIconSz)
+	if bmp := g.toolbarIcons[cmdID]; bmp != 0 && icoSz > 0 {
+		dstX := (rc.Left+rc.Right-icoSz)/2
+		dstY := rc.Top + int32(g.scale(5))
+		if pressed {
+			dstY++
+		}
+		blitAlphaBitmap(hdc, bmp, dstX, dstY, icoSz)
+	} else {
+		cx := (rc.Left + rc.Right) / 2
+		cy := rc.Top + int32(g.scale(20))
+		if pressed {
+			cy++
+		}
+		r := int32(g.scale(12))
+		g.drawVectorToolbarIcon(hdc, cmdID, cx, cy, r)
 	}
-	r := int32(g.scale(11))
-	g.drawVectorToolbarIcon(hdc, cmdID, cx, cy, r)
 
 	label := getWindowString(dis.HwndItem)
 	if u16, err := syscall.UTF16FromString(label); err == nil && len(u16) > 1 {
 		txtRc := winRect{
 			Left:   rc.Left + 1,
-			Top:    rc.Bottom - int32(g.scale(18)),
+			Top:    rc.Bottom - int32(g.scale(19)),
 			Right:  rc.Right - 1,
-			Bottom: rc.Bottom - int32(g.scale(2)),
+			Bottom: rc.Bottom - int32(g.scale(3)),
 		}
 		if pressed {
 			txtRc.Top++
@@ -2763,6 +2833,38 @@ func (g *winAppGUI) drawOwnerItem(lParam uintptr) uintptr {
 		}
 	}
 	return 1
+}
+
+func searchEditSubProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
+	g := appGUI
+	if g == nil || g.origSearchWndProc == 0 {
+		ret, _, _ := procDefWindowProcW.Call(hwnd, uintptr(msg), wParam, lParam)
+		return ret
+	}
+	ret, _, _ := procCallWindowProcW.Call(g.origSearchWndProc, hwnd, uintptr(msg), wParam, lParam)
+	switch msg {
+	case wmPaint:
+		if textLen, _, _ := procGetWindowTextLengthW.Call(hwnd); textLen == 0 {
+			hdc, _, _ := procGetDC.Call(hwnd)
+			if hdc != 0 {
+				var rc winRect
+				procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&rc)))
+				if u16, err := syscall.UTF16FromString("Search downloads..."); err == nil && len(u16) > 1 {
+					oldFont, _, _ := procSelectObject.Call(hdc, g.fontUI)
+					procSetBkMode.Call(hdc, transparentBkMode)
+					procSetTextColor.Call(hdc, uintptr(g.colors.TextMuted))
+					procDrawTextW.Call(hdc, uintptr(unsafe.Pointer(&u16[0])), uintptr(len(u16)-1), uintptr(unsafe.Pointer(&rc)), dtLeft|dtVCenter|dtSingleLine|dtEndEllipsis)
+					if oldFont != 0 {
+						procSelectObject.Call(hdc, oldFont)
+					}
+				}
+				procReleaseDC.Call(hwnd, hdc)
+			}
+		}
+	case wmSetFocus, wmKillFocus:
+		procInvalidateRect.Call(hwnd, 0, 1)
+	}
+	return ret
 }
 
 func listViewSubProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
@@ -3984,8 +4086,23 @@ func mainWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 				// Crisp hairline separators below top menu strip and icon toolbar
 				menuSep := winRect{Left: rc.Left, Top: int32(g.scale(25)), Right: rc.Right, Bottom: int32(g.scale(26))}
 				procFillRect.Call(wParam, uintptr(unsafe.Pointer(&menuSep)), g.hbrBorder)
-				toolSep := winRect{Left: rc.Left, Top: int32(g.scale(82)), Right: rc.Right, Bottom: int32(g.scale(83))}
+				toolSep := winRect{Left: rc.Left, Top: int32(g.scale(88)), Right: rc.Right, Bottom: int32(g.scale(89))}
 				procFillRect.Call(wParam, uintptr(unsafe.Pointer(&toolSep)), g.hbrBorder)
+			}
+			// Flat theme-aware Search container box + anti-aliased magnifying glass icon
+			if g.searchBoxRc.Right > g.searchBoxRc.Left && g.searchBoxRc.Bottom > g.searchBoxRc.Top {
+				if g.hbrSurface != 0 {
+					procFillRect.Call(wParam, uintptr(unsafe.Pointer(&g.searchBoxRc)), g.hbrSurface)
+				}
+				if g.hbrBorder != 0 {
+					procFrameRect.Call(wParam, uintptr(unsafe.Pointer(&g.searchBoxRc)), g.hbrBorder)
+				}
+				if g.searchIconBmp != 0 && g.searchIconSz > 0 {
+					icoSz := int32(g.searchIconSz)
+					icoX := g.searchBoxRc.Left + int32(g.scale(7))
+					icoY := g.searchBoxRc.Top + (g.searchBoxRc.Bottom-g.searchBoxRc.Top-icoSz)/2
+					blitAlphaBitmap(wParam, g.searchIconBmp, icoX, icoY, icoSz)
+				}
 			}
 			return 1
 		}
@@ -4013,6 +4130,9 @@ func mainWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 		if cmdID == idcSearchEdit {
 			if notif == enChange {
 				g.searchQuery = strings.TrimSpace(getWindowString(g.searchHwnd))
+				if g.searchQuery == "" {
+					procInvalidateRect.Call(g.searchHwnd, 0, 1)
+				}
 				g.syncListView()
 			}
 			return 0
