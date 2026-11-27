@@ -97,3 +97,8 @@ func triggerSystemShutdown(delaySeconds int) error {
 }
 
 func syncInstalledAppVersionRegistry(ver string) {}
+
+// enableSparseFile is a no-op returning true on Unix/macOS where pwrite creates sparse holes natively.
+func enableSparseFile(f *os.File) bool {
+	return f != nil
+}

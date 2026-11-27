@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	AppVersion = "2.5.4"
+	AppVersion = "2.5.5"
 
 	defaultUpdateReleasesURL       = "https://api.github.com/repos/Aviz-66/grab-all-pc/releases?per_page=15"
 	defaultUpdateLatestRedirectURL = "https://github.com/Aviz-66/grab-all-pc/releases/latest"

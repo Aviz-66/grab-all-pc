@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,6 +31,9 @@ var (
 	invalidFileCharsRe = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1F]`)
 	multiSpaceRe       = regexp.MustCompile(`\s+`)
 
+	// Use dedicated HTTP/1.1 connections for parallel byte-range workers so all 6 Turbo
+	// streams get independent TCP sockets instead of multiplexing onto a single HTTP/2
+	// connection (which causes head-of-line stalls and per-socket throttling on CDNs/VPNs).
 	directHTTPTransport = &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
@@ -37,12 +41,13 @@ var (
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		MaxIdleConns:          64,
-		MaxIdleConnsPerHost:   16,
+		MaxIdleConnsPerHost:   24,
 		IdleConnTimeout:       60 * time.Second,
 		TLSHandshakeTimeout:   15 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
-		ForceAttemptHTTP2:     true,
+		ForceAttemptHTTP2:     false,
+		TLSNextProto:          make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
 	}
 )
 
@@ -457,8 +462,10 @@ func runTurboDirectDownload(ctx context.Context, client *http.Client, qm *QueueM
 	hostKey := extractHostKey(task.URL)
 
 	var (
-		resp    *http.Response
-		release func()
+		resp          *http.Response
+		release       func()
+		probeCtx      context.Context
+		probeWatchdog *stallWatchdog
 	)
 	for throttleTry := 0; ; throttleTry++ {
 		rel, acqErr := qm.hostPool.Acquire(ctx, hostKey)
@@ -470,26 +477,32 @@ func runTurboDirectDownload(ctx context.Context, client *http.Client, qm *QueueM
 			probeRange = "bytes=0-0"
 		}
 
-		req, err := buildDirectRequest(ctx, task, userAgent, probeRange)
+		pCtx, pDog := newStallWatchdog(ctx, 30*time.Second)
+		req, err := buildDirectRequest(pCtx, task, userAgent, probeRange)
 		if err != nil {
+			pDog.Stop()
 			rel()
 			return err
 		}
 		r, err := client.Do(req)
 		if err != nil {
+			pDog.Stop()
 			rel()
 			return err
 		}
 
 		if r.StatusCode == http.StatusRequestedRangeNotSatisfiable {
 			_ = r.Body.Close()
-			reqPlain, rErr := buildDirectRequest(ctx, task, userAgent, "")
+			pDog.Kick()
+			reqPlain, rErr := buildDirectRequest(pCtx, task, userAgent, "")
 			if rErr != nil {
+				pDog.Stop()
 				rel()
 				return rErr
 			}
 			r, err = client.Do(reqPlain)
 			if err != nil {
+				pDog.Stop()
 				rel()
 				return err
 			}
@@ -499,6 +512,7 @@ func runTurboDirectDownload(ctx context.Context, client *http.Client, qm *QueueM
 		if (r.StatusCode == http.StatusTooManyRequests || r.StatusCode == http.StatusServiceUnavailable) && throttleTry < 6 {
 			retryAfter := parseRetryAfter(r.Header.Get("Retry-After"))
 			_ = r.Body.Close()
+			pDog.Stop()
 			qm.hostPool.ReportThrottle(hostKey, retryAfter)
 			rel()
 			continue
@@ -506,6 +520,8 @@ func runTurboDirectDownload(ctx context.Context, client *http.Client, qm *QueueM
 
 		resp = r
 		release = rel
+		probeCtx = pCtx
+		probeWatchdog = pDog
 		break
 	}
 
@@ -513,6 +529,7 @@ func runTurboDirectDownload(ctx context.Context, client *http.Client, qm *QueueM
 		status := resp.Status
 		code := resp.StatusCode
 		_ = resp.Body.Close()
+		probeWatchdog.Stop()
 		release()
 		return fmt.Errorf("server returned HTTP %d %s", code, status)
 	}
@@ -537,6 +554,8 @@ func runTurboDirectDownload(ctx context.Context, client *http.Client, qm *QueueM
 	// If server does not support Range (200 OK), stream the response directly in 1 pass.
 	if resp.StatusCode == http.StatusOK {
 		qm.hostPool.ReportSuccess(hostKey)
+		probeWatchdog.Disarm()
+		defer probeWatchdog.Stop()
 		defer release()
 		defer resp.Body.Close()
 		_ = os.Remove(turboMetaPath)
@@ -546,6 +565,7 @@ func runTurboDirectDownload(ctx context.Context, client *http.Client, qm *QueueM
 	totalBytes := parseContentRangeTotal(resp.Header.Get("Content-Range"))
 	if totalBytes <= 0 {
 		_ = resp.Body.Close()
+		probeWatchdog.Stop()
 		release()
 		// Server returned 206 without total size; fall back to standard sequential mode.
 		return runRegularDirectDownload(ctx, client, qm, task, downloadDir, fileName, false, userAgent, "")
@@ -554,6 +574,8 @@ func runTurboDirectDownload(ctx context.Context, client *http.Client, qm *QueueM
 	// Small files (<= 2 MB) on fresh probe already fit inside our initial 0-(2MB-1) response.
 	if !hasPriorState && totalBytes <= turboBlockSize {
 		qm.hostPool.ReportSuccess(hostKey)
+		probeWatchdog.Disarm()
+		defer probeWatchdog.Stop()
 		defer release()
 		defer resp.Body.Close()
 		return streamResponseSequentially(ctx, qm, task, resp.Body, downloadDir, fileName, partPath, 0, totalBytes, false, "", limiters)
@@ -563,6 +585,9 @@ func runTurboDirectDownload(ctx context.Context, client *http.Client, qm *QueueM
 	if hasPriorState {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
+		probeWatchdog.Stop()
+		probeWatchdog = nil
+		probeCtx = nil
 		release()
 	} else {
 		firstBlockBody = &releaseOnCloseReadCloser{ReadCloser: resp.Body, onClose: release}
@@ -570,6 +595,9 @@ func runTurboDirectDownload(ctx context.Context, client *http.Client, qm *QueueM
 	defer func() {
 		if firstBlockBody != nil {
 			_ = firstBlockBody.Close()
+		}
+		if probeWatchdog != nil {
+			probeWatchdog.Stop()
 		}
 	}()
 
@@ -589,6 +617,7 @@ func runTurboDirectDownload(ctx context.Context, client *http.Client, qm *QueueM
 	if err != nil {
 		return fmt.Errorf("failed to open partial file: %w", err)
 	}
+	sparseOK := enableSparseFile(file)
 	fileClosed := false
 	defer func() {
 		if !fileClosed {
@@ -627,14 +656,6 @@ func runTurboDirectDownload(ctx context.Context, client *http.Client, qm *QueueM
 		probeEnd = totalBytes - 1
 	}
 
-	var (
-		probeCtx      context.Context
-		probeWatchdog *stallWatchdog
-	)
-	if firstBlockBody != nil {
-		probeCtx, probeWatchdog = newStallWatchdog(ctx, 30*time.Second)
-	}
-
 	wsErr := runWorkStealingDownload(ctx, workStealingOptions{
 		Client:         client,
 		Endpoint:       endpoint,
@@ -644,6 +665,7 @@ func runTurboDirectDownload(ctx context.Context, client *http.Client, qm *QueueM
 		TurboMetaPath:  turboMetaPath,
 		MaxWorkers:     turboWorkers,
 		MaxRequestSpan: 0,
+		NonSparseFile:  !sparseOK,
 		HostPool:       qm.hostPool,
 		Limiters:       limiters,
 		ProbeBody:      firstBlockBody,
@@ -668,7 +690,7 @@ func runTurboDirectDownload(ctx context.Context, client *http.Client, qm *QueueM
 				task.DownloadedBytes = cur
 				task.TotalBytes = tot
 				task.Progress = pct
-				if rate > 0 || task.Speed == "" {
+				if rate > 0 || task.Speed == "" || strings.Contains(task.Speed, "/s") {
 					task.Speed = speedStr
 					task.ETA = etaStr
 				}
@@ -687,6 +709,7 @@ func runTurboDirectDownload(ctx context.Context, client *http.Client, qm *QueueM
 		},
 	})
 	firstBlockBody = nil
+	probeWatchdog = nil
 
 	if wsErr != nil {
 		return wsErr

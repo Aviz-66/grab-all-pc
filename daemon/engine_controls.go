@@ -518,6 +518,10 @@ func newRangeScheduler(totalBytes int64, completed []byteRange, targetWorkers in
 }
 
 func newRangeSchedulerWithReserved(totalBytes int64, completed []byteRange, reserved []byteRange, targetWorkers int, minSegmentSize int64) *rangeScheduler {
+	return newRangeSchedulerWithOptions(totalBytes, completed, reserved, targetWorkers, minSegmentSize, false)
+}
+
+func newRangeSchedulerWithOptions(totalBytes int64, completed []byteRange, reserved []byteRange, targetWorkers int, minSegmentSize int64, nonSparse bool) *rangeScheduler {
 	if targetWorkers < 1 {
 		targetWorkers = 1
 	}
@@ -538,6 +542,35 @@ func newRangeSchedulerWithReserved(totalBytes int64, completed []byteRange, rese
 
 	totalMissing := countRangeBytes(missing)
 	if totalMissing <= 0 {
+		return s
+	}
+
+	// On filesystems that cannot create sparse files (e.g. exFAT/FAT32 on Windows),
+	// splitting a multi-GB file into full-file slices forces WriteAt at multi-GB offsets
+	// to synchronously zero-fill gigabytes of disk space. Schedule rolling front-to-back
+	// chunks instead so all workers stay near the contiguous frontier.
+	if nonSparse && totalBytes > 32<<20 {
+		chunkSize := int64(4 << 20)
+		if minSegmentSize > chunkSize {
+			chunkSize = minSegmentSize
+		}
+		for _, gap := range missing {
+			pos := gap.Start
+			for pos <= gap.End {
+				candEnd := pos + chunkSize - 1
+				if candEnd > gap.End || gap.End-candEnd < minSegmentSize/2 {
+					candEnd = gap.End
+				}
+				s.segments = append(s.segments, &activeSegment{
+					id:      s.nextSegID,
+					start:   pos,
+					current: pos,
+					end:     candEnd,
+				})
+				s.nextSegID++
+				pos = candEnd + 1
+			}
+		}
 		return s
 	}
 
@@ -779,6 +812,15 @@ func (s *rangeScheduler) SetRequestCancel(seg *activeSegment, cancel context.Can
 	s.mu.Unlock()
 }
 
+func (s *rangeScheduler) MarkResponseStarted(seg *activeSegment) {
+	now := time.Now()
+	s.mu.Lock()
+	seg.startedAt = now
+	seg.lastSampleAt = now
+	seg.lastSamplePos = seg.current
+	s.mu.Unlock()
+}
+
 func (s *rangeScheduler) Release(seg *activeSegment) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -828,11 +870,25 @@ func (s *rangeScheduler) CheckPreemptSlow(gracePeriod time.Duration, minRemBytes
 		return 0
 	}
 
+	staleCutoff := 3 * time.Second
+	if gracePeriod > staleCutoff {
+		staleCutoff = gracePeriod
+	}
+	effectiveRate := func(seg *activeSegment) float64 {
+		if seg.emaBps <= 0 {
+			return 0
+		}
+		if !seg.lastSampleAt.IsZero() && now.Sub(seg.lastSampleAt) >= staleCutoff {
+			return 0
+		}
+		return seg.emaBps
+	}
+
 	rates := make([]float64, 0, len(active)+len(s.completedRates))
 	rates = append(rates, s.completedRates...)
 	for _, seg := range active {
-		if seg.emaBps > 0 {
-			rates = append(rates, seg.emaBps)
+		if r := effectiveRate(seg); r > 0 {
+			rates = append(rates, r)
 		}
 	}
 	if len(rates) == 0 {
@@ -852,9 +908,10 @@ func (s *rangeScheduler) CheckPreemptSlow(gracePeriod time.Duration, minRemBytes
 		if age < gracePeriod || rem < minRemBytes || seg.preemptCount >= maxSegmentPreemptions || seg.reqCancel == nil {
 			continue
 		}
-		isSlow := (medianBps >= 64*1024 && seg.emaBps < medianBps*0.20) || (medianBps > 0 && seg.emaBps == 0)
+		segRate := effectiveRate(seg)
+		isSlow := (medianBps >= 64*1024 && segRate < medianBps*0.20) || (medianBps > 0 && segRate == 0)
 		if isSlow {
-			if victimSeg == nil || seg.emaBps < victimSeg.emaBps {
+			if victimSeg == nil || segRate < effectiveRate(victimSeg) {
 				victimSeg = seg
 			}
 		}
@@ -987,6 +1044,7 @@ type workStealingOptions struct {
 	PreemptGrace         time.Duration
 	PreemptCheckInterval time.Duration
 	DisablePreempt       bool
+	NonSparseFile        bool
 	HostPool             *hostConnectionPool
 	Limiters             []*bandwidthLimiter
 
@@ -1039,7 +1097,7 @@ func runWorkStealingDownload(ctx context.Context, opts workStealingOptions) erro
 		reserved = []byteRange{{Start: opts.ProbeStart, End: opts.ProbeEnd}}
 	}
 
-	sched := newRangeSchedulerWithReserved(opts.TotalBytes, opts.InitialRanges, reserved, opts.MaxWorkers, opts.MinSegmentSize)
+	sched := newRangeSchedulerWithOptions(opts.TotalBytes, opts.InitialRanges, reserved, opts.MaxWorkers, opts.MinSegmentSize, opts.NonSparseFile)
 	if !hasProbe && sched.IsComplete() {
 		return nil
 	}
@@ -1172,6 +1230,9 @@ func runWorkStealingDownload(ctx context.Context, opts workStealingOptions) erro
 					if _, wErr := opts.File.WriteAt(buf[:allowed], streamPos); wErr != nil {
 						return false, false, fmt.Errorf("disk write error: %w", wErr)
 					}
+					if watchdog != nil {
+						watchdog.Kick()
+					}
 					streamPos += allowed
 					liveBytes.Add(allowed)
 					segDone := sched.Advance(seg, allowed)
@@ -1222,20 +1283,35 @@ func runWorkStealingDownload(ctx context.Context, opts workStealingOptions) erro
 		const maxThrottleAttempts = 8
 
 		if initBody != nil {
+			var closeInitOnce sync.Once
+			closeInitBody := func() {
+				closeInitOnce.Do(func() {
+					_ = initBody.Close()
+				})
+			}
 			sched.SetRequestCancel(seg, func() {
 				if initDog != nil {
 					initDog.Stop()
 				}
+				closeInitBody()
 			})
 			stopWorkerCancel := context.AfterFunc(workerCtx, func() {
 				if initDog != nil {
 					initDog.Stop()
 				}
+				closeInitBody()
 			})
+			var stopInitCtxClose func() bool
+			if initCtx != nil {
+				stopInitCtxClose = context.AfterFunc(initCtx, closeInitBody)
+			}
 			hitEnd, preempted, sErr := streamBodyIntoSegment(seg, initCtx, initBody, initDog, opts.ProbeStart, opts.ProbeEnd)
+			if stopInitCtxClose != nil {
+				stopInitCtxClose()
+			}
 			stopWorkerCancel()
 			sched.SetRequestCancel(seg, nil)
-			_ = initBody.Close()
+			closeInitBody()
 			if initDog != nil {
 				initDog.Stop()
 			}
@@ -1398,9 +1474,19 @@ func runWorkStealingDownload(ctx context.Context, opts workStealingOptions) erro
 				continue
 			}
 
+			sched.MarkResponseStarted(seg)
+			watchdog.Kick()
+			var closeRespOnce sync.Once
+			closeRespBody := func() {
+				closeRespOnce.Do(func() {
+					_ = resp.Body.Close()
+				})
+			}
+			stopBodyClose := context.AfterFunc(reqCtx, closeRespBody)
 			hitEnd, preempted, sErr := streamBodyIntoSegment(seg, reqCtx, resp.Body, watchdog, cur, reqEnd)
+			stopBodyClose()
 			sched.SetRequestCancel(seg, nil)
-			_ = resp.Body.Close()
+			closeRespBody()
 			watchdog.Stop()
 			release()
 

@@ -425,3 +425,25 @@ func triggerSystemShutdown(delaySeconds int) error {
 	}
 	return cmd.Start()
 }
+
+const fsctlSetSparse = 0x000900C4
+
+// enableSparseFile marks a newly opened partial download file as sparse on NTFS/ReFS so
+// multi-connection WriteAt calls at multi-GB offsets complete in microseconds instead of
+// forcing Windows to synchronously zero-fill gigabytes of disk space while holding the
+// kernel file lock. Returns false on filesystems that do not support sparse files (exFAT/FAT32).
+func enableSparseFile(f *os.File) bool {
+	if f == nil {
+		return false
+	}
+	var bytesReturned uint32
+	err := syscall.DeviceIoControl(
+		syscall.Handle(f.Fd()),
+		fsctlSetSparse,
+		nil, 0,
+		nil, 0,
+		&bytesReturned,
+		nil,
+	)
+	return err == nil
+}

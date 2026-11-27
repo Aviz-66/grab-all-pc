@@ -407,3 +407,89 @@ func TestSlowConnectionPreemption(t *testing.T) {
 		t.Fatalf("SHA-256 mismatch after slow-connection preemption")
 	}
 }
+
+func TestNonSparseSchedulerStaysNearContiguousFrontier(t *testing.T) {
+	const tenGB = int64(10) * 1024 * 1024 * 1024
+	const probeSize = int64(4) * 1024 * 1024
+	reserved := []byteRange{{Start: 0, End: probeSize - 1}}
+
+	sched := newRangeSchedulerWithOptions(tenGB, nil, reserved, 6, 2*1024*1024, true)
+	for w := 1; w <= 5; w++ {
+		seg := sched.NextOrSteal(w, defaultMinStealSize)
+		if seg == nil {
+			t.Fatalf("worker %d received nil segment", w)
+		}
+		if seg.start > 32*1024*1024 {
+			t.Fatalf("worker %d jumped to multi-GB offset %d on non-sparse file (expected <= 32 MiB)", w, seg.start)
+		}
+	}
+}
+
+func TestStaleSegmentPreemptionTreatsSilentPeerAsStalled(t *testing.T) {
+	sched := newRangeScheduler(4*1024*1024, nil, 2, 512*1024)
+	seg0 := sched.NextOrSteal(0, defaultMinStealSize)
+	seg1 := sched.NextOrSteal(1, defaultMinStealSize)
+
+	var canceled atomic.Bool
+	sched.SetRequestCancel(seg0, func() { canceled.Store(true) })
+	sched.SetRequestCancel(seg1, func() {})
+
+	// Simulate seg0 having transferred 512 KiB quickly 5 seconds ago and then going completely silent,
+	// while seg1 is actively transferring right now.
+	sched.mu.Lock()
+	seg0.emaBps = 600 * 1024
+	seg0.startedAt = time.Now().Add(-10 * time.Second)
+	seg0.lastSampleAt = time.Now().Add(-5 * time.Second)
+	seg1.emaBps = 500 * 1024
+	seg1.startedAt = time.Now().Add(-10 * time.Second)
+	seg1.lastSampleAt = time.Now()
+	sched.mu.Unlock()
+
+	preempted := sched.CheckPreemptSlow(2*time.Second, 256*1024, 0)
+	if preempted != 1 || !canceled.Load() || !seg0.preempted.Load() {
+		t.Fatalf("expected silent stale segment seg0 to be preempted (preempted=%d, canceled=%v)", preempted, canceled.Load())
+	}
+}
+
+func TestRollingProgressTickerDropsToZeroOnStall(t *testing.T) {
+	var totalPtr, liveBytes atomic.Int64
+	totalPtr.Store(10 * 1024 * 1024)
+	liveBytes.Store(0)
+
+	var (
+		sawPositive atomic.Bool
+		sawZeroPost atomic.Bool
+	)
+	stop := startStreamProgressTicker(&totalPtr, &liveBytes, 0, 6, func(downloaded, total int64, rate float64, workers int) {
+		if rate > 0 {
+			sawPositive.Store(true)
+		} else if sawPositive.Load() && rate == 0 {
+			sawZeroPost.Store(true)
+		}
+	}, nil)
+	defer stop()
+
+	// Transfer initial burst, then stall completely for >1.6s.
+	liveBytes.Add(512 * 1024)
+	time.Sleep(350 * time.Millisecond)
+	if !sawPositive.Load() {
+		t.Fatalf("expected positive transfer rate during initial burst")
+	}
+
+	deadline := time.Now().Add(2500 * time.Millisecond)
+	for time.Now().Before(deadline) && !sawZeroPost.Load() {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !sawZeroPost.Load() {
+		t.Fatalf("expected rolling progress ticker rate to drop cleanly to 0 after stall window")
+	}
+}
+
+func TestDirectHTTPTransportUsesDedicatedHTTP11Connections(t *testing.T) {
+	if directHTTPTransport.ForceAttemptHTTP2 {
+		t.Fatalf("directHTTPTransport must disable HTTP/2 multiplexing so parallel workers get dedicated TCP sockets")
+	}
+	if directHTTPTransport.TLSNextProto == nil {
+		t.Fatalf("directHTTPTransport.TLSNextProto must be non-nil empty map to disable implicit HTTP/2 ALPN")
+	}
+}

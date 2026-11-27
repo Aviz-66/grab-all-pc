@@ -9,7 +9,7 @@ SetCompressor /SOLID lzma
 !include "FileFunc.nsh"
 
 !ifndef APP_VERSION
-  !define APP_VERSION "2.5.4"
+  !define APP_VERSION "2.5.5"
 !endif
 !ifndef SOURCE_DIR
   !define SOURCE_DIR "stage_win"

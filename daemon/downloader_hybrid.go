@@ -804,6 +804,14 @@ func (w *stallWatchdog) Kick() {
 	w.mu.Unlock()
 }
 
+func (w *stallWatchdog) Disarm() {
+	w.mu.Lock()
+	if !w.stopped && w.timer != nil {
+		w.timer.Stop()
+	}
+	w.mu.Unlock()
+}
+
 func (w *stallWatchdog) Stop() {
 	w.mu.Lock()
 	if !w.stopped {
@@ -933,14 +941,20 @@ func startStreamProgressTicker(totalPtr *atomic.Int64, liveBytes *atomic.Int64, 
 	var stopOnce sync.Once
 	var wg sync.WaitGroup
 
+	type rateSample struct {
+		at    time.Time
+		bytes int64
+	}
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		ticker := time.NewTicker(150 * time.Millisecond)
 		defer ticker.Stop()
-		lastTick := time.Now()
-		lastBytes := initialDone
-		lastExtra := time.Now()
+		startAt := time.Now()
+		samples := []rateSample{{at: startAt, bytes: initialDone}}
+		lastExtra := startAt
+		const rateWindow = 1500 * time.Millisecond
 
 		for {
 			select {
@@ -952,11 +966,17 @@ func startStreamProgressTicker(totalPtr *atomic.Int64, liveBytes *atomic.Int64, 
 				if total > 0 && cur > total {
 					cur = total
 				}
-				elapsed := now.Sub(lastTick).Seconds()
+				samples = append(samples, rateSample{at: now, bytes: cur})
+				cutoff := now.Add(-rateWindow)
+				for len(samples) > 2 && samples[1].at.Before(cutoff) {
+					samples = samples[1:]
+				}
+				oldest := samples[0]
+				elapsed := now.Sub(oldest.at).Seconds()
 				if elapsed <= 0.001 {
 					elapsed = 0.001
 				}
-				delta := cur - lastBytes
+				delta := cur - oldest.bytes
 				if delta < 0 {
 					delta = 0
 				}
@@ -964,8 +984,6 @@ func startStreamProgressTicker(totalPtr *atomic.Int64, liveBytes *atomic.Int64, 
 				if onProgress != nil {
 					onProgress(cur, total, rate, workerCount)
 				}
-				lastBytes = cur
-				lastTick = now
 
 				if extraEverySecond != nil && now.Sub(lastExtra) >= time.Second {
 					extraEverySecond()
@@ -1443,6 +1461,7 @@ func fetchStreamTurbo(ctx context.Context, opts streamFetchOptions, endpoint *st
 		cleanupProbe()
 		return 0, fmt.Errorf("failed to open partial file: %w", err)
 	}
+	sparseOK := enableSparseFile(file)
 	fileClosed := false
 	defer func() {
 		if !fileClosed {
@@ -1488,6 +1507,7 @@ func fetchStreamTurbo(ctx context.Context, opts streamFetchOptions, endpoint *st
 		PreemptGrace:         opts.PreemptGrace,
 		PreemptCheckInterval: opts.PreemptCheckInterval,
 		DisablePreempt:       opts.DisablePreempt,
+		NonSparseFile:        !sparseOK,
 		HostPool:             opts.HostPool,
 		Limiters:             opts.Limiters,
 		ProbeBody:            probeBodyWrapped,
@@ -2208,6 +2228,12 @@ func runHybridYouTubeDownload(ctx context.Context, qm *QueueManager, task *Downl
 					if overallTotal > overallDone {
 						etaStr = formatDuration(int64(float64(overallTotal-overallDone) / rateBytesPerSec))
 					}
+				} else {
+					if maxWorkers <= 1 {
+						speedStr = "0 B/s (Live)"
+					} else {
+						speedStr = fmt.Sprintf("0 B/s (%dx)", workers)
+					}
 				}
 
 				task.mu.Lock()
@@ -2220,7 +2246,7 @@ func runHybridYouTubeDownload(ctx context.Context, qm *QueueManager, task *Downl
 					if pct > 0 || task.Progress == 0 {
 						task.Progress = pct
 					}
-					if speedStr != "" {
+					if rateBytesPerSec > 0 || task.Speed == "" || strings.Contains(task.Speed, "/s") {
 						task.Speed = speedStr
 						task.ETA = etaStr
 					}
