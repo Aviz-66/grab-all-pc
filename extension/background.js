@@ -265,12 +265,49 @@ async function collectBrowserCookies(url, pageUrl, storeId) {
   return cookies;
 }
 
-// Keep fresh YouTube/Google cookies synced to GrabAll RAM so even "+ Add URL" inside graball.exe works on YouTube!
-async function syncYouTubeCookies(daemonUrl, token) {
+// Keep fresh YouTube/Google cookies synced to GrabAll whenever YouTube rotates auth cookies
+const YT_AUTH_COOKIE_NAMES = new Set([
+  'LOGIN_INFO',
+  'SID',
+  'SAPISID',
+  '__Secure-1PSID',
+  '__Secure-3PSID',
+  '__Secure-1PAPISID',
+  '__Secure-3PAPISID',
+  '__Secure-1PSIDTS',
+  '__Secure-3PSIDTS',
+  'SIDCC',
+  '__Secure-1PSIDCC',
+  '__Secure-3PSIDCC',
+]);
+
+let ytCookieSyncTimer = null;
+if (chrome.cookies && chrome.cookies.onChanged) {
+  chrome.cookies.onChanged.addListener((changeInfo) => {
+    const c = changeInfo?.cookie;
+    if (!c || changeInfo.removed) return;
+    const dom = String(c.domain || '').toLowerCase();
+    if (!dom.includes('youtube.com')) return;
+    if (!YT_AUTH_COOKIE_NAMES.has(c.name)) return;
+
+    if (ytCookieSyncTimer) clearTimeout(ytCookieSyncTimer);
+    ytCookieSyncTimer = setTimeout(async () => {
+      ytCookieSyncTimer = null;
+      const cfg = await chrome.storage.local.get(DEFAULT_CONFIG);
+      const daemonUrl = (cfg.daemonUrl || DEFAULT_CONFIG.daemonUrl).replace(/\/+$/, '');
+      let token = cfg.authToken || '';
+      if (!token) token = await autoPairToken(daemonUrl);
+      await syncYouTubeCookies(daemonUrl, token, c.storeId || null);
+    }, 2500);
+  });
+}
+
+// Keep fresh YouTube/Google cookies synced to GrabAll so even "+ Add URL" inside graball.exe works on YouTube!
+async function syncYouTubeCookies(daemonUrl, token, storeId = null) {
   try {
-    const cookies = await collectBrowserCookies('https://www.youtube.com/', '', null);
-    if (!cookies.length) return;
-    await fetch(`${daemonUrl}/api/sync-cookies`, {
+    const cookies = await collectBrowserCookies('https://www.youtube.com/', '', storeId);
+    if (!cookies.length) return { success: true, signedIn: false, count: 0 };
+    const res = await fetch(`${daemonUrl}/api/sync-cookies`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -279,9 +316,13 @@ async function syncYouTubeCookies(daemonUrl, token) {
       },
       body: JSON.stringify({ cookies }),
     });
+    if (res.ok) {
+      return await res.json().catch(() => ({ success: true }));
+    }
   } catch (e) {
     // Ignore when GrabAll is closed
   }
+  return null;
 }
 
 // Send request to local Go daemon
@@ -469,7 +510,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === 'SEND_DOWNLOAD') {
-    const payload = { ...message.payload, storeId: sender?.tab?.cookieStoreId || null };
+    const payload = {
+      ...message.payload,
+      storeId: message.payload?.storeId || sender?.tab?.cookieStoreId || null,
+    };
     sendToDaemon(payload)
       .then((res) => sendResponse({ success: true, data: res }))
       .catch((err) => sendResponse({ success: false, error: err.message }));
@@ -479,7 +523,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'PREVIEW_MEDIA') {
     (async () => {
       try {
-        const storeId = sender?.tab?.cookieStoreId || null;
+        const storeId = message.payload?.storeId || sender?.tab?.cookieStoreId || null;
         const cookies = await collectBrowserCookies(message.payload?.url, message.payload?.pageUrl, storeId);
         const res = await daemonRequest('/api/media/preview', {
           method: 'POST',
@@ -508,7 +552,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (!token) {
           token = await autoPairToken(daemonUrl);
         }
-        const storeId = sender?.tab?.cookieStoreId || null;
+        const storeId = message.payload?.storeId || sender?.tab?.cookieStoreId || null;
         const cookies = await collectBrowserCookies(message.payload?.url, message.payload?.pageUrl, storeId);
         const body = JSON.stringify({
           url: message.payload?.url || '',
@@ -557,6 +601,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'CHECK_DAEMON') {
     chrome.storage.local.get(DEFAULT_CONFIG).then(async (config) => {
       const daemonUrl = (config.daemonUrl || 'http://127.0.0.1:17890').replace(/\/+$/, '');
+      const storeId = message.storeId || sender?.tab?.cookieStoreId || null;
       try {
         const res = await fetch(`${daemonUrl}/api/ping`);
         if (res.ok) {
@@ -565,7 +610,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           if (!token) {
             token = await autoPairToken(daemonUrl);
           } else {
-            syncYouTubeCookies(daemonUrl, token);
+            const syncRes = await syncYouTubeCookies(daemonUrl, token, storeId);
+            if (syncRes) {
+              data.youtubeCookiesSynced = Boolean(syncRes.signedIn);
+              data.youtubeCookiesCount = Number(syncRes.count) || 0;
+              data.youtubeCookiesUpdatedAt = syncRes.updatedAt || '';
+            }
           }
           sendResponse({ online: true, info: data, token, daemonUrl });
         } else {
@@ -575,6 +625,52 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ online: false, daemonUrl });
       }
     });
+    return true;
+  }
+
+  if (message.type === 'SYNC_COOKIES_NOW') {
+    (async () => {
+      try {
+        const cfg = await chrome.storage.local.get(DEFAULT_CONFIG);
+        const daemonUrl = (cfg.daemonUrl || DEFAULT_CONFIG.daemonUrl).replace(/\/+$/, '');
+        let token = cfg.authToken || '';
+        if (!token) token = await autoPairToken(daemonUrl);
+        const storeId = message.storeId || sender?.tab?.cookieStoreId || null;
+        const res = await syncYouTubeCookies(daemonUrl, token, storeId);
+        if (!res) {
+          sendResponse({ success: false, error: 'Daemon offline' });
+          return;
+        }
+        sendResponse({ success: true, ...res });
+      } catch (err) {
+        sendResponse({ success: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'CHECK_YTDLP_UPDATE') {
+    const force = message.force ? '1' : '0';
+    daemonRequest(`/api/ytdlp/check?force=${force}`)
+      .then((res) => sendResponse({ success: true, info: res.data }))
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === 'GET_YTDLP_STATUS') {
+    daemonRequest('/api/ytdlp/status')
+      .then((res) => sendResponse({ success: true, info: res.data }))
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  if (message.type === 'UPDATE_YTDLP') {
+    daemonRequest('/api/ytdlp/update', {
+      method: 'POST',
+      body: { force: Boolean(message.force) },
+    })
+      .then((res) => sendResponse({ success: true, data: res.data }))
+      .catch((err) => sendResponse({ success: false, error: err.message }));
     return true;
   }
 

@@ -197,17 +197,133 @@ if (typeof document !== 'undefined') {
     }
   }
 
+  function renderPopupCookiesStatus(signedIn, count) {
+    const el = document.getElementById('popup-cookies-status');
+    if (!el) return;
+    if (signedIn) {
+      el.style.color = '#34d399';
+      el.textContent = `Signed In (${count || 0})`;
+    } else {
+      el.style.color = '#fbbf24';
+      el.textContent = 'Not Signed In';
+    }
+  }
+
+  function renderPopupYtDlpStatus(info) {
+    if (!info) return;
+    const statusEl = document.getElementById('popup-ytdlp-status');
+    const progWrap = document.getElementById('popup-ytdlp-prog-wrap');
+    const progFill = document.getElementById('popup-ytdlp-prog-fill');
+    const btnCheck = document.getElementById('btn-popup-check-ytdlp');
+    const btnUpdate = document.getElementById('btn-popup-update-ytdlp');
+
+    const banner = document.getElementById('ytdlp-popup-banner');
+    const bannerText = document.getElementById('ytdlp-popup-banner-text');
+    const bannerBtn = document.getElementById('btn-popup-banner-update-ytdlp');
+    const bannerProgWrap = document.getElementById('ytdlp-popup-banner-prog-wrap');
+    const bannerProgFill = document.getElementById('ytdlp-popup-banner-prog-fill');
+
+    const pct = Math.max(0, Math.min(100, Number(info.progress) || 0));
+
+    if (info.updating) {
+      const msg = info.statusText || 'Updating yt-dlp...';
+      if (statusEl) {
+        statusEl.style.color = '#60a5fa';
+        statusEl.textContent = pct > 0 ? `Updating ${pct}%` : 'Updating...';
+      }
+      if (progWrap && progFill) {
+        progWrap.style.display = 'block';
+        progFill.style.width = `${Math.max(8, pct)}%`;
+      }
+      if (btnCheck) btnCheck.disabled = true;
+      if (btnUpdate) {
+        btnUpdate.disabled = true;
+        btnUpdate.textContent = pct > 0 ? `⏳ ${pct}%...` : '⏳ Updating...';
+      }
+      if (banner && bannerText) {
+        banner.classList.remove('hidden');
+        bannerText.textContent = `⏳ ${msg}`;
+        if (bannerBtn) {
+          bannerBtn.disabled = true;
+          bannerBtn.textContent = pct > 0 ? `${pct}%` : '...';
+        }
+        if (bannerProgWrap && bannerProgFill) {
+          bannerProgWrap.style.display = 'block';
+          bannerProgFill.style.width = `${Math.max(8, pct)}%`;
+        }
+      }
+      return;
+    }
+
+    if (btnCheck) btnCheck.disabled = false;
+    if (progWrap) progWrap.style.display = 'none';
+    if (bannerProgWrap) bannerProgWrap.style.display = 'none';
+    if (bannerBtn) {
+      bannerBtn.disabled = false;
+      bannerBtn.textContent = 'Update';
+    }
+
+    if (info.updateAvailable && info.latestVersion) {
+      const range = info.currentVersion
+        ? `${info.currentVersion} → ${info.latestVersion}`
+        : info.latestVersion;
+      if (statusEl) {
+        statusEl.style.color = '#fbbf24';
+        statusEl.textContent = `Update Found: ${range}`;
+      }
+      if (btnUpdate) {
+        btnUpdate.disabled = false;
+        btnUpdate.textContent = `⬇️ Update (${info.latestVersion})`;
+      }
+      if (banner && bannerText) {
+        banner.classList.remove('hidden');
+        bannerText.textContent = `🎬 yt-dlp Update Found: ${range}`;
+      }
+    } else if (info.installed) {
+      if (statusEl) {
+        statusEl.style.color = '#34d399';
+        statusEl.textContent = info.currentVersion ? `v${info.currentVersion} (Up to date)` : 'Installed';
+      }
+      if (btnUpdate) {
+        btnUpdate.disabled = false;
+        btnUpdate.textContent = '⬇️ Reinstall / Update';
+      }
+      if (banner) banner.classList.add('hidden');
+    } else {
+      if (statusEl) {
+        statusEl.style.color = '#fbbf24';
+        statusEl.textContent = 'Not Installed';
+      }
+      if (btnUpdate) {
+        btnUpdate.disabled = false;
+        btnUpdate.textContent = '⬇️ Install yt-dlp';
+      }
+      if (banner) banner.classList.add('hidden');
+    }
+  }
+
   function refreshDaemonSettings() {
     chrome.runtime.sendMessage({ type: 'GET_DAEMON_CONFIG' }, (res) => {
       if (chrome.runtime.lastError || !res || !res.success || !res.config) return;
+      const cfg = res.config;
       const wdSel = document.getElementById('select-when-done');
       if (wdSel) {
-        wdSel.value = res.config.whenDoneAction || 'none';
+        wdSel.value = cfg.whenDoneAction || 'none';
       }
       const limSel = document.getElementById('select-global-limit');
       if (limSel) {
-        limSel.value = String(res.config.speedLimitKBps || 0);
+        limSel.value = String(cfg.speedLimitKBps || 0);
       }
+      renderPopupCookiesStatus(Boolean(cfg.youtubeCookiesSynced), cfg.youtubeCookiesCount || 0);
+      renderPopupYtDlpStatus({
+        installed: Boolean(cfg.ytDlpAvailable),
+        currentVersion: cfg.ytDlpVersion || '',
+        latestVersion: cfg.ytDlpLatestVersion || '',
+        updateAvailable: Boolean(cfg.ytDlpUpdateAvailable),
+        updating: Boolean(cfg.ytDlpUpdating),
+        statusText: cfg.ytDlpStatusText || '',
+        progress: cfg.ytDlpProgress || 0,
+      });
     });
   }
 
@@ -266,6 +382,13 @@ if (typeof document !== 'undefined') {
 
     sseConn.addEventListener('queue_init', onQueueData);
     sseConn.addEventListener('queue_update', onQueueData);
+    sseConn.addEventListener('ytdlp_status', (e) => {
+      try {
+        renderPopupYtDlpStatus(JSON.parse(e.data));
+      } catch (err) {
+        // Ignore malformed frame
+      }
+    });
     sseConn.onerror = () => {
       startFallbackPoll();
     };
@@ -639,7 +762,9 @@ if (typeof document !== 'undefined') {
     const statusText = document.getElementById('daemon-status-text');
     const openBtn = document.getElementById('btn-open-dashboard');
 
-    chrome.runtime.sendMessage({ type: 'CHECK_DAEMON' }, (response) => {
+    chrome.runtime.sendMessage(
+      { type: 'CHECK_DAEMON', storeId: activeTab?.cookieStoreId || null },
+      (response) => {
       if (chrome.runtime.lastError || !response || !response.online) {
         daemonOnline = false;
         cleanupLiveConnections();
@@ -672,6 +797,21 @@ if (typeof document !== 'undefined') {
         }
         if (openBtn) {
           openBtn.textContent = response.info?.nativeGui ? '⚡ Open GrabAll Window' : '🌐 Open Web Dashboard';
+        }
+        if (response.info) {
+          renderPopupCookiesStatus(
+            Boolean(response.info.youtubeCookiesSynced),
+            response.info.youtubeCookiesCount || 0
+          );
+          renderPopupYtDlpStatus({
+            installed: Boolean(response.info.ytDlpAvailable),
+            currentVersion: response.info.ytDlpVersion || '',
+            latestVersion: response.info.ytDlpLatestVersion || '',
+            updateAvailable: Boolean(response.info.ytDlpUpdateAvailable),
+            updating: Boolean(response.info.ytDlpUpdating),
+            statusText: response.info.ytDlpStatusText || '',
+            progress: 0,
+          });
         }
 
         fetchQueueOnce();
@@ -787,6 +927,7 @@ if (typeof document !== 'undefined') {
             url: activeTab.url,
             pageUrl: activeTab.url,
             videoCodec,
+            storeId: activeTab?.cookieStoreId || null,
           },
         },
         (res) => {
@@ -942,6 +1083,77 @@ if (typeof document !== 'undefined') {
       });
     });
 
+    const triggerYtDlpUpdate = () => {
+      renderPopupYtDlpStatus({
+        updating: true,
+        statusText: 'Starting yt-dlp update...',
+        progress: 5,
+      });
+      chrome.runtime.sendMessage({ type: 'UPDATE_YTDLP', force: false }, (res) => {
+        if (chrome.runtime.lastError || !res || !res.success) {
+          showAlert('yt-dlp update error: ' + (res?.error || 'daemon offline'), true);
+          refreshDaemonSettings();
+          return;
+        }
+        if (res.data?.info) {
+          renderPopupYtDlpStatus(res.data.info);
+        } else {
+          refreshDaemonSettings();
+        }
+        showAlert(
+          res.data?.version ? `yt-dlp updated to v${res.data.version}!` : 'yt-dlp updated!',
+          false
+        );
+      });
+    };
+
+    document.getElementById('btn-popup-check-ytdlp')?.addEventListener('click', (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      btn.textContent = 'Checking...';
+      chrome.runtime.sendMessage({ type: 'CHECK_YTDLP_UPDATE', force: true }, (res) => {
+        btn.disabled = false;
+        btn.textContent = '🔍 Check Update';
+        if (chrome.runtime.lastError || !res || !res.success || !res.info) {
+          showAlert('Update check failed: ' + (res?.error || 'daemon offline'), true);
+          return;
+        }
+        renderPopupYtDlpStatus(res.info);
+        if (res.info.updateAvailable) {
+          showAlert(`yt-dlp update found: ${res.info.latestVersion}`, false);
+        } else {
+          showAlert(`yt-dlp is up to date (${res.info.currentVersion || res.info.latestVersion})`, false);
+        }
+      });
+    });
+
+    document.getElementById('btn-popup-update-ytdlp')?.addEventListener('click', triggerYtDlpUpdate);
+    document.getElementById('btn-popup-banner-update-ytdlp')?.addEventListener('click', triggerYtDlpUpdate);
+
+    document.getElementById('btn-popup-sync-cookies')?.addEventListener('click', (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      btn.textContent = 'Syncing...';
+      chrome.runtime.sendMessage(
+        { type: 'SYNC_COOKIES_NOW', storeId: activeTab?.cookieStoreId || null },
+        (res) => {
+          btn.disabled = false;
+          btn.textContent = '🔄 Sync Latest Cookies Now';
+          if (chrome.runtime.lastError || !res || !res.success) {
+            showAlert('Cookie sync failed: ' + (res?.error || 'daemon offline'), true);
+            return;
+          }
+          renderPopupCookiesStatus(Boolean(res.signedIn), res.count || 0);
+          showAlert(
+            res.signedIn
+              ? `Synced ${res.count || 0} signed-in YouTube cookies!`
+              : 'No signed-in YouTube cookies found in this browser',
+            !res.signedIn
+          );
+        }
+      );
+    });
+
     document.getElementById('btn-save-token').addEventListener('click', async () => {
       const nextUrl = (document.getElementById('input-daemon-url')?.value || 'http://127.0.0.1:17890')
         .trim()
@@ -991,6 +1203,7 @@ if (typeof document !== 'undefined') {
           embedSubs: Boolean(embedSubs),
           subLangs: subLangs,
           embedChapters: Boolean(embedChapters),
+          storeId: activeTab?.cookieStoreId || null,
         },
       },
       (res) => {

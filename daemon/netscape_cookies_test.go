@@ -1,15 +1,18 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestWriteNetscapeCookiesFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	cookieFile := filepath.Join(tmpDir, "cookies.txt")
+	futureExp := time.Now().Add(30 * 24 * time.Hour).Unix()
 
 	cookies := []Cookie{
 		{
@@ -18,7 +21,7 @@ func TestWriteNetscapeCookiesFile(t *testing.T) {
 			Domain:         ".youtube.com",
 			Path:           "/",
 			Secure:         true,
-			ExpirationDate: 1780000000,
+			ExpirationDate: float64(futureExp),
 		},
 		{
 			Name:     "pref",
@@ -27,6 +30,14 @@ func TestWriteNetscapeCookiesFile(t *testing.T) {
 			HostOnly: true,
 			Path:     "/home",
 			Secure:   false,
+		},
+		{
+			Name:           "OLD_EXPIRED",
+			Value:          "stale",
+			Domain:         ".youtube.com",
+			Path:           "/",
+			Secure:         true,
+			ExpirationDate: float64(time.Now().Add(-24 * time.Hour).Unix()),
 		},
 	}
 
@@ -46,13 +57,19 @@ func TestWriteNetscapeCookiesFile(t *testing.T) {
 	}
 
 	// Verify first cookie
-	if !strings.Contains(content, ".youtube.com\tTRUE\t/\tTRUE\t1780000000\tSESSION_ID\tsecret123") {
+	wantLine1 := fmt.Sprintf(".youtube.com\tTRUE\t/\tTRUE\t%d\tSESSION_ID\tsecret123", futureExp)
+	if !strings.Contains(content, wantLine1) {
 		t.Errorf("Cookie line 1 formatted incorrectly:\n%s", content)
 	}
 
 	// Verify second cookie (HostOnly is true, so includeSubdomains should be FALSE)
 	if !strings.Contains(content, "example.com\tFALSE\t/home\tFALSE\t") {
 		t.Errorf("Cookie line 2 formatted incorrectly:\n%s", content)
+	}
+
+	// Verify expired cookie was omitted
+	if strings.Contains(content, "OLD_EXPIRED") {
+		t.Errorf("Expected expired cookie to be filtered out, got:\n%s", content)
 	}
 }
 

@@ -54,7 +54,7 @@ type Config struct {
 	SpeedMode           string `json:"speedMode,omitempty"`      // "turbo" (default 6x) or "regular" (1x sequential watch-live)
 	VideoCodec          string `json:"videoCodec,omitempty"`     // "h264" (default), "vp9", "av1", "auto"
 	SpeedLimitKBps      int64  `json:"speedLimitKBps,omitempty"` // 0 = unlimited
-	Theme               string `json:"theme,omitempty"`          // "auto" (default), "light", "dark"
+	Theme               string `json:"theme,omitempty"`          // "dark" (default), "auto", "light"
 	ShowProgressPopup   *bool  `json:"showProgressPopup,omitempty"`
 	FirstRunPromptShown bool   `json:"firstRunPromptShown,omitempty"`
 	AutoCheckUpdates    *bool  `json:"autoCheckUpdates,omitempty"`
@@ -99,7 +99,7 @@ func LoadConfig(configPath string) (*Config, error) {
 		DefaultEngine: "auto",
 		SpeedMode:     SpeedModeTurbo,
 		VideoCodec:    VideoCodecH264,
-		Theme:         ThemeAuto,
+		Theme:         ThemeDark,
 		configPath:    configPath,
 	}
 

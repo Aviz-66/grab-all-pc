@@ -122,17 +122,90 @@ type QueueManager struct {
 	onPlaylistAdded func(title string, count int)
 	ytCookiesMu     sync.RWMutex
 	ytCookies       []Cookie
+	ytCookiesAt     time.Time
+	ytCookiesFile   string
 }
 
-func (qm *QueueManager) UpdateYouTubeCookies(cookies []Cookie) {
-	if len(cookies) == 0 {
+type persistedYouTubeCookies struct {
+	UpdatedAt time.Time `json:"updatedAt"`
+	Cookies   []Cookie  `json:"cookies"`
+}
+
+func (qm *QueueManager) loadYouTubeCookies() {
+	if qm.ytCookiesFile == "" {
 		return
 	}
-	cp := make([]Cookie, len(cookies))
-	copy(cp, cookies)
+	data, err := os.ReadFile(qm.ytCookiesFile)
+	if err != nil {
+		return
+	}
+	var saved persistedYouTubeCookies
+	if err := json.Unmarshal(data, &saved); err != nil || len(saved.Cookies) == 0 {
+		return
+	}
+	if !hasYouTubeAuthCookies(saved.Cookies) {
+		return
+	}
+	qm.ytCookiesMu.Lock()
+	qm.ytCookies = saved.Cookies
+	qm.ytCookiesAt = saved.UpdatedAt
+	qm.ytCookiesMu.Unlock()
+}
+
+func (qm *QueueManager) saveYouTubeCookies(cookies []Cookie, updatedAt time.Time) {
+	if qm.ytCookiesFile == "" || len(cookies) == 0 {
+		return
+	}
+	payload, err := json.Marshal(persistedYouTubeCookies{
+		UpdatedAt: updatedAt,
+		Cookies:   cookies,
+	})
+	if err != nil {
+		return
+	}
+	dir := filepath.Dir(qm.ytCookiesFile)
+	if dir != "" && dir != "." {
+		_ = os.MkdirAll(dir, 0755)
+	}
+	tmp := qm.ytCookiesFile + ".tmp"
+	if err := os.WriteFile(tmp, payload, 0600); err == nil {
+		_ = os.Remove(qm.ytCookiesFile)
+		_ = os.Rename(tmp, qm.ytCookiesFile)
+	}
+}
+
+func filterNonExpiredCookies(cookies []Cookie) []Cookie {
+	if len(cookies) == 0 {
+		return nil
+	}
+	nowUnix := time.Now().Unix()
+	out := make([]Cookie, 0, len(cookies))
+	for _, c := range cookies {
+		if strings.TrimSpace(c.Name) == "" {
+			continue
+		}
+		if c.ExpirationDate > 0 && int64(c.ExpirationDate) < nowUnix {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+func (qm *QueueManager) UpdateYouTubeCookies(cookies []Cookie) bool {
+	valid := filterNonExpiredCookies(cookies)
+	if len(valid) == 0 || !hasYouTubeAuthCookies(valid) {
+		return false
+	}
+	cp := make([]Cookie, len(valid))
+	copy(cp, valid)
+	now := time.Now().UTC()
 	qm.ytCookiesMu.Lock()
 	qm.ytCookies = cp
+	qm.ytCookiesAt = now
 	qm.ytCookiesMu.Unlock()
+	qm.saveYouTubeCookies(cp, now)
+	return true
 }
 
 func (qm *QueueManager) GetYouTubeCookies() []Cookie {
@@ -141,9 +214,21 @@ func (qm *QueueManager) GetYouTubeCookies() []Cookie {
 	if len(qm.ytCookies) == 0 {
 		return nil
 	}
-	cp := make([]Cookie, len(qm.ytCookies))
-	copy(cp, qm.ytCookies)
-	return cp
+	valid := filterNonExpiredCookies(qm.ytCookies)
+	if len(valid) == 0 || !hasYouTubeAuthCookies(valid) {
+		return nil
+	}
+	return valid
+}
+
+func (qm *QueueManager) YouTubeCookieStatus() (signedIn bool, count int, updatedAt time.Time) {
+	qm.ytCookiesMu.RLock()
+	defer qm.ytCookiesMu.RUnlock()
+	valid := filterNonExpiredCookies(qm.ytCookies)
+	if len(valid) == 0 || !hasYouTubeAuthCookies(valid) {
+		return false, 0, time.Time{}
+	}
+	return true, len(valid), qm.ytCookiesAt
 }
 
 func (qm *QueueManager) SetUIHooks(onUpdate func(), onTaskAdded func(task *DownloadTask), onPlaylistAdded func(title string, count int)) {
@@ -159,6 +244,10 @@ func NewQueueManager(cfg *Config, dataFile string, broker *SSEBroker) *QueueMana
 	if cfg != nil {
 		globalLimitKBps = cfg.GetSpeedLimitKBps()
 	}
+	ytCookiesFile := ""
+	if dataFile != "" {
+		ytCookiesFile = filepath.Join(filepath.Dir(dataFile), "youtube_cookies.json")
+	}
 	qm := &QueueManager{
 		config:         cfg,
 		tasks:          make([]*DownloadTask, 0),
@@ -169,8 +258,10 @@ func NewQueueManager(cfg *Config, dataFile string, broker *SSEBroker) *QueueMana
 		globalLimiter:  newBandwidthLimiter(globalLimitKBps * 1024),
 		hostPool:       newHostConnectionPool(defaultMaxConnsPerHost),
 		whenDoneAction: WhenDoneNone,
+		ytCookiesFile:  ytCookiesFile,
 	}
 
+	qm.loadYouTubeCookies()
 	qm.load()
 	qm.wg.Add(1)
 	go qm.processLoop()
@@ -344,10 +435,10 @@ func (qm *QueueManager) AddTask(req AddRequest) (*DownloadTask, error) {
 	}
 
 	if isYouTubeURL(req.URL) {
-		if len(req.Cookies) > 0 && hasYouTubeAuthCookies(req.Cookies) {
+		if hasYouTubeAuthCookies(req.Cookies) {
 			qm.UpdateYouTubeCookies(req.Cookies)
-		} else if len(req.Cookies) == 0 {
-			req.Cookies = qm.GetYouTubeCookies()
+		} else if cached := qm.GetYouTubeCookies(); hasYouTubeAuthCookies(cached) {
+			req.Cookies = cached
 		}
 	}
 
@@ -433,10 +524,10 @@ func (qm *QueueManager) AddPlaylistTasks(ctx context.Context, req AddRequest) ([
 	}
 
 	if isYouTubeURL(req.URL) {
-		if len(req.Cookies) > 0 && hasYouTubeAuthCookies(req.Cookies) {
+		if hasYouTubeAuthCookies(req.Cookies) {
 			qm.UpdateYouTubeCookies(req.Cookies)
-		} else if len(req.Cookies) == 0 {
-			req.Cookies = qm.GetYouTubeCookies()
+		} else if cached := qm.GetYouTubeCookies(); hasYouTubeAuthCookies(cached) {
+			req.Cookies = cached
 		}
 	}
 
@@ -695,7 +786,7 @@ func (qm *QueueManager) ResumeTask(id string) bool {
 		task.ErrorMessage = ""
 		task.Speed = ""
 		task.ETA = ""
-		if isYouTubeURL(task.URL) && len(freshYTCookies) > 0 {
+		if isYouTubeURL(task.URL) && hasYouTubeAuthCookies(freshYTCookies) {
 			task.Cookies = freshYTCookies
 		}
 		task.UpdatedAt = time.Now()

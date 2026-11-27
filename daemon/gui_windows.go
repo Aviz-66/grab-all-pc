@@ -68,6 +68,8 @@ const (
 	wmQuit           = 0x0012
 	wmEraseBkgnd     = 0x0014
 	wmGetMinMaxInfo  = 0x0024
+	wmDrawItem       = 0x002B
+	wmMeasureItem    = 0x002C
 	wmSetFont        = 0x0030
 	wmNotify         = 0x004E
 	wmSetIcon        = 0x0080
@@ -97,10 +99,23 @@ const (
 	bsPushButton    = 0x00000000
 	bsDefPushButton = 0x00000001
 	bsAutoCheckBox  = 0x00000003
+	bsOwnerDraw     = 0x0000000B
 	bmGetCheck      = 0x00F0
 	bmSetCheck      = 0x00F1
 	bstChecked      = 1
 	bstUnchecked    = 0
+
+	odsSelected = 0x0001
+	odsDisabled = 0x0004
+	odsFocus    = 0x0010
+	odsHotLight = 0x0040
+
+	odtMenu    = 1
+	odtListBox = 2
+	odtButton  = 4
+
+	psSolid   = 0
+	nullBrush = 5
 
 	esAutoHScroll = 0x0080
 	emSetCueBanner = 0x1501
@@ -110,12 +125,15 @@ const (
 	ssEndEllipsis = 0x4000
 
 	lbsNotify           = 0x0001
+	lbsOwnerDrawFixed   = 0x0010
+	lbsHasStrings       = 0x0040
 	lbsNoIntegralHeight = 0x0100
 	lbAddString         = 0x0180
 	lbInsertString      = 0x0181
 	lbDeleteString      = 0x0182
 	lbSetCurSel         = 0x0186
 	lbGetCurSel         = 0x0188
+	lbSetItemHeight     = 0x01A0
 	lbnSelChange        = 1
 
 	cbsDropDownList = 0x0003
@@ -144,6 +162,8 @@ const (
 	lvmDeleteAllItems           = lvmFirst + 9
 	lvmGetNextItem              = lvmFirst + 12
 	lvmRedrawItems              = lvmFirst + 21
+	lvmSetColumnWidth           = lvmFirst + 30
+	lvmGetHeader                = lvmFirst + 31
 	lvmSetTextColor             = lvmFirst + 36
 	lvmSetTextBkColor           = lvmFirst + 38
 	lvmSetItemState             = lvmFirst + 43
@@ -181,7 +201,9 @@ const (
 	cdrfNotifyItemDraw  = 0x00000020
 	cdrfNotifySubItemDraw = 0x00000020
 
+	dtLeft        = 0x00000000
 	dtCenter      = 0x00000001
+	dtRight       = 0x00000002
 	dtVCenter     = 0x00000004
 	dtSingleLine  = 0x00000020
 	dtEndEllipsis = 0x00008000
@@ -270,6 +292,7 @@ const (
 	cmdOpenWeb           = 1030
 	cmdAbout             = 1031
 	cmdCheckUpdate       = 1032
+	cmdCheckYtDlpUpdate  = 1033
 	cmdShowMain          = 1040
 	cmdToolsMenu         = 1041
 	cmdGlobalLimit0      = 1050
@@ -290,9 +313,13 @@ const (
 	cmdWhenDoneNone      = 1075
 	cmdWhenDoneOpenFile  = 1076
 	cmdWhenDoneOpenFolder = 1077
-	cmdWhenDoneSleep     = 1078
-	cmdWhenDoneShutdown  = 1079
-	cmdExit              = 1099
+	cmdWhenDoneSleep      = 1078
+	cmdWhenDoneShutdown   = 1079
+	cmdMenuTasks          = 1085
+	cmdMenuTools          = 1086
+	cmdMenuOptions        = 1087
+	cmdMenuHelp           = 1088
+	cmdExit               = 1099
 
 	idcListView   = 2001
 	idcStatus     = 2002
@@ -386,6 +413,9 @@ var (
 	procBeginPaint             = modUser32.NewProc("BeginPaint")
 	procEndPaint               = modUser32.NewProc("EndPaint")
 	procSetClassLongPtrW       = modUser32.NewProc("SetClassLongPtrW")
+	procSetWindowLongPtrW      = modUser32.NewProc("SetWindowLongPtrW")
+	procCallWindowProcW        = modUser32.NewProc("CallWindowProcW")
+	procGetWindowRect          = modUser32.NewProc("GetWindowRect")
 
 	procGetModuleHandleW = modKernel32.NewProc("GetModuleHandleW")
 	procCreateMutexW     = modKernel32.NewProc("CreateMutexW")
@@ -402,12 +432,22 @@ var (
 	procGetDeviceCaps    = modGdi32.NewProc("GetDeviceCaps")
 	procSetBkMode        = modGdi32.NewProc("SetBkMode")
 	procCreateSolidBrush = modGdi32.NewProc("CreateSolidBrush")
+	procCreatePen        = modGdi32.NewProc("CreatePen")
+	procSelectObject     = modGdi32.NewProc("SelectObject")
+	procGetStockObject   = modGdi32.NewProc("GetStockObject")
+	procMoveToEx         = modGdi32.NewProc("MoveToEx")
+	procLineTo           = modGdi32.NewProc("LineTo")
+	procEllipse          = modGdi32.NewProc("Ellipse")
+	procRectangle        = modGdi32.NewProc("Rectangle")
+	procRoundRect        = modGdi32.NewProc("RoundRect")
 	procSetTextColor     = modGdi32.NewProc("SetTextColor")
 	procSetBkColor       = modGdi32.NewProc("SetBkColor")
 
 	procInitCommonControlsEx = modComctl32.NewProc("InitCommonControlsEx")
 	procDwmSetWindowAttr     = modDwmapi.NewProc("DwmSetWindowAttribute")
 	procSetWindowTheme       = modUxtheme.NewProc("SetWindowTheme")
+	procSetPreferredAppMode  = modUxtheme.NewProc("#135")
+	procFlushMenuThemes      = modUxtheme.NewProc("#136")
 
 	procShellNotifyIconW      = modShell32.NewProc("Shell_NotifyIconW")
 	procShellExecuteW         = modShell32.NewProc("ShellExecuteW")
@@ -598,30 +638,57 @@ func rgbColor(r, g, b uint8) uint32 {
 	return uint32(r) | (uint32(g) << 8) | (uint32(b) << 16)
 }
 
+type drawItemStruct struct {
+	CtlType    uint32
+	CtlID      uint32
+	ItemID     uint32
+	ItemAction uint32
+	ItemState  uint32
+	HwndItem   uintptr
+	Hdc        uintptr
+	RcItem     winRect
+	ItemData   uintptr
+}
+
+type mainColumnDef struct {
+	title string
+	width int
+	right bool
+}
+
+var mainListColumns = []mainColumnDef{
+	{"File Name", 205, false},
+	{"Size", 82, true},
+	{"Status", 98, false},
+	{"Time left", 64, true},
+	{"Transfer rate", 90, true},
+	{"Quality", 60, false},
+}
+
 func getThemeColors(dark bool) uiThemeColors {
 	if dark {
 		return uiThemeColors{
-			Window:     rgbColor(24, 24, 28),
-			Surface:    rgbColor(32, 33, 38),
-			SurfaceAlt: rgbColor(38, 40, 46),
-			Selected:   rgbColor(45, 76, 128),
-			Track:      rgbColor(48, 52, 64),
-			Border:     rgbColor(72, 76, 88),
+			Window:     rgbColor(37, 37, 38),
+			Surface:    rgbColor(30, 30, 30),
+			SurfaceAlt: rgbColor(40, 40, 43),
+			Selected:   rgbColor(55, 55, 61),
+			Track:      rgbColor(46, 46, 50),
+			Border:     rgbColor(62, 62, 66),
 			FillBlue:   rgbColor(37, 99, 235),
-			FillGreen:  rgbColor(5, 150, 105),
+			FillGreen:  rgbColor(16, 155, 108),
 			FillAmber:  rgbColor(217, 119, 6),
 			FillRed:    rgbColor(220, 38, 38),
-			Text:       rgbColor(241, 245, 249),
-			TextMuted:  rgbColor(148, 163, 184),
+			Text:       rgbColor(228, 228, 231),
+			TextMuted:  rgbColor(161, 161, 170),
 			TextOnBar:  rgbColor(255, 255, 255),
-			TextGreen:  rgbColor(52, 211, 153),
+			TextGreen:  rgbColor(74, 222, 128),
 			TextRed:    rgbColor(248, 113, 113),
 		}
 	}
 	return uiThemeColors{
-		Window:     rgbColor(243, 245, 248),
+		Window:     rgbColor(243, 244, 246),
 		Surface:    rgbColor(255, 255, 255),
-		SurfaceAlt: rgbColor(248, 250, 252),
+		SurfaceAlt: rgbColor(248, 249, 251),
 		Selected:   rgbColor(219, 234, 254),
 		Track:      rgbColor(226, 232, 240),
 		Border:     rgbColor(203, 213, 225),
@@ -629,9 +696,9 @@ func getThemeColors(dark bool) uiThemeColors {
 		FillGreen:  rgbColor(110, 231, 183),
 		FillAmber:  rgbColor(252, 211, 77),
 		FillRed:    rgbColor(252, 165, 165),
-		Text:       rgbColor(15, 23, 42),
+		Text:       rgbColor(17, 24, 39),
 		TextMuted:  rgbColor(100, 116, 139),
-		TextOnBar:  rgbColor(15, 23, 42),
+		TextOnBar:  rgbColor(17, 24, 39),
 		TextGreen:  rgbColor(21, 128, 61),
 		TextRed:    rgbColor(185, 28, 28),
 	}
@@ -780,16 +847,23 @@ type winAppGUI struct {
 	iconSmall uintptr
 	fontUI    uintptr
 	fontBold  uintptr
+	fontSmall uintptr
 
 	mainHwnd        uintptr
 	sidebarHwnd     uintptr
 	searchHwnd      uintptr
 	listHwnd        uintptr
+	headerHwnd      uintptr
+	origListWndProc uintptr
 	statusHwnd      uintptr
+	hMenuTasks      uintptr
+	hMenuTools      uintptr
 	hMenuOpt        uintptr
+	hMenuHelp       uintptr
 	hMenuSpeedLimit uintptr
 	hMenuTheme      uintptr
 	hMenuWhenDone   uintptr
+	menuBtns        []toolbarButtonDef
 	toolbar         []toolbarButtonDef
 	toolbarEndX     int
 	rows            []listRowCache
@@ -818,6 +892,7 @@ type winAppGUI struct {
 
 	updateQueued      atomic.Bool
 	updating          atomic.Bool
+	ytdlpUpdating     atomic.Bool
 	trayAdded         atomic.Bool
 	msgTaskbarCreated uint32
 
@@ -1247,8 +1322,23 @@ func (g *winAppGUI) applyWindowDarkChrome(hwnd uintptr) {
 	}
 }
 
+func enableWindowsDarkMenus(dark bool) {
+	if procSetPreferredAppMode.Find() == nil {
+		// PreferredAppMode: 0=Default, 1=AllowDark, 2=ForceDark, 3=ForceLight
+		mode := uintptr(3)
+		if dark {
+			mode = 2
+		}
+		procSetPreferredAppMode.Call(mode)
+	}
+	if procFlushMenuThemes.Find() == nil {
+		procFlushMenuThemes.Call()
+	}
+}
+
 func (g *winAppGUI) applyTheme() {
 	dark := resolveDarkMode(g.cfg.GetTheme(), isSystemDarkMode())
+	enableWindowsDarkMenus(dark)
 	g.rebuildThemeBrushes(dark)
 
 	const gclHbrBackground = ^uintptr(9) // GCLP_HBRBACKGROUND (-10)
@@ -1262,14 +1352,19 @@ func (g *winAppGUI) applyTheme() {
 
 	g.applyWindowDarkChrome(g.mainHwnd)
 	themeStr := "Explorer"
+	hdrTheme := "ItemsView"
 	if dark {
 		themeStr = "DarkMode_Explorer"
+		hdrTheme = "DarkMode_ItemsView"
 	}
 	if procSetWindowTheme.Find() == nil {
 		for _, ctrl := range []uintptr{g.listHwnd, g.sidebarHwnd, g.searchHwnd} {
 			if ctrl != 0 {
 				procSetWindowTheme.Call(ctrl, uintptr(unsafe.Pointer(utf16Ptr(themeStr))), 0)
 			}
+		}
+		if g.headerHwnd != 0 {
+			procSetWindowTheme.Call(g.headerHwnd, uintptr(unsafe.Pointer(utf16Ptr(hdrTheme))), 0)
 		}
 	}
 
@@ -1279,8 +1374,21 @@ func (g *winAppGUI) applyTheme() {
 		procSendMessageW.Call(g.listHwnd, lvmSetTextColor, 0, uintptr(g.colors.Text))
 		procInvalidateRect.Call(g.listHwnd, 0, 1)
 	}
+	if g.headerHwnd != 0 {
+		procInvalidateRect.Call(g.headerHwnd, 0, 1)
+	}
 	if g.sidebarHwnd != 0 {
 		procInvalidateRect.Call(g.sidebarHwnd, 0, 1)
+	}
+	for _, b := range g.menuBtns {
+		if b.hwnd != 0 {
+			procInvalidateRect.Call(b.hwnd, 0, 1)
+		}
+	}
+	for _, b := range g.toolbar {
+		if b.hwnd != 0 {
+			procInvalidateRect.Call(b.hwnd, 0, 1)
+		}
 	}
 	if g.mainHwnd != 0 {
 		procInvalidateRect.Call(g.mainHwnd, 0, 1)
@@ -1325,8 +1433,13 @@ func (g *winAppGUI) initAndRunMessageLoop(startInTray bool) {
 		uintptr(unsafe.Pointer(fontFace)),
 	)
 	g.fontBold, _, _ = procCreateFontW.Call(
-		uintptr(int32(-g.scale(14))), 0, 0, 0,
+		uintptr(int32(-g.scale(13))), 0, 0, 0,
 		600, 0, 0, 0, 1, 0, 0, 5, 0,
+		uintptr(unsafe.Pointer(fontFace)),
+	)
+	g.fontSmall, _, _ = procCreateFontW.Call(
+		uintptr(int32(-g.scale(11))), 0, 0, 0,
+		400, 0, 0, 0, 1, 0, 0, 5, 0,
 		uintptr(unsafe.Pointer(fontFace)),
 	)
 
@@ -1375,8 +1488,8 @@ func (g *winAppGUI) initAndRunMessageLoop(startInTray bool) {
 	}
 	procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wcAdd)))
 
-	winW := g.scale(1060)
-	winH := g.scale(560)
+	winW := g.scale(790)
+	winH := g.scale(485)
 	scrW, _, _ := procGetSystemMetrics.Call(smCxScreen)
 	scrH, _, _ := procGetSystemMetrics.Call(smCyScreen)
 	posX := (int(scrW) - winW) / 2
@@ -1389,9 +1502,10 @@ func (g *winAppGUI) initAndRunMessageLoop(startInTray bool) {
 	}
 
 	g.darkMode = resolveDarkMode(g.cfg.GetTheme(), isSystemDarkMode())
+	enableWindowsDarkMenus(g.darkMode)
 	g.rebuildThemeBrushes(g.darkMode)
 
-	hMenu := g.buildMainMenu()
+	g.buildMainMenu()
 	if tbMsg, _, _ := procRegisterWindowMessageW.Call(uintptr(unsafe.Pointer(utf16Ptr("TaskbarCreated")))); tbMsg != 0 {
 		g.msgTaskbarCreated = uint32(tbMsg)
 	}
@@ -1405,7 +1519,7 @@ func (g *winAppGUI) initAndRunMessageLoop(startInTray bool) {
 		wsOverlappedWindow|wsClipChildren,
 		uintptr(posX), uintptr(posY), uintptr(winW), uintptr(winH),
 		0,
-		hMenu,
+		0,
 		g.hInst,
 		0,
 	)
@@ -1433,6 +1547,18 @@ func (g *winAppGUI) initAndRunMessageLoop(startInTray bool) {
 	}
 	g.syncListView()
 	g.refreshStatusBar()
+	if g.srv != nil && g.srv.ytdlpUpdater != nil {
+		g.srv.ytdlpUpdater.AddStatusListener(func(info *YtDlpUpdateInfo) {
+			if info == nil {
+				return
+			}
+			if info.Updating && info.StatusText != "" {
+				g.postStatusMessage("⚡ " + info.StatusText)
+			} else {
+				g.postStatusMessage("")
+			}
+		})
+	}
 	go g.autoUpgradeSlowYtDlpIfNeeded()
 
 	if !startInTray {
@@ -1444,6 +1570,12 @@ func (g *winAppGUI) initAndRunMessageLoop(startInTray bool) {
 		time.Sleep(6 * time.Second)
 		if g.cfg.GetAutoCheckUpdates() {
 			g.checkForAppUpdate(false, startInTray)
+		}
+	}()
+	go func() {
+		time.Sleep(9 * time.Second)
+		if g.cfg.GetAutoCheckUpdates() {
+			g.checkForYtDlpUpdate(false, startInTray)
 		}
 	}()
 
@@ -1459,10 +1591,9 @@ func (g *winAppGUI) initAndRunMessageLoop(startInTray bool) {
 }
 
 func (g *winAppGUI) buildMainMenu() uintptr {
-	hMain, _, _ := procCreateMenu.Call()
-
 	// Tasks Menu
 	hTasks, _, _ := procCreatePopupMenu.Call()
+	g.hMenuTasks = hTasks
 	procAppendMenuW.Call(hTasks, mfString, cmdAddURL, uintptr(unsafe.Pointer(utf16Ptr("Add New Download...	Ctrl+N"))))
 	procAppendMenuW.Call(hTasks, mfString, cmdClearDone, uintptr(unsafe.Pointer(utf16Ptr("Clear Completed Downloads"))))
 	procAppendMenuW.Call(hTasks, mfString, cmdOpenDownloads, uintptr(unsafe.Pointer(utf16Ptr("Open Downloads Folder"))))
@@ -1471,6 +1602,8 @@ func (g *winAppGUI) buildMainMenu() uintptr {
 
 	// Tools Menu
 	hTools, _, _ := procCreatePopupMenu.Call()
+	g.hMenuTools = hTools
+	procAppendMenuW.Call(hTools, mfString, cmdCheckYtDlpUpdate, uintptr(unsafe.Pointer(utf16Ptr("Check for yt-dlp Updates..."))))
 	procAppendMenuW.Call(hTools, mfString, cmdInstallYtDlp, uintptr(unsafe.Pointer(utf16Ptr("Install / Update yt-dlp + QuickJS (YouTube Engine)"))))
 	procAppendMenuW.Call(hTools, mfString, cmdInstallFFmpeg, uintptr(unsafe.Pointer(utf16Ptr("Install / Update FFmpeg (HD Audio+Video Merger)"))))
 	procAppendMenuW.Call(hTools, mfSeparator, 0, 0)
@@ -1491,9 +1624,9 @@ func (g *winAppGUI) buildMainMenu() uintptr {
 
 	hTheme, _, _ := procCreatePopupMenu.Call()
 	g.hMenuTheme = hTheme
-	procAppendMenuW.Call(hTheme, mfString, cmdThemeAuto, uintptr(unsafe.Pointer(utf16Ptr("Auto (Follow Windows)"))))
+	procAppendMenuW.Call(hTheme, mfString, cmdThemeDark, uintptr(unsafe.Pointer(utf16Ptr("Dark Mode (Default)"))))
 	procAppendMenuW.Call(hTheme, mfString, cmdThemeLight, uintptr(unsafe.Pointer(utf16Ptr("Light Mode"))))
-	procAppendMenuW.Call(hTheme, mfString, cmdThemeDark, uintptr(unsafe.Pointer(utf16Ptr("Dark Mode"))))
+	procAppendMenuW.Call(hTheme, mfString, cmdThemeAuto, uintptr(unsafe.Pointer(utf16Ptr("Auto (Follow Windows)"))))
 	procAppendMenuW.Call(hOpt, mfPopup, hTheme, uintptr(unsafe.Pointer(utf16Ptr("Theme"))))
 
 	hWD, _, _ := procCreatePopupMenu.Call()
@@ -1506,7 +1639,7 @@ func (g *winAppGUI) buildMainMenu() uintptr {
 	procAppendMenuW.Call(hOpt, mfSeparator, 0, 0)
 	procAppendMenuW.Call(hOpt, mfString, cmdToggleStartup, uintptr(unsafe.Pointer(utf16Ptr("Start GrabAll Automatically with Windows"))))
 	procAppendMenuW.Call(hOpt, mfString, cmdTogglePopup, uintptr(unsafe.Pointer(utf16Ptr("Show Download Progress Popup on New Downloads"))))
-	procAppendMenuW.Call(hOpt, mfString, cmdToggleAutoUpdate, uintptr(unsafe.Pointer(utf16Ptr("Automatically Check for GrabAll Updates on Startup"))))
+	procAppendMenuW.Call(hOpt, mfString, cmdToggleAutoUpdate, uintptr(unsafe.Pointer(utf16Ptr("Automatically Check for GrabAll & yt-dlp Updates on Startup"))))
 	procAppendMenuW.Call(hOpt, mfSeparator, 0, 0)
 	procAppendMenuW.Call(hOpt, mfString, cmdConc1, uintptr(unsafe.Pointer(utf16Ptr("Max Concurrent Downloads: 1"))))
 	procAppendMenuW.Call(hOpt, mfString, cmdConc2, uintptr(unsafe.Pointer(utf16Ptr("Max Concurrent Downloads: 2"))))
@@ -1515,17 +1648,13 @@ func (g *winAppGUI) buildMainMenu() uintptr {
 
 	// Help Menu
 	hHelp, _, _ := procCreatePopupMenu.Call()
+	g.hMenuHelp = hHelp
 	procAppendMenuW.Call(hHelp, mfString, cmdOpenWeb, uintptr(unsafe.Pointer(utf16Ptr("Open Web UI in Browser"))))
 	procAppendMenuW.Call(hHelp, mfString, cmdCheckUpdate, uintptr(unsafe.Pointer(utf16Ptr("Check for Updates..."))))
 	procAppendMenuW.Call(hHelp, mfString, cmdAbout, uintptr(unsafe.Pointer(utf16Ptr("About GrabAll"))))
 
-	procAppendMenuW.Call(hMain, mfPopup, hTasks, uintptr(unsafe.Pointer(utf16Ptr("&Tasks"))))
-	procAppendMenuW.Call(hMain, mfPopup, hTools, uintptr(unsafe.Pointer(utf16Ptr("T&ools"))))
-	procAppendMenuW.Call(hMain, mfPopup, hOpt, uintptr(unsafe.Pointer(utf16Ptr("&Options"))))
-	procAppendMenuW.Call(hMain, mfPopup, hHelp, uintptr(unsafe.Pointer(utf16Ptr("&Help"))))
-
 	g.refreshOptionMenuChecks()
-	return hMain
+	return 0
 }
 
 func (g *winAppGUI) refreshOptionMenuChecks() {
@@ -1630,33 +1759,50 @@ func (g *winAppGUI) createChildControl(className, text string, style, exStyle ui
 }
 
 func (g *winAppGUI) onCreateMainWindow(hwnd uintptr) {
-	g.toolbar = []toolbarButtonDef{
-		{id: cmdAddURL, label: "+ Add URL", width: 92},
-		{id: cmdResume, label: "Resume", width: 78},
-		{id: cmdPause, label: "Pause", width: 74},
-		{id: cmdCancel, label: "Cancel", width: 74},
-		{id: cmdDelete, label: "Delete", width: 74},
-		{id: cmdOpenFolder, label: "Open Folder", width: 102},
-		{id: cmdClearDone, label: "Clear Done", width: 92},
-		{id: cmdToolsMenu, label: "Engine Setup", width: 108},
+	// Custom dark top menu strip (eliminates white Win32 system menu bar in dark mode)
+	g.menuBtns = []toolbarButtonDef{
+		{id: cmdMenuTasks, label: "Tasks", width: 52},
+		{id: cmdMenuTools, label: "Tools", width: 50},
+		{id: cmdMenuOptions, label: "Options", width: 62},
+		{id: cmdMenuHelp, label: "Help", width: 48},
+	}
+	mx := g.scale(4)
+	menuH := g.scale(24)
+	for i := range g.menuBtns {
+		mw := g.scale(g.menuBtns[i].width)
+		g.menuBtns[i].hwnd = g.createChildControl(
+			"BUTTON", g.menuBtns[i].label,
+			wsChild|wsVisible|bsOwnerDraw, 0,
+			mx, 0, mw, menuH,
+			hwnd, g.menuBtns[i].id, false,
+		)
+		mx += mw + g.scale(2)
 	}
 
-	x := g.scale(10)
-	y := g.scale(8)
-	btnH := g.scale(30)
-	gap := g.scale(6)
+	// Owner-draw flat vector icon toolbar (classic compact download manager style)
+	g.toolbar = []toolbarButtonDef{
+		{id: cmdAddURL, label: "Add URL", width: 58},
+		{id: cmdResume, label: "Resume", width: 56},
+		{id: cmdPause, label: "Pause", width: 54},
+		{id: cmdCancel, label: "Stop", width: 52},
+		{id: cmdDelete, label: "Delete", width: 54},
+		{id: cmdOpenFolder, label: "Folder", width: 54},
+		{id: cmdClearDone, label: "Clear", width: 52},
+		{id: cmdToolsMenu, label: "Engine", width: 56},
+	}
+
+	x := g.scale(6)
+	y := g.scale(28)
+	btnH := g.scale(52)
+	gap := g.scale(2)
 
 	for i := range g.toolbar {
 		bw := g.scale(g.toolbar[i].width)
-		style := uint32(wsChild | wsVisible | wsTabStop | bsPushButton)
-		if i == 0 {
-			style = uint32(wsChild | wsVisible | wsTabStop | bsDefPushButton)
-		}
 		g.toolbar[i].hwnd = g.createChildControl(
 			"BUTTON", g.toolbar[i].label,
-			style, 0,
+			wsChild|wsVisible|wsTabStop|bsOwnerDraw, 0,
 			x, y, bw, btnH,
-			hwnd, g.toolbar[i].id, i == 0,
+			hwnd, g.toolbar[i].id, false,
 		)
 		x += bw + gap
 	}
@@ -1666,20 +1812,23 @@ func (g *winAppGUI) onCreateMainWindow(hwnd uintptr) {
 	g.searchHwnd = g.createChildControl(
 		"EDIT", "",
 		wsChild|wsVisible|wsTabStop|esAutoHScroll, wsExClientEdge,
-		x, y+g.scale(2), g.scale(210), g.scale(26),
+		x, g.scale(41), g.scale(175), g.scale(24),
 		hwnd, idcSearchEdit, false,
 	)
 	if g.searchHwnd != 0 {
 		procSendMessageW.Call(g.searchHwnd, emSetCueBanner, 1, uintptr(unsafe.Pointer(utf16Ptr("Search downloads..."))))
 	}
 
-	// Left Categories Sidebar (LISTBOX)
+	// Left Categories Sidebar (owner-draw dark LISTBOX with category icons)
 	g.sidebarHwnd = g.createChildControl(
 		"LISTBOX", "",
-		wsChild|wsVisible|wsTabStop|wsVScroll|lbsNotify|lbsNoIntegralHeight, wsExClientEdge,
-		g.scale(10), g.scale(46), g.scale(178), g.scale(420),
+		wsChild|wsVisible|wsTabStop|wsVScroll|lbsNotify|lbsOwnerDrawFixed|lbsHasStrings|lbsNoIntegralHeight, wsExClientEdge,
+		g.scale(6), g.scale(86), g.scale(142), g.scale(336),
 		hwnd, idcSidebar, false,
 	)
+	if g.sidebarHwnd != 0 {
+		procSendMessageW.Call(g.sidebarHwnd, lbSetItemHeight, 0, uintptr(g.scale(23)))
+	}
 	for idx, cat := range uiCategories {
 		label := fmt.Sprintf("%s (0)", cat.Label)
 		g.sidebarLabels[idx] = label
@@ -1692,27 +1841,14 @@ func (g *winAppGUI) onCreateMainWindow(hwnd uintptr) {
 	g.listHwnd = g.createChildControl(
 		"SysListView32", "",
 		lvStyle, wsExClientEdge,
-		g.scale(196), g.scale(46), g.scale(840), g.scale(420),
+		g.scale(154), g.scale(86), g.scale(614), g.scale(336),
 		hwnd, idcListView, false,
 	)
 
-	exStyle := uintptr(lvsExFullRowSelect | lvsExGridLines | lvsExDoubleBuffer)
+	exStyle := uintptr(lvsExFullRowSelect | lvsExDoubleBuffer)
 	procSendMessageW.Call(g.listHwnd, lvmSetExtendedListViewStyle, exStyle, exStyle)
 
-	cols := []struct {
-		title string
-		width int
-		right bool
-	}{
-		{"File / Video Title", 295, false},
-		{"Size", 125, true},
-		{"Progress / Status", 145, false},
-		{"Transfer Rate", 120, true},
-		{"Time Left", 80, true},
-		{"Quality", 95, false},
-	}
-
-	for idx, c := range cols {
+	for idx, c := range mainListColumns {
 		fmtFlag := int32(lvcfmtLeft)
 		if c.right {
 			fmtFlag = int32(lvcfmtRight)
@@ -1727,11 +1863,19 @@ func (g *winAppGUI) onCreateMainWindow(hwnd uintptr) {
 		procSendMessageW.Call(g.listHwnd, lvmInsertColumnW, uintptr(idx), uintptr(unsafe.Pointer(&lvc)))
 	}
 
+	if g.listHwnd != 0 {
+		g.headerHwnd, _, _ = procSendMessageW.Call(g.listHwnd, lvmGetHeader, 0, 0)
+		if procSetWindowLongPtrW.Find() == nil {
+			const gwlpWndProc = ^uintptr(3) // -4
+			g.origListWndProc, _, _ = procSetWindowLongPtrW.Call(g.listHwnd, gwlpWndProc, syscall.NewCallback(listViewSubProc))
+		}
+	}
+
 	// Bottom Status Bar Text
 	g.statusHwnd = g.createChildControl(
 		"STATIC", "Ready",
 		wsChild|wsVisible|ssLeftNoWrap|ssEndEllipsis, 0,
-		g.scale(12), g.scale(474), g.scale(1020), g.scale(22),
+		g.scale(8), g.scale(428), g.scale(760), g.scale(18),
 		hwnd, idcStatus, false,
 	)
 }
@@ -1745,10 +1889,10 @@ func (g *winAppGUI) layoutMainWindow(hwnd uintptr) {
 		return
 	}
 
-	pad := g.scale(10)
-	topY := g.scale(46)
-	statusH := g.scale(22)
-	listH := clientH - topY - statusH - g.scale(12)
+	pad := g.scale(6)
+	topY := g.scale(86)
+	statusH := g.scale(18)
+	listH := clientH - topY - statusH - g.scale(10)
 	if listH < g.scale(80) {
 		listH = g.scale(80)
 	}
@@ -1759,25 +1903,25 @@ func (g *winAppGUI) layoutMainWindow(hwnd uintptr) {
 
 	if g.searchHwnd != 0 {
 		avail := clientW - pad - g.toolbarEndX - g.scale(8)
-		searchW := g.scale(240)
+		searchW := g.scale(200)
 		if avail < searchW {
 			searchW = avail
 		}
-		if searchW < g.scale(90) {
-			searchW = g.scale(90)
+		if searchW < g.scale(80) {
+			searchW = g.scale(80)
 		}
 		searchX := clientW - pad - searchW
 		if searchX < g.toolbarEndX+g.scale(4) {
 			searchX = g.toolbarEndX + g.scale(4)
-			if clientW-pad-searchX > g.scale(60) {
+			if clientW-pad-searchX > g.scale(50) {
 				searchW = clientW - pad - searchX
 			}
 		}
-		procMoveWindow.Call(g.searchHwnd, uintptr(searchX), uintptr(g.scale(10)), uintptr(searchW), uintptr(g.scale(26)), 1)
+		procMoveWindow.Call(g.searchHwnd, uintptr(searchX), uintptr(g.scale(41)), uintptr(searchW), uintptr(g.scale(24)), 1)
 	}
 
-	sidebarW := g.scale(178)
-	colGap := g.scale(8)
+	sidebarW := g.scale(142)
+	colGap := g.scale(6)
 	if g.sidebarHwnd != 0 {
 		procMoveWindow.Call(g.sidebarHwnd, uintptr(pad), uintptr(topY), uintptr(sidebarW), uintptr(listH), 1)
 	}
@@ -1789,9 +1933,15 @@ func (g *winAppGUI) layoutMainWindow(hwnd uintptr) {
 	}
 	if g.listHwnd != 0 {
 		procMoveWindow.Call(g.listHwnd, uintptr(listX), uintptr(topY), uintptr(listW), uintptr(listH), 1)
+		fixedCols := g.scale(82 + 98 + 64 + 90 + 60 + 20)
+		titleW := listW - fixedCols
+		if titleW < g.scale(140) {
+			titleW = g.scale(140)
+		}
+		procSendMessageW.Call(g.listHwnd, lvmSetColumnWidth, 0, uintptr(titleW))
 	}
 	if g.statusHwnd != 0 {
-		procMoveWindow.Call(g.statusHwnd, uintptr(pad+2), uintptr(topY+listH+g.scale(5)), uintptr(fullW-4), uintptr(statusH), 1)
+		procMoveWindow.Call(g.statusHwnd, uintptr(pad+2), uintptr(topY+listH+g.scale(4)), uintptr(fullW-4), uintptr(statusH), 1)
 	}
 }
 
@@ -2031,8 +2181,8 @@ func (g *winAppGUI) syncListView() {
 			title,
 			formatTaskSizeCol(t),
 			formatTaskStatusCol(t),
-			speed,
 			eta,
+			speed,
 			formatTaskQualityCol(t),
 		}
 
@@ -2120,24 +2270,96 @@ func (g *winAppGUI) handleListViewCustomDraw(lParam uintptr) uintptr {
 		selected := (state & lvisSelected) != 0
 
 		if subIdx != 2 {
-			if selected {
-				lvcd.ClrTextBk = g.colors.Selected
-			} else if rowIdx%2 == 1 {
-				lvcd.ClrTextBk = g.colors.SurfaceAlt
-			} else {
-				lvcd.ClrTextBk = g.colors.Surface
+			rc := winRect{Top: int32(subIdx), Left: lvirBounds}
+			ok, _, _ := procSendMessageW.Call(g.listHwnd, lvmGetSubItemRect, uintptr(rowIdx), uintptr(unsafe.Pointer(&rc)))
+			if ok == 0 || rc.Right <= rc.Left || rc.Bottom <= rc.Top {
+				rc = lvcd.Nmcd.Rc
 			}
-			lvcd.ClrText = g.colors.Text
-			if !selected && (subIdx == 3 || subIdx == 4) {
-				switch row.status {
-				case StatusCompleted:
-					lvcd.ClrText = g.colors.TextGreen
-				case StatusError, StatusCanceled:
-					lvcd.ClrText = g.colors.TextRed
+			if rc.Right <= rc.Left || rc.Bottom <= rc.Top {
+				return cdrfDoDefault
+			}
+			if subIdx == 0 && len(mainListColumns) > 1 {
+				// lvirBounds for subitem 0 spans the whole row; clip to column 0 width using subitem 1's left edge.
+				rc1 := winRect{Top: 1, Left: lvirBounds}
+				if ok1, _, _ := procSendMessageW.Call(g.listHwnd, lvmGetSubItemRect, uintptr(rowIdx), uintptr(unsafe.Pointer(&rc1))); ok1 != 0 && rc1.Left > rc.Left {
+					rc.Right = rc1.Left
 				}
 			}
-			procRtlMoveMemory.Call(lParam, uintptr(unsafe.Pointer(&lvcd)), unsafe.Sizeof(lvcd))
-			return cdrfNewFont
+
+			rowBg := g.hbrSurface
+			if selected {
+				rowBg = g.hbrSelected
+			} else if rowIdx%2 == 1 {
+				rowBg = g.hbrSurfaceAlt
+			}
+			if rowBg != 0 {
+				procFillRect.Call(lvcd.Nmcd.Hdc, uintptr(unsafe.Pointer(&rc)), rowBg)
+			}
+
+			// Subtle horizontal row hairline & vertical column divider
+			if g.hbrBorder != 0 {
+				bLine := winRect{Left: rc.Left, Top: rc.Bottom - 1, Right: rc.Right, Bottom: rc.Bottom}
+				procFillRect.Call(lvcd.Nmcd.Hdc, uintptr(unsafe.Pointer(&bLine)), g.hbrBorder)
+			}
+
+			textColor := g.colors.Text
+			if subIdx == 3 || subIdx == 4 {
+				switch row.status {
+				case StatusCompleted:
+					textColor = g.colors.TextGreen
+				case StatusError, StatusCanceled:
+					textColor = g.colors.TextRed
+				}
+			} else if subIdx == 5 {
+				textColor = g.colors.TextMuted
+			}
+
+			textRc := winRect{
+				Left:   rc.Left + int32(g.scale(6)),
+				Top:    rc.Top,
+				Right:  rc.Right - int32(g.scale(6)),
+				Bottom: rc.Bottom - 1,
+			}
+			if subIdx == 0 {
+				// Subtle colored status indicator dot next to filename
+				dotColor := g.colors.FillBlue
+				switch row.status {
+				case StatusCompleted:
+					dotColor = g.colors.FillGreen
+				case StatusPaused:
+					dotColor = g.colors.FillAmber
+				case StatusError, StatusCanceled:
+					dotColor = g.colors.FillRed
+				}
+				dotSz := int32(g.scale(7))
+				dotX := rc.Left + int32(g.scale(6))
+				dotY := rc.Top + (rc.Bottom-rc.Top-dotSz)/2
+				g.fillEllipseColor(lvcd.Nmcd.Hdc, dotX, dotY, dotX+dotSz, dotY+dotSz, dotColor)
+				textRc.Left = dotX + dotSz + int32(g.scale(6))
+			}
+
+			if subIdx < len(row.cols) && row.cols[subIdx] != "" && textRc.Right > textRc.Left {
+				if u16, err := syscall.UTF16FromString(row.cols[subIdx]); err == nil && len(u16) > 1 {
+					oldFont, _, _ := procSelectObject.Call(lvcd.Nmcd.Hdc, g.fontUI)
+					procSetBkMode.Call(lvcd.Nmcd.Hdc, transparentBkMode)
+					procSetTextColor.Call(lvcd.Nmcd.Hdc, uintptr(textColor))
+					flags := uintptr(dtLeft | dtVCenter | dtSingleLine | dtEndEllipsis)
+					if subIdx < len(mainListColumns) && mainListColumns[subIdx].right {
+						flags = uintptr(dtRight | dtVCenter | dtSingleLine | dtEndEllipsis)
+					}
+					procDrawTextW.Call(
+						lvcd.Nmcd.Hdc,
+						uintptr(unsafe.Pointer(&u16[0])),
+						uintptr(len(u16)-1),
+						uintptr(unsafe.Pointer(&textRc)),
+						flags,
+					)
+					if oldFont != 0 {
+						procSelectObject.Call(lvcd.Nmcd.Hdc, oldFont)
+					}
+				}
+			}
+			return cdrfSkipDefault
 		}
 
 		rc := winRect{Top: 2, Left: lvirBounds}
@@ -2220,10 +2442,13 @@ func (g *winAppGUI) handleListViewCustomDraw(lParam uintptr) uintptr {
 
 		if g.hbrBorder != 0 {
 			procFrameRect.Call(lvcd.Nmcd.Hdc, uintptr(unsafe.Pointer(&barRc)), g.hbrBorder)
+			bLine := winRect{Left: rc.Left, Top: rc.Bottom - 1, Right: rc.Right, Bottom: rc.Bottom}
+			procFillRect.Call(lvcd.Nmcd.Hdc, uintptr(unsafe.Pointer(&bLine)), g.hbrBorder)
 		}
 
 		if label := row.cols[2]; label != "" {
 			if u16, err := syscall.UTF16FromString(label); err == nil && len(u16) > 1 {
+				oldFont, _, _ := procSelectObject.Call(lvcd.Nmcd.Hdc, g.fontUI)
 				procSetBkMode.Call(lvcd.Nmcd.Hdc, transparentBkMode)
 				procSetTextColor.Call(lvcd.Nmcd.Hdc, uintptr(g.colors.TextOnBar))
 				textRc := barRc
@@ -2236,6 +2461,9 @@ func (g *winAppGUI) handleListViewCustomDraw(lParam uintptr) uintptr {
 					uintptr(unsafe.Pointer(&textRc)),
 					dtCenter|dtVCenter|dtSingleLine|dtEndEllipsis,
 				)
+				if oldFont != 0 {
+					procSelectObject.Call(lvcd.Nmcd.Hdc, oldFont)
+				}
 			}
 		}
 
@@ -2243,6 +2471,377 @@ func (g *winAppGUI) handleListViewCustomDraw(lParam uintptr) uintptr {
 	}
 
 	return cdrfDoDefault
+}
+
+func (g *winAppGUI) fillEllipseColor(hdc uintptr, left, top, right, bottom int32, color uint32) {
+	br, _, _ := procCreateSolidBrush.Call(uintptr(color))
+	pen, _, _ := procCreatePen.Call(psSolid, 1, uintptr(color))
+	oldBr, _, _ := procSelectObject.Call(hdc, br)
+	oldPen, _, _ := procSelectObject.Call(hdc, pen)
+	procEllipse.Call(hdc, uintptr(left), uintptr(top), uintptr(right), uintptr(bottom))
+	procSelectObject.Call(hdc, oldBr)
+	procSelectObject.Call(hdc, oldPen)
+	procDeleteObject.Call(br)
+	procDeleteObject.Call(pen)
+}
+
+func (g *winAppGUI) drawStrokeLine(hdc uintptr, x1, y1, x2, y2 int32) {
+	procMoveToEx.Call(hdc, uintptr(x1), uintptr(y1), 0)
+	procLineTo.Call(hdc, uintptr(x2), uintptr(y2))
+}
+
+func (g *winAppGUI) drawVectorToolbarIcon(hdc uintptr, cmdID uintptr, cx, cy, r int32) {
+	var accent uint32
+	switch cmdID {
+	case cmdAddURL:
+		accent = rgbColor(74, 222, 128) // Emerald green (+)
+	case cmdResume:
+		accent = rgbColor(96, 165, 250) // Sky blue (down arrow in circle)
+	case cmdPause:
+		accent = rgbColor(251, 191, 36) // Amber (pause bars in circle)
+	case cmdCancel:
+		accent = rgbColor(248, 113, 113) // Coral red (stop square in circle)
+	case cmdDelete:
+		accent = rgbColor(251, 113, 133) // Rose (trash can)
+	case cmdOpenFolder:
+		accent = rgbColor(245, 158, 11) // Warm gold (folder)
+	case cmdClearDone:
+		accent = rgbColor(232, 121, 249) // Orchid (check box)
+	default: // cmdToolsMenu / Engine
+		accent = rgbColor(167, 139, 250) // Soft violet (gear)
+	}
+	if !g.darkMode {
+		switch cmdID {
+		case cmdAddURL:
+			accent = rgbColor(22, 163, 74)
+		case cmdResume:
+			accent = rgbColor(37, 99, 235)
+		case cmdPause:
+			accent = rgbColor(217, 119, 6)
+		case cmdCancel:
+			accent = rgbColor(220, 38, 38)
+		case cmdDelete:
+			accent = rgbColor(225, 29, 72)
+		case cmdOpenFolder:
+			accent = rgbColor(202, 138, 4)
+		case cmdClearDone:
+			accent = rgbColor(162, 28, 175)
+		default:
+			accent = rgbColor(109, 40, 217)
+		}
+	}
+
+	strokeW := int32(g.scale(2))
+	if strokeW < 1 {
+		strokeW = 1
+	}
+	pen, _, _ := procCreatePen.Call(psSolid, uintptr(strokeW), uintptr(accent))
+	nullBr, _, _ := procGetStockObject.Call(nullBrush)
+	oldPen, _, _ := procSelectObject.Call(hdc, pen)
+	oldBr, _, _ := procSelectObject.Call(hdc, nullBr)
+
+	switch cmdID {
+	case cmdAddURL:
+		// Crisp bold plus (+)
+		g.drawStrokeLine(hdc, cx-r+1, cy, cx+r-1, cy)
+		g.drawStrokeLine(hdc, cx, cy-r+1, cx, cy+r-1)
+	case cmdResume:
+		// Circle with downward arrow
+		procEllipse.Call(hdc, uintptr(cx-r), uintptr(cy-r), uintptr(cx+r), uintptr(cy+r))
+		g.drawStrokeLine(hdc, cx, cy-r/2, cx, cy+r/2)
+		g.drawStrokeLine(hdc, cx-r/3, cy+1, cx, cy+r/2)
+		g.drawStrokeLine(hdc, cx+r/3, cy+1, cx, cy+r/2)
+	case cmdPause:
+		// Circle with two vertical pause bars
+		procEllipse.Call(hdc, uintptr(cx-r), uintptr(cy-r), uintptr(cx+r), uintptr(cy+r))
+		g.drawStrokeLine(hdc, cx-r/3, cy-r/2+1, cx-r/3, cy+r/2-1)
+		g.drawStrokeLine(hdc, cx+r/3, cy-r/2+1, cx+r/3, cy+r/2-1)
+	case cmdCancel:
+		// Circle with inner stop square
+		procEllipse.Call(hdc, uintptr(cx-r), uintptr(cy-r), uintptr(cx+r), uintptr(cy+r))
+		sq := r / 2
+		if sq < 3 {
+			sq = 3
+		}
+		procRectangle.Call(hdc, uintptr(cx-sq), uintptr(cy-sq), uintptr(cx+sq), uintptr(cy+sq))
+	case cmdDelete:
+		// Minimal trash bin outline
+		g.drawStrokeLine(hdc, cx-r+2, cy-r/2, cx+r-2, cy-r/2)
+		g.drawStrokeLine(hdc, cx-r/3, cy-r+2, cx+r/3, cy-r+2)
+		procRectangle.Call(hdc, uintptr(cx-r+4), uintptr(cy-r/2), uintptr(cx+r-4), uintptr(cy+r-1))
+		g.drawStrokeLine(hdc, cx-2, cy-r/2+3, cx-2, cy+r-4)
+		g.drawStrokeLine(hdc, cx+2, cy-r/2+3, cx+2, cy+r-4)
+	case cmdOpenFolder:
+		// Folder outline with top tab
+		procRectangle.Call(hdc, uintptr(cx-r+1), uintptr(cy-r/2+1), uintptr(cx+r-1), uintptr(cy+r-2))
+		g.drawStrokeLine(hdc, cx-r+1, cy-r/2+1, cx-r+3, cy-r+3)
+		g.drawStrokeLine(hdc, cx-r+3, cy-r+3, cx-1, cy-r+3)
+		g.drawStrokeLine(hdc, cx-1, cy-r+3, cx+1, cy-r/2+1)
+	case cmdClearDone:
+		// Rounded box with checkmark
+		procRoundRect.Call(hdc, uintptr(cx-r+2), uintptr(cy-r+2), uintptr(cx+r-2), uintptr(cy+r-2), 4, 4)
+		g.drawStrokeLine(hdc, cx-r/2+1, cy, cx-1, cy+r/3+1)
+		g.drawStrokeLine(hdc, cx-1, cy+r/3+1, cx+r/2, cy-r/3)
+	default: // Engine / gear cog
+		outer := r - 2
+		inner := r / 2
+		if inner < 3 {
+			inner = 3
+		}
+		procEllipse.Call(hdc, uintptr(cx-outer), uintptr(cy-outer), uintptr(cx+outer), uintptr(cy+outer))
+		procEllipse.Call(hdc, uintptr(cx-inner), uintptr(cy-inner), uintptr(cx+inner), uintptr(cy+inner))
+		g.drawStrokeLine(hdc, cx, cy-r, cx, cy-outer+1)
+		g.drawStrokeLine(hdc, cx, cy+outer-1, cx, cy+r)
+		g.drawStrokeLine(hdc, cx-r, cy, cx-outer+1, cy)
+		g.drawStrokeLine(hdc, cx+outer-1, cy, cx+r, cy)
+	}
+
+	procSelectObject.Call(hdc, oldPen)
+	procSelectObject.Call(hdc, oldBr)
+	procDeleteObject.Call(pen)
+}
+
+func (g *winAppGUI) drawCategoryMiniIcon(hdc uintptr, catKey string, x, y, sz int32) {
+	var col uint32
+	switch catKey {
+	case CategoryAll:
+		col = rgbColor(245, 197, 66)
+	case CategoryActive:
+		col = rgbColor(56, 189, 248)
+	case CategoryVideo:
+		col = rgbColor(96, 165, 250)
+	case CategoryMusic:
+		col = rgbColor(192, 132, 252)
+	case CategoryArchives:
+		col = rgbColor(251, 146, 60)
+	case CategoryPrograms:
+		col = rgbColor(74, 222, 128)
+	case CategoryDocuments:
+		col = rgbColor(148, 163, 184)
+	case CategoryImages:
+		col = rgbColor(244, 114, 182)
+	case CategoryCompleted:
+		col = rgbColor(52, 211, 153)
+	default: // Failed
+		col = rgbColor(248, 113, 113)
+	}
+	br, _, _ := procCreateSolidBrush.Call(uintptr(col))
+	pen, _, _ := procCreatePen.Call(psSolid, 1, uintptr(col))
+	oldBr, _, _ := procSelectObject.Call(hdc, br)
+	oldPen, _, _ := procSelectObject.Call(hdc, pen)
+	procRoundRect.Call(hdc, uintptr(x), uintptr(y+1), uintptr(x+sz), uintptr(y+sz-1), 3, 3)
+	procSelectObject.Call(hdc, oldBr)
+	procSelectObject.Call(hdc, oldPen)
+	procDeleteObject.Call(br)
+	procDeleteObject.Call(pen)
+}
+
+func (g *winAppGUI) drawOwnerItem(lParam uintptr) uintptr {
+	if lParam == 0 {
+		return 0
+	}
+	var dis drawItemStruct
+	procRtlMoveMemory.Call(uintptr(unsafe.Pointer(&dis)), lParam, unsafe.Sizeof(dis))
+	rc := dis.RcItem
+	hdc := dis.Hdc
+
+	// 1. Custom Dark Categories Sidebar item
+	if dis.CtlID == idcSidebar {
+		idx := int(int32(dis.ItemID))
+		if idx < 0 || idx >= len(uiCategories) {
+			return 1
+		}
+		selected := (dis.ItemState & odsSelected) != 0
+		bg := g.hbrSurface
+		if selected {
+			bg = g.hbrSelected
+		}
+		if bg != 0 {
+			procFillRect.Call(hdc, uintptr(unsafe.Pointer(&rc)), bg)
+		}
+		if selected && g.hbrFillBlue != 0 {
+			bar := winRect{Left: rc.Left, Top: rc.Top + 2, Right: rc.Left + int32(g.scale(3)), Bottom: rc.Bottom - 2}
+			procFillRect.Call(hdc, uintptr(unsafe.Pointer(&bar)), g.hbrFillBlue)
+		}
+		icoSz := int32(g.scale(10))
+		icoX := rc.Left + int32(g.scale(8))
+		icoY := rc.Top + (rc.Bottom-rc.Top-icoSz)/2
+		g.drawCategoryMiniIcon(hdc, uiCategories[idx].Key, icoX, icoY, icoSz)
+
+		label := g.sidebarLabels[idx]
+		if label == "" {
+			label = uiCategories[idx].Label
+		}
+		textRc := winRect{
+			Left:   icoX + icoSz + int32(g.scale(7)),
+			Top:    rc.Top,
+			Right:  rc.Right - int32(g.scale(4)),
+			Bottom: rc.Bottom,
+		}
+		if u16, err := syscall.UTF16FromString(label); err == nil && len(u16) > 1 {
+			font := g.fontUI
+			if selected {
+				font = g.fontBold
+			}
+			oldFont, _, _ := procSelectObject.Call(hdc, font)
+			procSetBkMode.Call(hdc, transparentBkMode)
+			procSetTextColor.Call(hdc, uintptr(g.colors.Text))
+			procDrawTextW.Call(hdc, uintptr(unsafe.Pointer(&u16[0])), uintptr(len(u16)-1), uintptr(unsafe.Pointer(&textRc)), dtLeft|dtVCenter|dtSingleLine|dtEndEllipsis)
+			if oldFont != 0 {
+				procSelectObject.Call(hdc, oldFont)
+			}
+		}
+		return 1
+	}
+
+	// 2. Dark Top Menu Strip Buttons (Tasks, Tools, Options, Help)
+	cmdID := uintptr(dis.CtlID)
+	if cmdID == cmdMenuTasks || cmdID == cmdMenuTools || cmdID == cmdMenuOptions || cmdID == cmdMenuHelp {
+		pressed := (dis.ItemState & (odsSelected | odsHotLight)) != 0
+		bg := g.hbrWindow
+		if pressed {
+			bg = g.hbrSelected
+		}
+		if bg != 0 {
+			procFillRect.Call(hdc, uintptr(unsafe.Pointer(&rc)), bg)
+		}
+		label := getWindowString(dis.HwndItem)
+		if u16, err := syscall.UTF16FromString(label); err == nil && len(u16) > 1 {
+			oldFont, _, _ := procSelectObject.Call(hdc, g.fontUI)
+			procSetBkMode.Call(hdc, transparentBkMode)
+			procSetTextColor.Call(hdc, uintptr(g.colors.Text))
+			procDrawTextW.Call(hdc, uintptr(unsafe.Pointer(&u16[0])), uintptr(len(u16)-1), uintptr(unsafe.Pointer(&rc)), dtCenter|dtVCenter|dtSingleLine)
+			if oldFont != 0 {
+				procSelectObject.Call(hdc, oldFont)
+			}
+		}
+		return 1
+	}
+
+	// 3. Flat Dark Vector Icon Toolbar Buttons
+	if g.hbrWindow != 0 {
+		procFillRect.Call(hdc, uintptr(unsafe.Pointer(&rc)), g.hbrWindow)
+	}
+	pressed := (dis.ItemState & odsSelected) != 0
+	focused := (dis.ItemState & (odsFocus | odsHotLight)) != 0
+	if pressed || focused {
+		inRc := winRect{Left: rc.Left + 1, Top: rc.Top + 1, Right: rc.Right - 1, Bottom: rc.Bottom - 1}
+		if g.hbrSelected != 0 {
+			procFillRect.Call(hdc, uintptr(unsafe.Pointer(&inRc)), g.hbrSelected)
+		}
+		if g.hbrBorder != 0 {
+			procFrameRect.Call(hdc, uintptr(unsafe.Pointer(&inRc)), g.hbrBorder)
+		}
+	}
+
+	cx := (rc.Left + rc.Right) / 2
+	cy := rc.Top + int32(g.scale(19))
+	if pressed {
+		cy++
+	}
+	r := int32(g.scale(11))
+	g.drawVectorToolbarIcon(hdc, cmdID, cx, cy, r)
+
+	label := getWindowString(dis.HwndItem)
+	if u16, err := syscall.UTF16FromString(label); err == nil && len(u16) > 1 {
+		txtRc := winRect{
+			Left:   rc.Left + 1,
+			Top:    rc.Bottom - int32(g.scale(18)),
+			Right:  rc.Right - 1,
+			Bottom: rc.Bottom - int32(g.scale(2)),
+		}
+		if pressed {
+			txtRc.Top++
+			txtRc.Bottom++
+		}
+		oldFont, _, _ := procSelectObject.Call(hdc, g.fontSmall)
+		procSetBkMode.Call(hdc, transparentBkMode)
+		procSetTextColor.Call(hdc, uintptr(g.colors.Text))
+		procDrawTextW.Call(hdc, uintptr(unsafe.Pointer(&u16[0])), uintptr(len(u16)-1), uintptr(unsafe.Pointer(&txtRc)), dtCenter|dtVCenter|dtSingleLine|dtEndEllipsis)
+		if oldFont != 0 {
+			procSelectObject.Call(hdc, oldFont)
+		}
+	}
+	return 1
+}
+
+func listViewSubProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
+	g := appGUI
+	if g == nil || g.origListWndProc == 0 {
+		ret, _, _ := procDefWindowProcW.Call(hwnd, uintptr(msg), wParam, lParam)
+		return ret
+	}
+	if msg == wmNotify && lParam != 0 && g.headerHwnd != 0 {
+		var hdr nmHdr
+		procRtlMoveMemory.Call(uintptr(unsafe.Pointer(&hdr)), lParam, unsafe.Sizeof(hdr))
+		if hdr.HWndFrom == g.headerHwnd && hdr.Code == nmCustomDraw {
+			var cd nmCustomDrawInfo
+			procRtlMoveMemory.Call(uintptr(unsafe.Pointer(&cd)), lParam, unsafe.Sizeof(cd))
+			switch cd.DwDrawStage {
+			case cddsPrePaint:
+				var hrc winRect
+				procGetClientRect.Call(g.headerHwnd, uintptr(unsafe.Pointer(&hrc)))
+				if g.hbrSurfaceAlt != 0 {
+					procFillRect.Call(cd.Hdc, uintptr(unsafe.Pointer(&hrc)), g.hbrSurfaceAlt)
+				}
+				if g.hbrBorder != 0 {
+					bLine := winRect{Left: hrc.Left, Top: hrc.Bottom - 1, Right: hrc.Right, Bottom: hrc.Bottom}
+					procFillRect.Call(cd.Hdc, uintptr(unsafe.Pointer(&bLine)), g.hbrBorder)
+				}
+				return cdrfNotifyItemDraw
+			case cddsItemPrePaint:
+				colIdx := int(cd.DwItemSpec)
+				rc := cd.Rc
+				if g.hbrSurfaceAlt != 0 {
+					procFillRect.Call(cd.Hdc, uintptr(unsafe.Pointer(&rc)), g.hbrSurfaceAlt)
+				}
+				if g.hbrBorder != 0 {
+					rLine := winRect{Left: rc.Right - 1, Top: rc.Top + 3, Right: rc.Right, Bottom: rc.Bottom - 3}
+					procFillRect.Call(cd.Hdc, uintptr(unsafe.Pointer(&rLine)), g.hbrBorder)
+					bLine := winRect{Left: rc.Left, Top: rc.Bottom - 1, Right: rc.Right, Bottom: rc.Bottom}
+					procFillRect.Call(cd.Hdc, uintptr(unsafe.Pointer(&bLine)), g.hbrBorder)
+				}
+				if colIdx >= 0 && colIdx < len(mainListColumns) {
+					col := mainListColumns[colIdx]
+					if u16, err := syscall.UTF16FromString(col.title); err == nil && len(u16) > 1 {
+						oldFont, _, _ := procSelectObject.Call(cd.Hdc, g.fontUI)
+						procSetBkMode.Call(cd.Hdc, transparentBkMode)
+						procSetTextColor.Call(cd.Hdc, uintptr(g.colors.Text))
+						txtRc := winRect{
+							Left:   rc.Left + int32(g.scale(6)),
+							Top:    rc.Top,
+							Right:  rc.Right - int32(g.scale(6)),
+							Bottom: rc.Bottom - 1,
+						}
+						flags := uintptr(dtLeft | dtVCenter | dtSingleLine | dtEndEllipsis)
+						if col.right {
+							flags = uintptr(dtRight | dtVCenter | dtSingleLine | dtEndEllipsis)
+						}
+						procDrawTextW.Call(cd.Hdc, uintptr(unsafe.Pointer(&u16[0])), uintptr(len(u16)-1), uintptr(unsafe.Pointer(&txtRc)), flags)
+						if oldFont != 0 {
+							procSelectObject.Call(cd.Hdc, oldFont)
+						}
+					}
+				}
+				return cdrfSkipDefault
+			}
+		}
+	}
+	ret, _, _ := procCallWindowProcW.Call(g.origListWndProc, hwnd, uintptr(msg), wParam, lParam)
+	return ret
+}
+
+func (g *winAppGUI) showTopPopupMenu(btnIdx int, hPopup uintptr) {
+	if hPopup == 0 || btnIdx < 0 || btnIdx >= len(g.menuBtns) {
+		return
+	}
+	var rc winRect
+	procGetWindowRect.Call(g.menuBtns[btnIdx].hwnd, uintptr(unsafe.Pointer(&rc)))
+	procSetForegroundWindow.Call(g.mainHwnd)
+	cmd, _, _ := procTrackPopupMenu.Call(hPopup, tpmReturnCmd, uintptr(rc.Left), uintptr(rc.Bottom), 0, g.mainHwnd, 0)
+	if cmd != 0 {
+		g.handleCommand(cmd)
+	}
 }
 
 func (g *winAppGUI) refreshStatusBar() {
@@ -2273,7 +2872,24 @@ func (g *winAppGUI) refreshStatusBar() {
 
 	ytPath, ytErr := resolveYtDlpBinary(g.cfg)
 	ytState := "Ready (Fast Mode)"
-	if ytErr != nil {
+	if g.srv != nil && g.srv.ytdlpUpdater != nil {
+		ytInfo := g.srv.ytdlpUpdater.Status(g.cfg)
+		if ytInfo.Updating && ytInfo.StatusText != "" {
+			ytState = ytInfo.StatusText
+		} else if !ytInfo.Installed {
+			ytState = "Missing (click Engine Setup)"
+		} else if !isFastUnpackedYtDlp(ytPath) {
+			ytState = "Slow 1-file exe (click Engine Setup -> Upgrade)"
+		} else if ytInfo.UpdateAvailable && ytInfo.LatestVersion != "" {
+			if ytInfo.CurrentVersion != "" {
+				ytState = fmt.Sprintf("v%s (Update Found: %s!)", ytInfo.CurrentVersion, ytInfo.LatestVersion)
+			} else {
+				ytState = fmt.Sprintf("Update Found: %s!", ytInfo.LatestVersion)
+			}
+		} else if ytInfo.CurrentVersion != "" {
+			ytState = "v" + ytInfo.CurrentVersion
+		}
+	} else if ytErr != nil {
 		ytState = "Missing (click Engine Setup)"
 	} else if !isFastUnpackedYtDlp(ytPath) {
 		ytState = "Slow 1-file exe (click Engine Setup -> Upgrade)"
@@ -2281,6 +2897,11 @@ func (g *winAppGUI) refreshStatusBar() {
 	ffState := "Ready"
 	if resolveFFmpegBinary(g.cfg) == "" {
 		ffState = "Optional (click Engine Setup for 1080p+/MP3)"
+	}
+
+	cookieSeg := ""
+	if signedIn, cnt, _ := g.qm.YouTubeCookieStatus(); signedIn {
+		cookieSeg = fmt.Sprintf("  |  YT Cookies: Signed In (%d)", cnt)
 	}
 
 	modeLabel := "Turbo (6x)"
@@ -2297,11 +2918,11 @@ func (g *winAppGUI) refreshStatusBar() {
 	}
 
 	status := fmt.Sprintf(
-		"Active: %d  |  Queued: %d  |  Completed: %d   •   Speed: %s%s%s   •   Folder: %s   •   yt-dlp: %s  |  FFmpeg: %s",
+		"Active: %d  |  Queued: %d  |  Completed: %d   •   Speed: %s%s%s   •   Folder: %s   •   yt-dlp: %s  |  FFmpeg: %s%s",
 		active, queued, done,
 		modeLabel, limitSeg, wdSeg,
 		filepath.Clean(g.cfg.GetDownloadDir()),
-		ytState, ffState,
+		ytState, ffState, cookieSeg,
 	)
 	setWindowString(g.statusHwnd, status)
 }
@@ -2841,7 +3462,8 @@ func (g *winAppGUI) showTrayContextMenu() {
 	procAppendMenuW.Call(hMenu, popFlags, cmdTogglePopup, uintptr(unsafe.Pointer(utf16Ptr("Show Download Progress Popup"))))
 
 	procAppendMenuW.Call(hMenu, mfSeparator, 0, 0)
-	procAppendMenuW.Call(hMenu, mfString, cmdCheckUpdate, uintptr(unsafe.Pointer(utf16Ptr("Check for Updates..."))))
+	procAppendMenuW.Call(hMenu, mfString, cmdCheckYtDlpUpdate, uintptr(unsafe.Pointer(utf16Ptr("Check for yt-dlp Updates..."))))
+	procAppendMenuW.Call(hMenu, mfString, cmdCheckUpdate, uintptr(unsafe.Pointer(utf16Ptr("Check for GrabAll Updates..."))))
 	procAppendMenuW.Call(hMenu, mfString, cmdExit, uintptr(unsafe.Pointer(utf16Ptr("Exit GrabAll"))))
 
 	var pt winPoint
@@ -2974,8 +3596,23 @@ func (g *winAppGUI) showToolsPopupMenu() {
 	defer procDestroyMenu.Call(hMenu)
 
 	ytPath, ytErr := resolveYtDlpBinary(g.cfg)
-	ytLabel := "Update yt-dlp + QuickJS (Fast-Start Installed)"
-	if ytErr != nil {
+	ytLabel := "Install / Update yt-dlp + QuickJS (Fast-Start Installed)"
+	checkLabel := "Check for yt-dlp Updates..."
+	if g.srv != nil && g.srv.ytdlpUpdater != nil {
+		ytInfo := g.srv.ytdlpUpdater.Status(g.cfg)
+		if ytInfo.Updating {
+			ytLabel = "⏳ " + ytInfo.StatusText
+		} else if !ytInfo.Installed {
+			ytLabel = "Install yt-dlp + QuickJS (Required for YouTube/TikTok/FB)"
+		} else if !isFastUnpackedYtDlp(ytPath) {
+			ytLabel = "⚡ Upgrade yt-dlp to Fast-Start Mode (yt-dlp_win.zip — fixes 1-2m delay)"
+		} else if ytInfo.UpdateAvailable && ytInfo.LatestVersion != "" {
+			ytLabel = fmt.Sprintf("✨ Update yt-dlp Now (%s -> %s)", ytInfo.CurrentVersion, ytInfo.LatestVersion)
+			checkLabel = fmt.Sprintf("Check yt-dlp Updates (Update Found: %s)", ytInfo.LatestVersion)
+		} else if ytInfo.CurrentVersion != "" {
+			ytLabel = fmt.Sprintf("Reinstall / Update yt-dlp (v%s Installed)", ytInfo.CurrentVersion)
+		}
+	} else if ytErr != nil {
 		ytLabel = "Install yt-dlp + QuickJS (Required for YouTube/TikTok/FB)"
 	} else if !isFastUnpackedYtDlp(ytPath) {
 		ytLabel = "⚡ Upgrade yt-dlp to Fast-Start Mode (yt-dlp_win.zip — fixes 1-2m delay)"
@@ -2985,6 +3622,7 @@ func (g *winAppGUI) showToolsPopupMenu() {
 		ffLabel = "Install FFmpeg (Needed for 1080p+ HD & MP3 Audio)"
 	}
 
+	procAppendMenuW.Call(hMenu, mfString, cmdCheckYtDlpUpdate, uintptr(unsafe.Pointer(utf16Ptr(checkLabel))))
 	procAppendMenuW.Call(hMenu, mfString, cmdInstallYtDlp, uintptr(unsafe.Pointer(utf16Ptr(ytLabel))))
 	procAppendMenuW.Call(hMenu, mfString, cmdInstallFFmpeg, uintptr(unsafe.Pointer(utf16Ptr(ffLabel))))
 	procAppendMenuW.Call(hMenu, mfSeparator, 0, 0)
@@ -3074,6 +3712,19 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 	case cmdAddURL:
 		g.openAddURLDialog()
 
+	case cmdMenuTasks:
+		g.showTopPopupMenu(0, g.hMenuTasks)
+
+	case cmdMenuTools:
+		g.showTopPopupMenu(1, g.hMenuTools)
+
+	case cmdMenuOptions:
+		g.refreshOptionMenuChecks()
+		g.showTopPopupMenu(2, g.hMenuOpt)
+
+	case cmdMenuHelp:
+		g.showTopPopupMenu(3, g.hMenuHelp)
+
 	case cmdToolsMenu:
 		g.showToolsPopupMenu()
 
@@ -3158,23 +3809,10 @@ func (g *winAppGUI) handleCommand(cmdID uintptr) {
 		)
 
 	case cmdInstallYtDlp:
-		go func() {
-			g.postStatusMessage("Installing Fast-Start yt-dlp_win.zip + QuickJS (qjs.exe)... please wait...")
-			binDir := filepath.Join(executableDir(), "bin")
-			path, err := DownloadYtDlpStandalone(binDir)
-			if err != nil {
-				g.postStatusMessage("")
-				procMessageBoxW.Call(0, uintptr(unsafe.Pointer(utf16Ptr("Failed to install yt-dlp:\n"+err.Error()))), uintptr(unsafe.Pointer(utf16Ptr("GrabAll Error"))), mbOK|mbIconError)
-				return
-			}
-			g.cfg.mu.Lock()
-			g.cfg.YtDlpPath = path
-			g.cfg.mu.Unlock()
-			_ = g.cfg.Save()
-			g.postStatusMessage("")
-			g.showTrayBalloon("Fast-Start yt-dlp + QuickJS Ready", "Installed unpacked build to "+path)
-			go PrewarmYouTubeSolverCache(g.cfg)
-		}()
+		go g.runYtDlpUpdateInstall(true)
+
+	case cmdCheckYtDlpUpdate:
+		go g.checkForYtDlpUpdate(true, false)
 
 	case cmdInstallFFmpeg:
 		go func() {
@@ -3328,17 +3966,27 @@ func mainWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 		if lParam != 0 {
 			var mmi winMinMaxInfo
 			procRtlMoveMemory.Call(uintptr(unsafe.Pointer(&mmi)), lParam, unsafe.Sizeof(mmi))
-			mmi.PtMinTrackSize.X = int32(g.scale(780))
-			mmi.PtMinTrackSize.Y = int32(g.scale(380))
+			mmi.PtMinTrackSize.X = int32(g.scale(680))
+			mmi.PtMinTrackSize.Y = int32(g.scale(360))
 			procRtlMoveMemory.Call(lParam, uintptr(unsafe.Pointer(&mmi)), unsafe.Sizeof(mmi))
 		}
 		return 0
+
+	case wmDrawItem:
+		return g.drawOwnerItem(lParam)
 
 	case wmEraseBkgnd:
 		if wParam != 0 && g.hbrWindow != 0 {
 			var rc winRect
 			procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&rc)))
 			procFillRect.Call(wParam, uintptr(unsafe.Pointer(&rc)), g.hbrWindow)
+			if g.hbrBorder != 0 {
+				// Crisp hairline separators below top menu strip and icon toolbar
+				menuSep := winRect{Left: rc.Left, Top: int32(g.scale(25)), Right: rc.Right, Bottom: int32(g.scale(26))}
+				procFillRect.Call(wParam, uintptr(unsafe.Pointer(&menuSep)), g.hbrBorder)
+				toolSep := winRect{Left: rc.Left, Top: int32(g.scale(82)), Right: rc.Right, Bottom: int32(g.scale(83))}
+				procFillRect.Call(wParam, uintptr(unsafe.Pointer(&toolSep)), g.hbrBorder)
+			}
 			return 1
 		}
 
@@ -4051,4 +4699,153 @@ func (g *winAppGUI) performGracefulRestartForUpdate() {
 		_ = startDetachedExecutable(exePath, buildRestartArgs(os.Args[1:], os.Getpid()))
 	}
 	procDestroyWindow.Call(g.mainHwnd)
+}
+
+func (g *winAppGUI) checkForYtDlpUpdate(manual bool, startInTray bool) {
+	if g.srv == nil || g.srv.ytdlpUpdater == nil {
+		return
+	}
+	if !g.ytdlpUpdating.CompareAndSwap(false, true) {
+		if manual {
+			procMessageBoxW.Call(g.mainHwnd, uintptr(unsafe.Pointer(utf16Ptr("A yt-dlp check or update is already in progress."))), uintptr(unsafe.Pointer(utf16Ptr("yt-dlp Update"))), mbOK|mbIconInfo)
+		}
+		return
+	}
+	defer g.ytdlpUpdating.Store(false)
+
+	if manual {
+		g.postStatusMessage("Checking for yt-dlp updates...")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	info, err := g.srv.ytdlpUpdater.CheckForUpdate(ctx, g.cfg, manual)
+	cancel()
+
+	if manual {
+		g.postStatusMessage("")
+	}
+	g.refreshStatusBar()
+
+	if err != nil {
+		if manual {
+			procMessageBoxW.Call(
+				g.mainHwnd,
+				uintptr(unsafe.Pointer(utf16Ptr("Could not check for yt-dlp updates:\n\n"+err.Error()))),
+				uintptr(unsafe.Pointer(utf16Ptr("yt-dlp Update Check"))),
+				mbOK|mbIconWarning,
+			)
+		}
+		return
+	}
+
+	if !info.UpdateAvailable {
+		if manual {
+			verLabel := info.CurrentVersion
+			if verLabel == "" {
+				verLabel = info.LatestVersion
+			}
+			procMessageBoxW.Call(
+				g.mainHwnd,
+				uintptr(unsafe.Pointer(utf16Ptr(fmt.Sprintf("yt-dlp is up to date! (v%s)", verLabel)))),
+				uintptr(unsafe.Pointer(utf16Ptr("yt-dlp Update Check"))),
+				mbOK|mbIconInfo,
+			)
+		}
+		return
+	}
+
+	if !manual {
+		cur := info.CurrentVersion
+		if cur == "" {
+			cur = "not installed"
+		}
+		g.showTrayBalloon(
+			fmt.Sprintf("yt-dlp Update Found (%s)", info.LatestVersion),
+			fmt.Sprintf("Current: %s -> Latest: %s. Click Engine -> Update yt-dlp to install.", cur, info.LatestVersion),
+		)
+		return
+	}
+
+	curLabel := "Not Installed"
+	if info.CurrentVersion != "" {
+		curLabel = "v" + info.CurrentVersion
+	}
+	prompt := fmt.Sprintf(
+		"A new version of yt-dlp is available!\n\nCurrent Version: %s\nLatest Version: v%s\n\nDownload and install the update now?",
+		curLabel, info.LatestVersion,
+	)
+	res, _, _ := procMessageBoxW.Call(
+		g.mainHwnd,
+		uintptr(unsafe.Pointer(utf16Ptr(prompt))),
+		uintptr(unsafe.Pointer(utf16Ptr("yt-dlp Update Found"))),
+		mbYesNo|mbIconQuestion,
+	)
+	if res == idYes {
+		g.runYtDlpUpdateInstallLocked(true)
+	}
+}
+
+func (g *winAppGUI) runYtDlpUpdateInstall(interactive bool) {
+	if !g.ytdlpUpdating.CompareAndSwap(false, true) {
+		if interactive {
+			procMessageBoxW.Call(g.mainHwnd, uintptr(unsafe.Pointer(utf16Ptr("A yt-dlp update is already in progress."))), uintptr(unsafe.Pointer(utf16Ptr("yt-dlp Update"))), mbOK|mbIconInfo)
+		}
+		return
+	}
+	defer g.ytdlpUpdating.Store(false)
+	g.runYtDlpUpdateInstallLocked(interactive)
+}
+
+func (g *winAppGUI) runYtDlpUpdateInstallLocked(interactive bool) {
+	if g.srv == nil || g.srv.ytdlpUpdater == nil {
+		return
+	}
+	force := false
+	if g.qm != nil && g.qm.countDownloading() > 0 {
+		if !interactive {
+			return
+		}
+		res, _, _ := procMessageBoxW.Call(
+			g.mainHwnd,
+			uintptr(unsafe.Pointer(utf16Ptr("Downloads are currently active.\n\nPause active downloads and update yt-dlp now?"))),
+			uintptr(unsafe.Pointer(utf16Ptr("Active Downloads"))),
+			mbYesNo|mbIconWarning,
+		)
+		if res != idYes {
+			return
+		}
+		for _, t := range g.qm.GetAll() {
+			if t.Status == StatusDownloading {
+				g.qm.PauseTask(t.ID)
+			}
+		}
+		force = true
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	info, err := g.srv.ytdlpUpdater.Update(ctx, g.cfg, g.qm, force, func(st *YtDlpUpdateInfo) {
+		if st != nil && st.StatusText != "" {
+			g.postStatusMessage("⚡ " + st.StatusText)
+		}
+	})
+	g.postStatusMessage("")
+	g.refreshStatusBar()
+
+	if err != nil {
+		if interactive {
+			procMessageBoxW.Call(g.mainHwnd, uintptr(unsafe.Pointer(utf16Ptr("Failed to update yt-dlp:\n\n"+err.Error()))), uintptr(unsafe.Pointer(utf16Ptr("yt-dlp Update Error"))), mbOK|mbIconError)
+		}
+		return
+	}
+
+	verMsg := "yt-dlp + QuickJS updated and ready!"
+	if info != nil && info.CurrentVersion != "" {
+		verMsg = fmt.Sprintf("yt-dlp updated to v%s (+ QuickJS ready)!", info.CurrentVersion)
+	}
+	g.showTrayBalloon("yt-dlp Updated", verMsg)
+	if interactive {
+		procMessageBoxW.Call(g.mainHwnd, uintptr(unsafe.Pointer(utf16Ptr(verMsg))), uintptr(unsafe.Pointer(utf16Ptr("yt-dlp Updated"))), mbOK|mbIconInfo)
+	}
 }

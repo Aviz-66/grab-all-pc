@@ -6,6 +6,8 @@ let searchQuery = '';
 let sseConnection = null;
 let defaultVideoCodec = 'h264';
 let latestUpdateInfo = null;
+let latestYtDlpInfo = null;
+let ytDlpBannerDismissed = false;
 let autoCheckUpdatesEnabled = true;
 
 // DOM Elements
@@ -38,6 +40,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadSettings();
   if (autoCheckUpdatesEnabled) {
     checkForUpdates(false);
+    checkYtDlpUpdates(false);
   }
 });
 
@@ -75,6 +78,15 @@ function initSSE() {
       renderQueue();
     } catch (err) {
       console.error('Failed to parse queue_update', err);
+    }
+  });
+
+  sseConnection.addEventListener('ytdlp_status', (e) => {
+    try {
+      const info = JSON.parse(e.data);
+      renderYtDlpStatus(info);
+    } catch (err) {
+      console.error('Failed to parse ytdlp_status', err);
     }
   });
 
@@ -720,26 +732,21 @@ function initSettings() {
     });
   });
 
-  document.getElementById('btn-install-ytdlp').addEventListener('click', async () => {
-    const btn = document.getElementById('btn-install-ytdlp');
-    btn.disabled = true;
-    btn.textContent = 'Downloading yt-dlp...';
+  document.getElementById('btn-check-ytdlp')?.addEventListener('click', () => {
+    checkYtDlpUpdates(true);
+  });
 
-    try {
-      const res = await fetch('/api/install-ytdlp', { method: 'POST' });
-      const data = await res.json();
-      if (res.ok) {
-        showToast('yt-dlp (+ QuickJS) installed successfully!');
-        await loadSettings();
-      } else {
-        showToast(data.error || 'Failed to install yt-dlp', true);
-      }
-    } catch (err) {
-      showToast('Error installing yt-dlp', true);
-    } finally {
-      btn.disabled = false;
-      btn.textContent = 'Install / Update yt-dlp';
-    }
+  document.getElementById('btn-install-ytdlp').addEventListener('click', () => {
+    updateYtDlpEngine();
+  });
+
+  document.getElementById('btn-banner-update-ytdlp')?.addEventListener('click', () => {
+    updateYtDlpEngine();
+  });
+
+  document.getElementById('btn-banner-dismiss-ytdlp')?.addEventListener('click', () => {
+    ytDlpBannerDismissed = true;
+    document.getElementById('ytdlp-update-banner')?.classList.add('hidden');
   });
 
   document.getElementById('btn-install-ffmpeg').addEventListener('click', async () => {
@@ -818,11 +825,24 @@ async function loadSettings() {
     }
     document.getElementById('setting-token').value = cfg.authToken || '';
 
-    const statusEl = document.getElementById('ytdlp-status-text');
-    if (cfg.ytDlpAvailable) {
-      statusEl.innerHTML = '<span style="color:var(--success)">✅ Installed & Ready</span>';
-    } else {
-      statusEl.innerHTML = '<span style="color:var(--warning)">⚠️ Not Installed</span>';
+    renderYtDlpStatus({
+      installed: Boolean(cfg.ytDlpAvailable),
+      currentVersion: cfg.ytDlpVersion || '',
+      latestVersion: cfg.ytDlpLatestVersion || '',
+      updateAvailable: Boolean(cfg.ytDlpUpdateAvailable),
+      updating: Boolean(cfg.ytDlpUpdating),
+      stage: cfg.ytDlpStage || '',
+      statusText: cfg.ytDlpStatusText || '',
+      progress: cfg.ytDlpProgress || 0,
+    });
+
+    const ytCookiesEl = document.getElementById('yt-cookies-status-text');
+    if (ytCookiesEl) {
+      if (cfg.youtubeCookiesSynced) {
+        ytCookiesEl.innerHTML = `<span style="color:var(--success)">✅ Signed In (${cfg.youtubeCookiesCount || 0} cookies synced)</span>`;
+      } else {
+        ytCookiesEl.innerHTML = '<span style="color:var(--warning)">⚠️ Not Synced (open YouTube while signed in with the extension)</span>';
+      }
     }
 
     const ffmpegEl = document.getElementById('ffmpeg-status-text');
@@ -835,6 +855,173 @@ async function loadSettings() {
     }
   } catch (err) {
     console.error('Failed to load settings', err);
+  }
+}
+
+function renderYtDlpStatus(info) {
+  if (!info) return;
+  latestYtDlpInfo = { ...(latestYtDlpInfo || {}), ...info };
+  const st = latestYtDlpInfo;
+
+  const statusEl = document.getElementById('ytdlp-status-text');
+  const btnCheck = document.getElementById('btn-check-ytdlp');
+  const btnInstall = document.getElementById('btn-install-ytdlp');
+  const modalProgWrap = document.getElementById('ytdlp-modal-progress-wrap');
+  const modalProgFill = document.getElementById('ytdlp-modal-progress-fill');
+
+  const banner = document.getElementById('ytdlp-update-banner');
+  const bannerText = document.getElementById('ytdlp-banner-text');
+  const bannerProgWrap = document.getElementById('ytdlp-banner-progress-wrap');
+  const bannerProgFill = document.getElementById('ytdlp-banner-progress-fill');
+  const btnBannerUpdate = document.getElementById('btn-banner-update-ytdlp');
+
+  const cur = st.currentVersion ? `v${escapeHtml(st.currentVersion)}` : '';
+  const lat = st.latestVersion ? `v${escapeHtml(st.latestVersion)}` : '';
+  const pct = Math.max(0, Math.min(100, Number(st.progress) || 0));
+
+  if (st.updating) {
+    const msg = st.statusText || 'Updating yt-dlp...';
+    if (statusEl) {
+      statusEl.innerHTML = `<span style="color:var(--primary)">⏳ ${escapeHtml(msg)}</span>`;
+    }
+    if (btnCheck) btnCheck.disabled = true;
+    if (btnInstall) {
+      btnInstall.disabled = true;
+      btnInstall.textContent = pct > 0 ? `Updating... ${pct}%` : 'Updating...';
+    }
+    if (modalProgWrap && modalProgFill) {
+      modalProgWrap.classList.remove('hidden');
+      modalProgFill.style.width = `${Math.max(8, pct)}%`;
+    }
+    if (banner && bannerText) {
+      banner.classList.remove('hidden');
+      bannerText.textContent = msg;
+      if (bannerProgWrap && bannerProgFill) {
+        bannerProgWrap.classList.remove('hidden');
+        bannerProgFill.style.width = `${Math.max(8, pct)}%`;
+      }
+      if (btnBannerUpdate) {
+        btnBannerUpdate.disabled = true;
+        btnBannerUpdate.textContent = pct > 0 ? `Updating ${pct}%...` : 'Updating...';
+      }
+    }
+    return;
+  }
+
+  if (btnCheck) btnCheck.disabled = false;
+  if (modalProgWrap) modalProgWrap.classList.add('hidden');
+  if (bannerProgWrap) bannerProgWrap.classList.add('hidden');
+  if (btnBannerUpdate) {
+    btnBannerUpdate.disabled = false;
+    btnBannerUpdate.textContent = 'Update yt-dlp';
+  }
+
+  if (st.updateAvailable && st.latestVersion) {
+    const rangeLabel = cur ? `${cur} → ${lat}` : lat;
+    if (statusEl) {
+      statusEl.innerHTML = `<span style="color:var(--warning)">✨ Update Found: <strong>${rangeLabel}</strong></span>`;
+    }
+    if (btnInstall) {
+      btnInstall.disabled = false;
+      btnInstall.textContent = st.installed ? `Update to ${st.latestVersion}` : `Install ${st.latestVersion}`;
+    }
+    if (banner && bannerText && !ytDlpBannerDismissed) {
+      bannerText.textContent = st.installed
+        ? `yt-dlp Update Found: ${st.currentVersion || 'installed'} → ${st.latestVersion}`
+        : `yt-dlp ${st.latestVersion} is ready to install`;
+      banner.classList.remove('hidden');
+    }
+  } else if (st.installed) {
+    if (statusEl) {
+      const verBadge = cur ? `${cur} (Up to date)` : 'Installed & Ready';
+      statusEl.innerHTML = `<span style="color:var(--success)">✅ ${verBadge}</span>`;
+    }
+    if (btnInstall) {
+      btnInstall.disabled = false;
+      btnInstall.textContent = 'Reinstall / Update yt-dlp';
+    }
+    if (banner) banner.classList.add('hidden');
+  } else {
+    if (statusEl) {
+      statusEl.innerHTML = '<span style="color:var(--warning)">⚠️ Not Installed</span>';
+    }
+    if (btnInstall) {
+      btnInstall.disabled = false;
+      btnInstall.textContent = 'Install yt-dlp';
+    }
+    if (banner) banner.classList.add('hidden');
+  }
+}
+
+async function checkYtDlpUpdates(manual = false) {
+  const btnCheck = document.getElementById('btn-check-ytdlp');
+  if (btnCheck && manual) {
+    btnCheck.disabled = true;
+    btnCheck.textContent = 'Checking...';
+  }
+  try {
+    const res = await fetch(`/api/ytdlp/check?force=${manual ? '1' : '0'}`);
+    const data = await res.json();
+    if (!res.ok) {
+      if (manual) {
+        showToast(data.error || 'Failed to check yt-dlp updates', true);
+      }
+      return;
+    }
+    if (data.updateAvailable) {
+      ytDlpBannerDismissed = false;
+    }
+    renderYtDlpStatus(data);
+    if (manual) {
+      if (data.updateAvailable) {
+        showToast(`yt-dlp update found: ${data.currentVersion || 'none'} → ${data.latestVersion}`);
+      } else {
+        showToast(`yt-dlp is up to date (${data.currentVersion || data.latestVersion || 'latest'})`);
+      }
+    }
+  } catch (err) {
+    if (manual) {
+      showToast('Error checking for yt-dlp updates', true);
+    }
+  } finally {
+    if (btnCheck && manual) {
+      btnCheck.disabled = false;
+      btnCheck.textContent = 'Check Update';
+    }
+  }
+}
+
+async function updateYtDlpEngine(force = false) {
+  ytDlpBannerDismissed = false;
+  renderYtDlpStatus({
+    ...(latestYtDlpInfo || {}),
+    updating: true,
+    stage: 'downloading',
+    statusText: 'Starting yt-dlp update...',
+    progress: 5,
+  });
+
+  try {
+    const res = await fetch('/api/ytdlp/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force: Boolean(force) }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showToast(data.error || 'Failed to update yt-dlp', true);
+      await loadSettings();
+      return;
+    }
+    if (data.info) {
+      renderYtDlpStatus(data.info);
+    } else {
+      await loadSettings();
+    }
+    showToast(data.version ? `yt-dlp updated to v${data.version}!` : 'yt-dlp (+ QuickJS) updated successfully!');
+  } catch (err) {
+    showToast('Error updating yt-dlp', true);
+    await loadSettings();
   }
 }
 

@@ -17,12 +17,12 @@ const (
 
 func normalizeTheme(theme string) string {
 	switch strings.ToLower(strings.TrimSpace(theme)) {
-	case ThemeDark:
-		return ThemeDark
 	case ThemeLight:
 		return ThemeLight
-	default:
+	case ThemeAuto:
 		return ThemeAuto
+	default:
+		return ThemeDark
 	}
 }
 

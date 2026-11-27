@@ -245,6 +245,46 @@
       transition: width 0.2s ease;
     }
 
+    .ytdlp-banner {
+      background: rgba(245, 158, 11, 0.14);
+      border: 1px solid rgba(245, 158, 11, 0.45);
+      border-radius: var(--radius);
+      padding: 7px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .ytdlp-banner.hidden {
+      display: none;
+    }
+    .ytdlp-banner-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      font-size: 11px;
+    }
+    .ytdlp-card {
+      background: #0b0f19;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .ytdlp-card-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      font-size: 11px;
+    }
+    .ytdlp-card-actions {
+      display: flex;
+      gap: 6px;
+    }
+
     /* Capture Form Controls */
     .capture-select-row {
       display: flex;
@@ -765,6 +805,16 @@
       </div>
     </div>
 
+    <div id="ytdlp-popup-banner" class="ytdlp-banner hidden">
+      <div class="ytdlp-banner-top">
+        <span id="ytdlp-popup-banner-text" class="mini-title">🎬 yt-dlp update available</span>
+        <button type="button" id="btn-popup-banner-update-ytdlp" class="btn btn-sm btn-primary">Update</button>
+      </div>
+      <div id="ytdlp-popup-banner-prog-wrap" class="mini-progress-bg" style="display:none;">
+        <div id="ytdlp-popup-banner-prog-fill" class="mini-progress-fill" style="background:var(--warning);"></div>
+      </div>
+    </div>
+
     <div class="capture-select-row">
       <select id="select-quality" class="capture-select" style="flex:1.2;">
         <optgroup label="Video">
@@ -884,6 +934,30 @@
           <option value="sleep">Put PC to Sleep</option>
           <option value="shutdown">Shut Down PC (30s countdown)</option>
         </select>
+      </div>
+
+      <div class="ytdlp-card">
+        <div class="ytdlp-card-row">
+          <span style="font-weight:600;">🎬 yt-dlp Engine</span>
+          <span id="popup-ytdlp-status" style="color:var(--muted);">Checking...</span>
+        </div>
+        <div id="popup-ytdlp-prog-wrap" class="mini-progress-bg" style="display:none;">
+          <div id="popup-ytdlp-prog-fill" class="mini-progress-fill" style="background:var(--warning);"></div>
+        </div>
+        <div class="ytdlp-card-actions">
+          <button type="button" id="btn-popup-check-ytdlp" class="btn btn-sm btn-secondary" style="flex:1;">🔍 Check Update</button>
+          <button type="button" id="btn-popup-update-ytdlp" class="btn btn-sm btn-primary" style="flex:1;">⬇️ Update yt-dlp</button>
+        </div>
+      </div>
+
+      <div class="ytdlp-card">
+        <div class="ytdlp-card-row">
+          <span style="font-weight:600;">🍪 YouTube Cookies</span>
+          <span id="popup-cookies-status" style="color:var(--muted);">Checking...</span>
+        </div>
+        <div class="ytdlp-card-actions">
+          <button type="button" id="btn-popup-sync-cookies" class="btn btn-sm btn-secondary" style="flex:1;">🔄 Sync Latest Cookies Now</button>
+        </div>
       </div>
 
       <div class="settings-field">

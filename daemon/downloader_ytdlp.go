@@ -79,7 +79,7 @@ class GrabAllPrewarmIE(InfoExtractor):
 // ensureYtDlpSpeedPlugin writes GrabAll's lightweight yt-dlp plugin that caches YouTube's
 // preprocessed base.js AST across runs, cutting extraction CPU time by ~11x on low-RAM PCs.
 func ensureYtDlpSpeedPlugin() string {
-	pluginsRoot := filepath.Join(executableDir(), "plugins")
+	pluginsRoot := resolveWritableDataSubdir("plugins")
 	pluginFile := filepath.Join(pluginsRoot, "graball_speed", "yt_dlp_plugins", "extractor", "graball_fast_ejs.py")
 	if existing, err := os.ReadFile(pluginFile); err == nil && string(existing) == graballFastEJSPluginPy {
 		return pluginsRoot
@@ -152,7 +152,7 @@ func PrewarmYouTubeSolverCache(cfg *Config) {
 		return
 	}
 
-	cacheDir := filepath.Join(executableDir(), "cache")
+	cacheDir := resolveWritableDataSubdir("cache")
 	_ = os.MkdirAll(cacheDir, 0755)
 
 	// Skip spawning yt-dlp if a player cache file was already verified/created within the last 6 hours
@@ -172,7 +172,7 @@ func PrewarmYouTubeSolverCache(cfg *Config) {
 	}
 
 	if resolveQuickJSBinary() == "" {
-		_, _ = DownloadQuickJSStandalone(filepath.Join(executableDir(), "bin"))
+		_, _ = DownloadQuickJSStandalone(resolveWritableDataSubdir("bin"))
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -309,24 +309,34 @@ func isYouTubeURL(rawURL string) bool {
 		strings.Contains(lower, "youtube-nocookie.com/")
 }
 
-// hasYouTubeAuthCookies checks whether a cookie slice actually contains signed-in
-// Google/YouTube session cookies (as opposed to logged-out VISITOR_INFO1_LIVE tracking cookies).
+func isYouTubeCookieDomain(domain string) bool {
+	d := strings.ToLower(strings.TrimSpace(domain))
+	return d == "youtube.com" || strings.HasSuffix(d, ".youtube.com")
+}
+
+// hasYouTubeAuthCookies checks whether a cookie slice actually contains non-expired,
+// signed-in YouTube session cookies (as opposed to logged-out VISITOR_INFO1_LIVE
+// tracking cookies or unrelated google.com-only cookies).
 func hasYouTubeAuthCookies(cookies []Cookie) bool {
-	hasLoginInfo := false
-	hasSID := false
+	nowUnix := time.Now().Unix()
+	hasYTAuth := false
 	for _, c := range cookies {
+		if strings.TrimSpace(c.Value) == "" {
+			continue
+		}
+		if c.ExpirationDate > 0 && int64(c.ExpirationDate) < nowUnix {
+			continue
+		}
+		// Require auth cookie to belong to youtube.com (or omit domain in unit fixtures).
+		if c.Domain != "" && !isYouTubeCookieDomain(c.Domain) {
+			continue
+		}
 		switch c.Name {
-		case "LOGIN_INFO":
-			if c.Value != "" {
-				hasLoginInfo = true
-			}
-		case "SAPISID", "__Secure-1PAPISID", "__Secure-3PAPISID", "SID", "__Secure-1PSID", "__Secure-3PSID":
-			if c.Value != "" {
-				hasSID = true
-			}
+		case "LOGIN_INFO", "SAPISID", "__Secure-1PAPISID", "__Secure-3PAPISID", "SID", "__Secure-1PSID", "__Secure-3PSID":
+			hasYTAuth = true
 		}
 	}
-	return hasLoginInfo || hasSID
+	return hasYTAuth
 }
 
 // executableDir returns the directory containing the running daemon binary, falling back to CWD.
@@ -345,13 +355,26 @@ func executableDir() string {
 
 func candidateBinDirs() []string {
 	dirs := []string{}
-	if cwd, err := os.Getwd(); err == nil {
-		dirs = append(dirs, filepath.Join(cwd, "bin"))
+	addUnique := func(d string) {
+		if d == "" {
+			return
+		}
+		clean := filepath.Clean(d)
+		for _, existing := range dirs {
+			if strings.EqualFold(filepath.Clean(existing), clean) {
+				return
+			}
+		}
+		dirs = append(dirs, clean)
 	}
-	exeDir := executableDir()
-	exeBin := filepath.Join(exeDir, "bin")
-	if len(dirs) == 0 || dirs[0] != exeBin {
-		dirs = append(dirs, exeBin)
+	if cwd, err := os.Getwd(); err == nil {
+		addUnique(filepath.Join(cwd, "bin"))
+	}
+	addUnique(filepath.Join(executableDir(), "bin"))
+	if runtime.GOOS == "windows" {
+		if appData := os.Getenv("APPDATA"); appData != "" {
+			addUnique(filepath.Join(appData, "GrabAll", "bin"))
+		}
 	}
 	return dirs
 }
@@ -539,7 +562,8 @@ func runFlatPlaylist(ctx context.Context, binPath, targetURL, cookieFile string,
 
 	startIdx, endIdx := computePlaylistBounds(req.URL, req.PlaylistStart, req.PlaylistEnd, req.PlaylistCount)
 
-	cacheDir := filepath.Join(executableDir(), "cache")
+	cacheDir := resolveWritableDataSubdir("cache")
+	_ = os.MkdirAll(cacheDir, 0755)
 	args := []string{
 		"--force-ipv4",
 		"--socket-timeout", "15",
@@ -553,6 +577,9 @@ func runFlatPlaylist(ctx context.Context, binPath, targetURL, cookieFile string,
 		"--js-runtimes", "deno",
 		"--js-runtimes", "node",
 		"--js-runtimes", "bun",
+	}
+	if pluginsDir := ensureYtDlpSpeedPlugin(); pluginsDir != "" {
+		args = append(args, "--plugin-dirs", pluginsDir)
 	}
 	if qjsPath := resolveQuickJSBinary(); qjsPath != "" {
 		args = append(args, "--js-runtimes", "quickjs:"+qjsPath)
@@ -667,17 +694,29 @@ func runYtDlpDownload(ctx context.Context, qm *QueueManager, task *DownloadTask)
 
 	// Ensure QuickJS is present for YouTube JS challenge decryption even if user has a global yt-dlp
 	if isYouTubeURL(task.URL) && resolveQuickJSBinary() == "" {
-		_, _ = DownloadQuickJSStandalone(filepath.Join(executableDir(), "bin"))
+		_, _ = DownloadQuickJSStandalone(resolveWritableDataSubdir("bin"))
 	}
 
 	// Write Netscape temp cookie file if cookies were provided.
-	// Note: For YouTube, only pass cookies if they contain real login cookies (passing logged-out
-	// VISITOR_INFO1_LIVE cookies forces yt-dlp off non-cookie clients and triggers bot checks).
-	useCookies := len(task.Cookies) > 0 && (!isYouTubeURL(task.URL) || hasYouTubeAuthCookies(task.Cookies))
+	// Note: For YouTube, always prefer the freshest synced signed-in cookies from QueueManager
+	// (so queued/restarted tasks never use stale or missing cookies), and skip logged-out cookies
+	// because passing VISITOR_INFO1_LIVE without login cookies forces yt-dlp off non-cookie clients.
+	task.mu.Lock()
+	effectiveCookies := task.Cookies
+	task.mu.Unlock()
+	if isYouTubeURL(task.URL) {
+		if fresh := qm.GetYouTubeCookies(); hasYouTubeAuthCookies(fresh) {
+			effectiveCookies = fresh
+			task.mu.Lock()
+			task.Cookies = fresh
+			task.mu.Unlock()
+		}
+	}
+	useCookies := len(effectiveCookies) > 0 && (!isYouTubeURL(task.URL) || hasYouTubeAuthCookies(effectiveCookies))
 	var cookieFile string
 	if useCookies {
 		cookieFile = filepath.Join(os.TempDir(), fmt.Sprintf("ytdlp_cookies_%s.txt", task.ID))
-		if err := WriteNetscapeCookiesFile(task.Cookies, cookieFile); err == nil {
+		if err := WriteNetscapeCookiesFile(effectiveCookies, cookieFile); err == nil {
 			defer func() {
 				_ = os.Remove(cookieFile)
 			}()
@@ -694,6 +733,7 @@ func runYtDlpDownload(ctx context.Context, qm *QueueManager, task *DownloadTask)
 	totalAutoResumes := 0
 	noProgressRetries := 0
 	retriedWithoutCookies := false
+	var firstSignedInErr error
 
 	if isYouTubeURL(task.URL) {
 		handled, hybridErr := runHybridYouTubeDownload(ctx, qm, task, binPath, downloadDir, &currentCookieFile)
@@ -728,8 +768,13 @@ func runYtDlpDownload(ctx context.Context, qm *QueueManager, task *DownloadTask)
 		if !retriedWithoutCookies && currentCookieFile != "" && isYouTubeURL(task.URL) &&
 			isYouTubeSignedInRefusalError(errMsg) {
 			retriedWithoutCookies = true
+			firstSignedInErr = err
 			currentCookieFile = ""
 			continue
+		}
+		if retriedWithoutCookies && firstSignedInErr != nil && isYouTubeURL(task.URL) &&
+			strings.Contains(strings.ToLower(errMsg), "not a bot") {
+			return fmt.Errorf("YouTube blocked this IP even with signed-in cookies (%v). Update yt-dlp or switch VPN/server IP", firstSignedInErr)
 		}
 
 		if isRetryableYtDlpNetworkError(errMsg) {
@@ -767,7 +812,7 @@ func runYtDlpDownload(ctx context.Context, qm *QueueManager, task *DownloadTask)
 }
 
 func executeYtDlpAttempt(ctx context.Context, qm *QueueManager, task *DownloadTask, binPath, downloadDir, cookieFile string) error {
-	cacheDir := filepath.Join(executableDir(), "cache")
+	cacheDir := resolveWritableDataSubdir("cache")
 	_ = os.MkdirAll(cacheDir, 0755)
 	defer pruneOldPlayerCaches(cacheDir)
 
@@ -1450,6 +1495,10 @@ func (s *ytSizeTracker) update(key string, downloaded, exactStreamSize, reported
 }
 
 func downloadExecutableToDir(downloadURL, targetPath string, timeout time.Duration) error {
+	return downloadExecutableWithProgress(downloadURL, targetPath, timeout, nil)
+}
+
+func downloadExecutableWithProgress(downloadURL, targetPath string, timeout time.Duration, onProgress func(downloaded, total int64)) error {
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
 		return err
 	}
@@ -1472,10 +1521,30 @@ func downloadExecutableToDir(downloadURL, targetPath string, timeout time.Durati
 		return err
 	}
 
-	if _, err := io.Copy(out, resp.Body); err != nil {
-		_ = out.Close()
-		_ = os.Remove(tempPath)
-		return err
+	total := resp.ContentLength
+	var downloaded int64
+	buf := make([]byte, 32*1024)
+	for {
+		n, rErr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, wErr := out.Write(buf[:n]); wErr != nil {
+				_ = out.Close()
+				_ = os.Remove(tempPath)
+				return wErr
+			}
+			downloaded += int64(n)
+			if onProgress != nil {
+				onProgress(downloaded, total)
+			}
+		}
+		if rErr == io.EOF {
+			break
+		}
+		if rErr != nil {
+			_ = out.Close()
+			_ = os.Remove(tempPath)
+			return rErr
+		}
 	}
 	_ = out.Close()
 
@@ -1490,14 +1559,26 @@ func downloadExecutableToDir(downloadURL, targetPath string, timeout time.Durati
 }
 
 func downloadAndExtractZip(downloadURL, destDir string, timeout time.Duration) error {
+	return downloadAndExtractZipWithProgress(downloadURL, destDir, timeout, nil)
+}
+
+func downloadAndExtractZipWithProgress(downloadURL, destDir string, timeout time.Duration, onProgress func(stage string, downloaded, total int64)) error {
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return err
 	}
 	tmpZip := filepath.Join(os.TempDir(), fmt.Sprintf("graball_pkg_%d.zip", time.Now().UnixNano()))
 	defer func() { _ = os.Remove(tmpZip) }()
 
-	if err := downloadExecutableToDir(downloadURL, tmpZip, timeout); err != nil {
+	if err := downloadExecutableWithProgress(downloadURL, tmpZip, timeout, func(dl, tot int64) {
+		if onProgress != nil {
+			onProgress("downloading", dl, tot)
+		}
+	}); err != nil {
 		return err
+	}
+
+	if onProgress != nil {
+		onProgress("extracting", 0, 0)
 	}
 
 	zr, err := zip.OpenReader(tmpZip)
@@ -1579,6 +1660,10 @@ func isManagedSlowWindowsYtDlp(binPath string) bool {
 // On Windows, it installs yt-dlp_win.zip (pre-extracted onedir build) so yt-dlp starts in ~1s
 // instead of taking 60-90s unpacking 146 DLLs to %TEMP% and triggering Windows Defender on every video!
 func DownloadYtDlpStandalone(destDir string) (string, error) {
+	return DownloadYtDlpStandaloneWithProgress(destDir, nil)
+}
+
+func DownloadYtDlpStandaloneWithProgress(destDir string, onProgress func(stage string, downloaded, total int64)) (string, error) {
 	ytInstallMu.Lock()
 	for ytInstallDone != nil {
 		ch := ytInstallDone
@@ -1604,11 +1689,15 @@ func DownloadYtDlpStandalone(destDir string) (string, error) {
 			asset = "yt-dlp_win_arm64.zip"
 		}
 		zipURL := "https://github.com/yt-dlp/yt-dlp/releases/latest/download/" + asset
-		if err := downloadAndExtractZip(zipURL, destDir, 4*time.Minute); err != nil {
+		if err := downloadAndExtractZipWithProgress(zipURL, destDir, 4*time.Minute, onProgress); err != nil {
 			return "", err
 		}
 		targetPath := filepath.Join(destDir, "yt-dlp.exe")
+		if onProgress != nil {
+			onProgress("quickjs", 0, 0)
+		}
 		_, _ = DownloadQuickJSStandalone(destDir)
+		_ = os.Remove(filepath.Join(destDir, ytDlpVersionMarkerName))
 		return targetPath, nil
 	}
 
@@ -1619,11 +1708,19 @@ func DownloadYtDlpStandalone(destDir string) (string, error) {
 	}
 
 	targetPath := filepath.Join(destDir, binName)
-	if err := downloadExecutableToDir(downloadURL, targetPath, 3*time.Minute); err != nil {
+	if err := downloadExecutableWithProgress(downloadURL, targetPath, 3*time.Minute, func(dl, tot int64) {
+		if onProgress != nil {
+			onProgress("downloading", dl, tot)
+		}
+	}); err != nil {
 		return "", err
 	}
 
+	if onProgress != nil {
+		onProgress("quickjs", 0, 0)
+	}
 	_, _ = DownloadQuickJSStandalone(destDir)
+	_ = os.Remove(filepath.Join(destDir, ytDlpVersionMarkerName))
 	return targetPath, nil
 }
 

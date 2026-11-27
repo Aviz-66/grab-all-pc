@@ -2026,7 +2026,7 @@ func runHybridYouTubeDownload(ctx context.Context, qm *QueueManager, task *Downl
 	ffmpegBin := resolveFFmpegBinary(qm.config)
 	hasFFmpeg := ffmpegBin != ""
 
-	cacheDir := filepath.Join(executableDir(), "cache")
+	cacheDir := resolveWritableDataSubdir("cache")
 	_ = os.MkdirAll(cacheDir, 0755)
 	defer pruneOldPlayerCaches(cacheDir)
 
@@ -2040,6 +2040,8 @@ func runHybridYouTubeDownload(ctx context.Context, qm *QueueManager, task *Downl
 
 	info, probeErr := resolveHybridMediaPlan(ctx, binPath, cacheDir, downloadDir, task.URL, customFile, quality, videoCodec, *cookieFilePtr, hasFFmpeg)
 	if probeErr != nil && ctx.Err() == nil && *cookieFilePtr != "" && isYouTubeSignedInRefusalError(probeErr.Error()) {
+		firstSignedInErr := probeErr
+		dropPreviewCache(task.URL)
 		*cookieFilePtr = ""
 		task.mu.Lock()
 		if task.Status == StatusDownloading {
@@ -2048,6 +2050,9 @@ func runHybridYouTubeDownload(ctx context.Context, qm *QueueManager, task *Downl
 		task.mu.Unlock()
 		qm.BroadcastUpdate()
 		info, probeErr = resolveHybridMediaPlan(ctx, binPath, cacheDir, downloadDir, task.URL, customFile, quality, videoCodec, "", hasFFmpeg)
+		if probeErr != nil && strings.Contains(strings.ToLower(probeErr.Error()), "not a bot") {
+			probeErr = fmt.Errorf("YouTube blocked this IP even with signed-in cookies (%v). Update yt-dlp or switch VPN/server IP", firstSignedInErr)
+		}
 	}
 
 	if probeErr != nil {

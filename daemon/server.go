@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -66,6 +67,7 @@ type Server struct {
 	queue              *QueueManager
 	broker             *SSEBroker
 	updater            *Updater
+	ytdlpUpdater       *YtDlpUpdater
 	httpSrv            *http.Server
 	onShowWindow       func()
 	onRestartForUpdate func()
@@ -73,10 +75,11 @@ type Server struct {
 
 func NewServer(cfg *Config, qm *QueueManager, broker *SSEBroker) *Server {
 	return &Server{
-		config:  cfg,
-		queue:   qm,
-		broker:  broker,
-		updater: NewUpdater(),
+		config:       cfg,
+		queue:        qm,
+		broker:       broker,
+		updater:      NewUpdater(),
+		ytdlpUpdater: NewYtDlpUpdater(broker),
 	}
 }
 
@@ -122,6 +125,9 @@ func (s *Server) setupRoutes() http.Handler {
 	mux.HandleFunc("/api/clear-completed", s.handleClearCompleted)
 	mux.HandleFunc("/api/config", s.handleConfig)
 	mux.HandleFunc("/api/install-ytdlp", s.handleInstallYtDlp)
+	mux.HandleFunc("/api/ytdlp/check", s.handleYtDlpCheck)
+	mux.HandleFunc("/api/ytdlp/status", s.handleYtDlpStatus)
+	mux.HandleFunc("/api/ytdlp/update", s.handleYtDlpUpdate)
 	mux.HandleFunc("/api/install-ffmpeg", s.handleInstallFFmpeg)
 	mux.HandleFunc("/api/install-all", s.handleInstallAll)
 	mux.HandleFunc("/api/open-folder", s.handleOpenFolder)
@@ -243,21 +249,37 @@ func (s *Server) isAuthorized(r *http.Request) bool {
 
 func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	_, hasYtDlp := resolveYtDlpBinary(s.config)
+	if s.ytdlpUpdater == nil {
+		s.ytdlpUpdater = NewYtDlpUpdater(s.broker)
+	}
+	ytInfo := s.ytdlpUpdater.Status(s.config)
 	hasFFmpeg := resolveFFmpegBinary(s.config) != ""
+	ytSignedIn, ytCookieCount, ytCookiesAt := s.queue.YouTubeCookieStatus()
+	ytCookiesAtStr := ""
+	if !ytCookiesAt.IsZero() {
+		ytCookiesAtStr = ytCookiesAt.UTC().Format(time.RFC3339)
+	}
 
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":          "ok",
-		"version":         AppVersion,
-		"nativeGui":       s.onShowWindow != nil,
-		"downloadDir":     s.config.GetDownloadDir(),
-		"maxConcurrent":   s.config.GetMaxConcurrent(),
-		"speedMode":       s.config.GetSpeedMode(),
-		"speedLimitKBps":  s.config.GetSpeedLimitKBps(),
-		"theme":           s.config.GetTheme(),
-		"whenDoneAction":  s.queue.GetWhenDoneAction(),
-		"ytDlpAvailable":  hasYtDlp == nil,
-		"ffmpegAvailable": hasFFmpeg,
+		"status":                  "ok",
+		"version":                 AppVersion,
+		"nativeGui":               s.onShowWindow != nil,
+		"downloadDir":             s.config.GetDownloadDir(),
+		"maxConcurrent":           s.config.GetMaxConcurrent(),
+		"speedMode":               s.config.GetSpeedMode(),
+		"speedLimitKBps":          s.config.GetSpeedLimitKBps(),
+		"theme":                   s.config.GetTheme(),
+		"whenDoneAction":          s.queue.GetWhenDoneAction(),
+		"ytDlpAvailable":          ytInfo.Installed,
+		"ytDlpVersion":            ytInfo.CurrentVersion,
+		"ytDlpLatestVersion":      ytInfo.LatestVersion,
+		"ytDlpUpdateAvailable":    ytInfo.UpdateAvailable,
+		"ytDlpUpdating":           ytInfo.Updating,
+		"ytDlpStatusText":         ytInfo.StatusText,
+		"ffmpegAvailable":         hasFFmpeg,
+		"youtubeCookiesSynced":    ytSignedIn,
+		"youtubeCookiesCount":     ytCookieCount,
+		"youtubeCookiesUpdatedAt": ytCookiesAtStr,
 	})
 }
 
@@ -269,11 +291,26 @@ func (s *Server) handleSyncCookies(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Cookies []Cookie `json:"cookies"`
 	}
+	accepted := false
 	if err := json.NewDecoder(r.Body).Decode(&req); err == nil && len(req.Cookies) > 0 {
-		s.queue.UpdateYouTubeCookies(req.Cookies)
+		accepted = s.queue.UpdateYouTubeCookies(req.Cookies)
+		if accepted {
+			clearAllPreviewCache()
+		}
+	}
+	signedIn, count, updatedAt := s.queue.YouTubeCookieStatus()
+	updatedStr := ""
+	if !updatedAt.IsZero() {
+		updatedStr = updatedAt.UTC().Format(time.RFC3339)
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":   true,
+		"accepted":  accepted,
+		"signedIn":  signedIn,
+		"count":     count,
+		"updatedAt": updatedStr,
+	})
 }
 
 // handlePair allows browser extensions to pair automatically with zero manual token copy-pasting,
@@ -416,10 +453,10 @@ func (s *Server) handlePlaylistPreview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if isYouTubeURL(req.URL) {
-		if len(req.Cookies) > 0 && hasYouTubeAuthCookies(req.Cookies) {
+		if hasYouTubeAuthCookies(req.Cookies) {
 			s.queue.UpdateYouTubeCookies(req.Cookies)
-		} else if len(req.Cookies) == 0 {
-			req.Cookies = s.queue.GetYouTubeCookies()
+		} else if cached := s.queue.GetYouTubeCookies(); hasYouTubeAuthCookies(cached) {
+			req.Cookies = cached
 		}
 	}
 
@@ -736,28 +773,46 @@ func (s *Server) handleClearCompleted(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		w.Header().Set("Content-Type", "application/json")
-		_, hasYtDlp := resolveYtDlpBinary(s.config)
+		if s.ytdlpUpdater == nil {
+			s.ytdlpUpdater = NewYtDlpUpdater(s.broker)
+		}
+		ytInfo := s.ytdlpUpdater.Status(s.config)
 		hasFFmpeg := resolveFFmpegBinary(s.config) != ""
 		autoUpdates := s.config.GetAutoCheckUpdates()
+		ytSignedIn, ytCookieCount, ytCookiesAt := s.queue.YouTubeCookieStatus()
+		ytCookiesAtStr := ""
+		if !ytCookiesAt.IsZero() {
+			ytCookiesAtStr = ytCookiesAt.UTC().Format(time.RFC3339)
+		}
 
 		s.config.mu.RLock()
 		resp := map[string]interface{}{
-			"version":          AppVersion,
-			"port":             s.config.Port,
-			"authToken":        s.config.AuthToken,
-			"downloadDir":      s.config.DownloadDir,
-			"maxConcurrent":    s.config.MaxConcurrent,
-			"ytDlpPath":        s.config.YtDlpPath,
-			"ffmpegPath":       s.config.FFmpegPath,
-			"defaultEngine":    s.config.DefaultEngine,
-			"speedMode":        normalizeSpeedMode(s.config.SpeedMode),
-			"videoCodec":       normalizeVideoCodec(s.config.VideoCodec),
-			"speedLimitKBps":   s.config.SpeedLimitKBps,
-			"theme":            normalizeTheme(s.config.Theme),
-			"whenDoneAction":   s.queue.GetWhenDoneAction(),
-			"ytDlpAvailable":   hasYtDlp == nil,
-			"ffmpegAvailable":  hasFFmpeg,
-			"autoCheckUpdates": autoUpdates,
+			"version":                 AppVersion,
+			"port":                    s.config.Port,
+			"authToken":               s.config.AuthToken,
+			"downloadDir":             s.config.DownloadDir,
+			"maxConcurrent":           s.config.MaxConcurrent,
+			"ytDlpPath":               s.config.YtDlpPath,
+			"ffmpegPath":              s.config.FFmpegPath,
+			"defaultEngine":           s.config.DefaultEngine,
+			"speedMode":               normalizeSpeedMode(s.config.SpeedMode),
+			"videoCodec":              normalizeVideoCodec(s.config.VideoCodec),
+			"speedLimitKBps":          s.config.SpeedLimitKBps,
+			"theme":                   normalizeTheme(s.config.Theme),
+			"whenDoneAction":          s.queue.GetWhenDoneAction(),
+			"ytDlpAvailable":          ytInfo.Installed,
+			"ytDlpVersion":            ytInfo.CurrentVersion,
+			"ytDlpLatestVersion":      ytInfo.LatestVersion,
+			"ytDlpUpdateAvailable":    ytInfo.UpdateAvailable,
+			"ytDlpUpdating":           ytInfo.Updating,
+			"ytDlpStage":              ytInfo.Stage,
+			"ytDlpStatusText":         ytInfo.StatusText,
+			"ytDlpProgress":           ytInfo.Progress,
+			"ffmpegAvailable":         hasFFmpeg,
+			"autoCheckUpdates":        autoUpdates,
+			"youtubeCookiesSynced":    ytSignedIn,
+			"youtubeCookiesCount":     ytCookieCount,
+			"youtubeCookiesUpdatedAt": ytCookiesAtStr,
 		}
 		s.config.mu.RUnlock()
 		_ = json.NewEncoder(w).Encode(resp)
@@ -832,25 +887,71 @@ func (s *Server) handleInstallYtDlp(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if s.ytdlpUpdater == nil {
+		s.ytdlpUpdater = NewYtDlpUpdater(s.broker)
+	}
 
-	binDir := filepath.Join(executableDir(), "bin")
-	installedPath, err := DownloadYtDlpStandalone(binDir)
+	var req struct {
+		Force bool `json:"force"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	info, err := s.ytdlpUpdater.Update(r.Context(), s.config, s.queue, req.Force, nil)
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
+		if errors.Is(err, errYtDlpActiveDownloads) {
+			w.WriteHeader(http.StatusConflict)
+		} else {
+			w.WriteHeader(http.StatusInternalServerError)
+		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
-	s.config.mu.Lock()
-	s.config.YtDlpPath = installedPath
-	s.config.mu.Unlock()
-	_ = s.config.Save()
-
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
-		"path":    installedPath,
+		"path":    info.BinaryPath,
+		"version": info.CurrentVersion,
+		"info":    info,
 	})
+}
+
+func (s *Server) handleYtDlpStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.ytdlpUpdater == nil {
+		s.ytdlpUpdater = NewYtDlpUpdater(s.broker)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(s.ytdlpUpdater.Status(s.config))
+}
+
+func (s *Server) handleYtDlpCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.ytdlpUpdater == nil {
+		s.ytdlpUpdater = NewYtDlpUpdater(s.broker)
+	}
+	force := r.URL.Query().Get("force") == "1" || strings.EqualFold(r.URL.Query().Get("force"), "true")
+	info, err := s.ytdlpUpdater.CheckForUpdate(r.Context(), s.config, force)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": err.Error(),
+			"info":  info,
+		})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(info)
+}
+
+func (s *Server) handleYtDlpUpdate(w http.ResponseWriter, r *http.Request) {
+	s.handleInstallYtDlp(w, r)
 }
 
 func (s *Server) handleInstallAll(w http.ResponseWriter, r *http.Request) {

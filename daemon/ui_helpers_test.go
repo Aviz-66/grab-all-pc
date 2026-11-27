@@ -19,13 +19,13 @@ func TestThemeNormalizationAndDarkModeResolution(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"", ThemeAuto},
+		{"", ThemeDark},
 		{"AUTO", ThemeAuto},
 		{"Dark", ThemeDark},
 		{"  dark ", ThemeDark},
 		{"LIGHT", ThemeLight},
 		{" light ", ThemeLight},
-		{"unknown-value", ThemeAuto},
+		{"unknown-value", ThemeDark},
 	}
 	for _, tc := range normCases {
 		if got := normalizeTheme(tc.in); got != tc.want {
@@ -57,21 +57,21 @@ func TestThemeNormalizationAndDarkModeResolution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	if got := cfg.GetTheme(); got != ThemeAuto {
-		t.Fatalf("expected default theme %q, got %q", ThemeAuto, got)
+	if got := cfg.GetTheme(); got != ThemeDark {
+		t.Fatalf("expected default theme %q, got %q", ThemeDark, got)
 	}
 
-	cfg.SetTheme("DARK")
-	if got := cfg.GetTheme(); got != ThemeDark {
-		t.Fatalf("expected GetTheme()=%q after SetTheme, got %q", ThemeDark, got)
+	cfg.SetTheme("LIGHT")
+	if got := cfg.GetTheme(); got != ThemeLight {
+		t.Fatalf("expected GetTheme()=%q after SetTheme, got %q", ThemeLight, got)
 	}
 
 	reloaded, err := LoadConfig(cfgPath)
 	if err != nil {
 		t.Fatalf("LoadConfig reload failed: %v", err)
 	}
-	if got := reloaded.GetTheme(); got != ThemeDark {
-		t.Errorf("expected persisted theme %q on reload, got %q", ThemeDark, got)
+	if got := reloaded.GetTheme(); got != ThemeLight {
+		t.Errorf("expected persisted theme %q on reload, got %q", ThemeLight, got)
 	}
 }
 

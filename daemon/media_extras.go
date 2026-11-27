@@ -886,14 +886,20 @@ func dropPreviewCache(rawURL string) {
 	previewCacheMu.Unlock()
 }
 
-// writeCachedInfoJSON writes cached preview metadata to a temp file usable with
+func clearAllPreviewCache() {
+	previewCacheMu.Lock()
+	previewCache = make(map[string]previewCacheEntry)
+	previewCacheMu.Unlock()
+}
+
+// writeCachedInfoJSON writes cached preview metadata to a unique temp file usable with
 // yt-dlp --load-info-json. Returns "" when nothing is cached.
 func writeCachedInfoJSON(rawURL, taskID string) string {
 	raw := lookupPreviewCache(rawURL)
 	if len(raw) == 0 {
 		return ""
 	}
-	path := filepath.Join(os.TempDir(), fmt.Sprintf("graball_info_%s.json", sanitizeFormatID(taskID, "task")))
+	path := filepath.Join(os.TempDir(), fmt.Sprintf("graball_info_%s_%d.json", sanitizeFormatID(taskID, "task"), time.Now().UnixNano()))
 	if err := os.WriteFile(path, raw, 0600); err != nil {
 		return ""
 	}
@@ -917,9 +923,9 @@ func runYtDlpPreviewProbe(ctx context.Context, cfg *Config, req previewProbeRequ
 		return nil, err
 	}
 	if isYouTubeURL(req.URL) && resolveQuickJSBinary() == "" {
-		_, _ = DownloadQuickJSStandalone(filepath.Join(executableDir(), "bin"))
+		_, _ = DownloadQuickJSStandalone(resolveWritableDataSubdir("bin"))
 	}
-	cacheDir := filepath.Join(executableDir(), "cache")
+	cacheDir := resolveWritableDataSubdir("cache")
 	_ = os.MkdirAll(cacheDir, 0755)
 	downloadDir := cfg.GetDownloadDir()
 	hasFFmpeg := resolveFFmpegBinary(cfg) != ""
@@ -1009,10 +1015,10 @@ func (qm *QueueManager) PreviewMedia(ctx context.Context, req AddRequest) (*Medi
 
 	cookies := req.Cookies
 	if isYouTubeURL(target) {
-		if len(cookies) > 0 && hasYouTubeAuthCookies(cookies) {
+		if hasYouTubeAuthCookies(cookies) {
 			qm.UpdateYouTubeCookies(cookies)
-		} else if len(cookies) == 0 {
-			cookies = qm.GetYouTubeCookies()
+		} else if cached := qm.GetYouTubeCookies(); hasYouTubeAuthCookies(cached) {
+			cookies = cached
 		}
 	}
 	useCookies := len(cookies) > 0 && (!isYouTubeURL(target) || hasYouTubeAuthCookies(cookies))

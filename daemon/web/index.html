@@ -42,6 +42,23 @@
       </div>
     </div>
 
+    <!-- yt-dlp Engine Update Banner -->
+    <div id="ytdlp-update-banner" class="update-banner update-banner-ytdlp hidden">
+      <div class="update-banner-info" style="flex:1; min-width:0;">
+        <span>🎬</span>
+        <div style="flex:1; min-width:0;">
+          <div id="ytdlp-banner-text">yt-dlp update available!</div>
+          <div id="ytdlp-banner-progress-wrap" class="ytdlp-progress-wrap hidden">
+            <div id="ytdlp-banner-progress-fill" class="ytdlp-progress-fill"></div>
+          </div>
+        </div>
+      </div>
+      <div class="update-banner-actions">
+        <button type="button" id="btn-banner-update-ytdlp" class="btn btn-sm btn-accent">Update yt-dlp</button>
+        <button type="button" id="btn-banner-dismiss-ytdlp" class="btn btn-sm btn-ghost" title="Dismiss">&times;</button>
+      </div>
+    </div>
+
     <!-- Controls & Filter Bar -->
     <div class="toolbar">
       <div class="filters">
@@ -201,10 +218,21 @@
           </div>
           <div class="form-group">
             <label>yt-dlp Engine Status</label>
-            <div class="engine-status-box">
-              <span id="ytdlp-status-text">Checking...</span>
+            <div class="engine-status-box" style="flex-wrap:wrap;">
+              <span id="ytdlp-status-text" style="flex:1;">Checking...</span>
+              <button type="button" id="btn-check-ytdlp" class="btn btn-sm btn-secondary">Check Update</button>
               <button type="button" id="btn-install-ytdlp" class="btn btn-sm btn-accent">Install / Update yt-dlp</button>
             </div>
+            <div id="ytdlp-modal-progress-wrap" class="ytdlp-progress-wrap hidden">
+              <div id="ytdlp-modal-progress-fill" class="ytdlp-progress-fill"></div>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>YouTube Session Cookies (Synced from Extension)</label>
+            <div class="engine-status-box">
+              <span id="yt-cookies-status-text">Checking...</span>
+            </div>
+            <small>Used automatically for YouTube downloads &amp; persists across restarts.</small>
           </div>
           <div class="form-group">
             <label>FFmpeg Status (for 1080p/4K video merge &amp; MP3 audio)</label>
