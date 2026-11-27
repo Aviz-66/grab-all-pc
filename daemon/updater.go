@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	AppVersion = "2.5.0"
+	AppVersion = "2.5.1"
 
 	defaultUpdateManifestURL = "https://raw.githubusercontent.com/Avishka-55/graball-website/main/latest.json"
 	defaultUpdateReleasesURL = "https://api.github.com/repos/Avishka-55/graball-website/releases?per_page=30"
