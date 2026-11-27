@@ -95,3 +95,5 @@ func triggerSystemSleep() error {
 func triggerSystemShutdown(delaySeconds int) error {
 	return fmt.Errorf("not supported on %s", runtime.GOOS)
 }
+
+func syncInstalledAppVersionRegistry(ver string) {}

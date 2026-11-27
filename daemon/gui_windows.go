@@ -1553,6 +1553,7 @@ func (g *winAppGUI) initAndRunMessageLoop(startInTray bool) {
 		g.msgTaskbarCreated = uint32(tbMsg)
 	}
 	syncAutoStartPathIfEnabled()
+	syncInstalledAppVersionRegistry(AppVersion)
 	g.refreshOptionMenuChecks()
 
 	g.mainHwnd, _, _ = procCreateWindowExW.Call(

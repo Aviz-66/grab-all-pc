@@ -300,6 +300,43 @@ func syncAutoStartPathIfEnabled() {
 	}
 }
 
+// syncInstalledAppVersionRegistry updates HKCU\...\Uninstall\GrabAll DisplayVersion
+// if GrabAll was installed via GrabAll-Setup.exe so Windows Installed Apps stays current
+// after in-app auto-updates.
+func syncInstalledAppVersionRegistry(ver string) {
+	ver = normalizeVersionString(ver)
+	if ver == "" {
+		return
+	}
+	subKey, _ := syscall.UTF16PtrFromString(`Software\Microsoft\Windows\CurrentVersion\Uninstall\GrabAll`)
+	var hKey uintptr
+	ret, _, _ := procRegOpenKeyExW.Call(
+		hkeyCurrentUser,
+		uintptr(unsafe.Pointer(subKey)),
+		0,
+		keySetValue,
+		uintptr(unsafe.Pointer(&hKey)),
+	)
+	if ret != 0 {
+		return // Portable install (no Uninstall entry)
+	}
+	defer procRegCloseKey.Call(hKey)
+
+	valName, _ := syscall.UTF16PtrFromString("DisplayVersion")
+	utf16Val, err := syscall.UTF16FromString(ver)
+	if err != nil {
+		return
+	}
+	procRegSetValueExW.Call(
+		hKey,
+		uintptr(unsafe.Pointer(valName)),
+		0,
+		regSZ,
+		uintptr(unsafe.Pointer(&utf16Val[0])),
+		uintptr(uint32(len(utf16Val)*2)),
+	)
+}
+
 func waitForParentPIDExit(pid int, maxWait time.Duration) {
 	if pid <= 0 {
 		return

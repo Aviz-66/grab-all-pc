@@ -31,9 +31,13 @@ jobs:
       - name: Run unit & race tests
         run: go test -v -race ./daemon/...
 
+      - name: Install NSIS (Windows Installer Builder)
+        run: sudo apt-get update && sudo apt-get install -y nsis
+
       - name: Cross-compile & package all platforms
         env:
           CGO_ENABLED: '0'
+          TAG: ${{ github.ref_name }}
         run: |
           set -e
           mkdir -p dist
@@ -51,8 +55,10 @@ jobs:
             rm -rf stage && mkdir -p stage
             GOOS="$goos" GOARCH="$goarch" go build -ldflags="$ldflags" -o "stage/$bin" ./daemon
             cp -r extension stage/extension
-            cp -r scripts stage/scripts
-            cp README.md stage/
+            if [ "$goos" != "windows" ]; then
+              cp -r scripts stage/scripts
+              cp README.md stage/
+            fi
 
             (
               cd stage
@@ -62,6 +68,18 @@ jobs:
                 tar czf "../dist/graball-${suffix}.tar.gz" .
               fi
             )
+
+            if [ "$goos" = "windows" ]; then
+              rm -rf stage_win && cp -r stage stage_win
+              APP_VER="${TAG#v}"
+              makensis -NOCD \
+                -DAPP_VERSION="$APP_VER" \
+                -DSOURCE_DIR="stage_win" \
+                -DOUT_FILE="dist/GrabAll-Setup-${suffix}.exe" \
+                -DICON_FILE="assets/icons/graball.ico" \
+                scripts/installer.nsi
+              rm -rf stage_win
+            fi
           }
 
           package_target linux   amd64 linux-amd64   graball

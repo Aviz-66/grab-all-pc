@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	AppVersion = "2.5.3"
+	AppVersion = "2.5.4"
 
 	defaultUpdateReleasesURL       = "https://api.github.com/repos/Aviz-66/grab-all-pc/releases?per_page=15"
 	defaultUpdateLatestRedirectURL = "https://github.com/Aviz-66/grab-all-pc/releases/latest"
@@ -618,6 +618,7 @@ func (u *Updater) applyUpdateToPath(ctx context.Context, info *UpdateInfo, targe
 	if u.goos != "windows" {
 		_ = removeFileWithRetry(oldExePath, 2, 20*time.Millisecond)
 	}
+	syncInstalledAppVersionRegistry(info.LatestVersion)
 
 	if onProgress != nil {
 		onProgress("restarting", 0, 0)
