@@ -2,6 +2,7 @@
 
 let tasks = [];
 let currentFilter = 'all';
+let currentCategory = 'all';
 let searchQuery = '';
 let sseConnection = null;
 let defaultVideoCodec = 'h264';
@@ -11,6 +12,7 @@ let autoCheckUpdatesEnabled = true;
 // DOM Elements
 const queueListEl = document.getElementById('queue-list');
 const queueEmptyEl = document.getElementById('queue-empty');
+const queueHeaderEl = document.getElementById('queue-header');
 const activeBadgeEl = document.getElementById('active-count-badge');
 const speedBadgeEl = document.getElementById('speed-badge');
 
@@ -20,7 +22,31 @@ const countQueuedEl = document.getElementById('count-queued');
 const countCompletedEl = document.getElementById('count-completed');
 const countErrorEl = document.getElementById('count-error');
 
+// Sidebar counts (ids must match index.html)
+const sideCountEls = {
+  all: document.getElementById('count-side-all'),
+  active: document.getElementById('count-side-active'),
+  video: document.getElementById('count-side-videos'),
+  audio: document.getElementById('count-side-audio'),
+  archive: document.getElementById('count-side-archives'),
+  program: document.getElementById('count-side-programs'),
+  document: document.getElementById('count-side-documents'),
+  image: document.getElementById('count-side-images'),
+  completed: document.getElementById('count-side-completed'),
+  failed: document.getElementById('count-side-failed'),
+};
+
+// Status bar (ids must match index.html)
+const sbActiveEl = document.getElementById('sb-active');
+const sbQueuedEl = document.getElementById('sb-queued');
+const sbCompletedEl = document.getElementById('sb-completed');
+const sbSpeedEl = document.getElementById('sb-speed');
+const sbFolderEl = document.getElementById('sb-folder');
+const sbYtdlpEl = document.getElementById('sb-ytdlp');
+const sbFfmpegEl = document.getElementById('sb-ffmpeg');
+
 const filterTabs = document.querySelectorAll('.filter-tab');
+const sideItems = document.querySelectorAll('.side-item');
 const toastEl = document.getElementById('toast');
 
 // Modals
@@ -99,13 +125,27 @@ async function fetchQueue() {
 }
 
 // Filters
+function setFilter(status, category) {
+  currentFilter = status;
+  currentCategory = category;
+  filterTabs.forEach((t) => t.classList.toggle('active', t.dataset.filter === status));
+  sideItems.forEach((it) => {
+    it.classList.toggle('active', it.dataset.status === status && it.dataset.category === category);
+  });
+  renderQueue();
+}
+
 function initFilters() {
   filterTabs.forEach((tab) => {
     tab.addEventListener('click', () => {
-      filterTabs.forEach((t) => t.classList.remove('active'));
-      tab.classList.add('active');
-      currentFilter = tab.dataset.filter;
-      renderQueue();
+      // Top tabs filter by status only (category resets to All)
+      setFilter(tab.dataset.filter, 'all');
+    });
+  });
+
+  sideItems.forEach((item) => {
+    item.addEventListener('click', () => {
+      setFilter(item.dataset.status, item.dataset.category);
     });
   });
 
@@ -156,18 +196,34 @@ function initFilters() {
   }
 }
 
+// Media category of a task (drives the sidebar Library categories)
+function taskCategory(task) {
+  const isAudio = task.quality && String(task.quality).startsWith('audio');
+  if (isAudio) return 'audio';
+  const name = String(task.fileName || task.url || '').toLowerCase();
+  if (/\.(mp4|webm|mkv|mov|avi|m3u8|mpd)$/i.test(name) || task.engine === 'ytdlp') return 'video';
+  if (/\.(zip|rar|7z|tar|gz|tgz|iso|img)$/i.test(name)) return 'archive';
+  if (/\.(exe|msi|apk|dmg|pkg)$/i.test(name)) return 'program';
+  if (/\.(pdf|docx?|txt|epub|xlsx?|pptx?)$/i.test(name)) return 'document';
+  if (/\.(jpe?g|png|gif|webp|bmp|svg|avif)$/i.test(name)) return 'image';
+  return 'other';
+}
+
 function updateCounts() {
   let all = tasks.length;
   let downloading = 0;
   let queued = 0;
   let completed = 0;
   let error = 0;
+  const byCategory = { video: 0, audio: 0, archive: 0, program: 0, document: 0, image: 0 };
 
   for (const t of tasks) {
     if (t.status === 'downloading') downloading++;
     else if (t.status === 'queued') queued++;
     else if (t.status === 'completed') completed++;
     else if (t.status === 'error' || t.status === 'canceled') error++;
+    const cat = taskCategory(t);
+    if (byCategory[cat] !== undefined) byCategory[cat]++;
   }
 
   countAllEl.textContent = all;
@@ -176,6 +232,21 @@ function updateCounts() {
   countCompletedEl.textContent = completed;
   countErrorEl.textContent = error;
 
+  if (sideCountEls.all) sideCountEls.all.textContent = all;
+  if (sideCountEls.active) sideCountEls.active.textContent = downloading + queued;
+  if (sideCountEls.video) sideCountEls.video.textContent = byCategory.video;
+  if (sideCountEls.audio) sideCountEls.audio.textContent = byCategory.audio;
+  if (sideCountEls.archive) sideCountEls.archive.textContent = byCategory.archive;
+  if (sideCountEls.program) sideCountEls.program.textContent = byCategory.program;
+  if (sideCountEls.document) sideCountEls.document.textContent = byCategory.document;
+  if (sideCountEls.image) sideCountEls.image.textContent = byCategory.image;
+  if (sideCountEls.completed) sideCountEls.completed.textContent = completed;
+  if (sideCountEls.failed) sideCountEls.failed.textContent = error;
+
+  if (sbActiveEl) sbActiveEl.textContent = downloading;
+  if (sbQueuedEl) sbQueuedEl.textContent = queued;
+  if (sbCompletedEl) sbCompletedEl.textContent = completed;
+
   activeBadgeEl.textContent = `${downloading} Active`;
 
   // Aggregate active speeds
@@ -183,7 +254,9 @@ function updateCounts() {
     .filter((t) => t.status === 'downloading' && t.speed)
     .map((t) => t.speed);
 
-  speedBadgeEl.textContent = activeSpeeds.length > 0 ? activeSpeeds.join(', ') : '0 KB/s';
+  const speedText = activeSpeeds.length > 0 ? activeSpeeds.join(', ') : '0 KB/s';
+  speedBadgeEl.textContent = speedText;
+  if (sbSpeedEl) sbSpeedEl.textContent = speedText;
 }
 
 function renderSegmentMapHtml(task) {
@@ -220,9 +293,12 @@ function renderQueue() {
     let statusOk = true;
     if (currentFilter === 'downloading') statusOk = t.status === 'downloading';
     else if (currentFilter === 'queued') statusOk = t.status === 'queued';
+    else if (currentFilter === 'active') statusOk = t.status === 'downloading' || t.status === 'queued';
     else if (currentFilter === 'completed') statusOk = t.status === 'completed';
     else if (currentFilter === 'error') statusOk = t.status === 'error' || t.status === 'canceled';
     if (!statusOk) return false;
+
+    if (currentCategory !== 'all' && taskCategory(t) !== currentCategory) return false;
 
     if (searchTokens.length === 0) return true;
     const haystack = [
@@ -236,6 +312,10 @@ function renderQueue() {
     ].join('\n').toLowerCase();
     return searchTokens.every((tok) => haystack.includes(tok));
   });
+
+  if (queueHeaderEl) {
+    queueHeaderEl.style.display = filtered.length === 0 ? 'none' : 'grid';
+  }
 
   if (filtered.length === 0) {
     queueEmptyEl.style.display = 'block';
@@ -281,35 +361,36 @@ function createTaskCard(task) {
           <div class="task-title" title="${escapeHtml(task.title || task.url)}">${escapeHtml(task.title || task.fileName || task.url)}</div>
           <div class="task-meta">
             <span class="engine-tag">${escapeHtml(task.engine)}</span>
-            ${task.quality && task.quality !== 'best' ? `<span class="engine-tag">${escapeHtml(qualityLabel(task.quality))}</span>` : ''}
             ${task.engine === 'ytdlp' && !isAudio && task.videoCodec ? `<span class="engine-tag">${escapeHtml(codecLabel(task.videoCodec))}</span>` : ''}
             <span class="task-url" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(task.url)}</span>
           </div>
         </div>
       </div>
-      <span class="task-status-badge status-${task.status}">${task.status}</span>
     </div>
 
-    <div class="task-error-text" style="${task.errorMessage ? '' : 'display:none;'}">⚠️ ${escapeHtml(task.errorMessage || '')}</div>
+    <span class="stat-size">${task.totalBytes > 0 ? formatBytes(task.totalBytes) : '—'}</span>
 
     <div class="progress-container">
+      <div class="progress-head">
+        <span class="task-status-badge status-${task.status}">${task.status}</span>
+        <span class="stat-progress"><strong>${task.progress.toFixed(1)}%</strong></span>
+      </div>
       <div class="progress-bar-bg">
         <div class="progress-bar-fill ${task.status}" style="width: ${task.progress.toFixed(1)}%;"></div>
       </div>
       <div class="segment-map-container">${renderSegmentMapHtml(task)}</div>
+      <span class="stat-downloaded">${task.totalBytes > 0 ? `${formatBytes(task.downloadedBytes)} / ${formatBytes(task.totalBytes)}` : formatBytes(task.downloadedBytes)}</span>
     </div>
 
-    <div class="task-footer">
-      <div class="task-stats">
-        <span class="stat-progress"><strong>${task.progress.toFixed(1)}%</strong></span>
-        <span class="stat-size">${task.totalBytes > 0 ? `${formatBytes(task.downloadedBytes)} / ${formatBytes(task.totalBytes)}` : formatBytes(task.downloadedBytes)}</span>
-        <span class="stat-speed">${task.speed ? `⚡ ${escapeHtml(task.speed)}` : ''}</span>
-        <span class="stat-eta">${task.eta ? `⏱️ ${escapeHtml(task.eta)}` : ''}</span>
-      </div>
-      <div class="task-actions">
-        ${getTaskButtons(task)}
-      </div>
+    <span class="stat-speed">${task.speed ? `⚡ ${escapeHtml(task.speed)}` : '—'}</span>
+    <span class="stat-eta">${task.eta ? `⏱️ ${escapeHtml(task.eta)}` : '—'}</span>
+    <span class="stat-quality">${task.quality ? escapeHtml(qualityLabel(task.quality)) : '—'}</span>
+
+    <div class="task-actions">
+      ${getTaskButtons(task)}
     </div>
+
+    <div class="task-error-text" style="${task.errorMessage ? '' : 'display:none;'}">⚠️ ${escapeHtml(task.errorMessage || '')}</div>
   `;
 
   attachTaskActionEvents(card, task);
@@ -359,17 +440,22 @@ function updateTaskCard(card, task) {
 
   const statSize = card.querySelector('.stat-size');
   if (statSize) {
-    statSize.textContent = task.totalBytes > 0 ? `${formatBytes(task.downloadedBytes)} / ${formatBytes(task.totalBytes)}` : formatBytes(task.downloadedBytes);
+    statSize.textContent = task.totalBytes > 0 ? formatBytes(task.totalBytes) : '—';
+  }
+
+  const statDownloaded = card.querySelector('.stat-downloaded');
+  if (statDownloaded) {
+    statDownloaded.textContent = task.totalBytes > 0 ? `${formatBytes(task.downloadedBytes)} / ${formatBytes(task.totalBytes)}` : formatBytes(task.downloadedBytes);
   }
 
   const statSpeed = card.querySelector('.stat-speed');
   if (statSpeed) {
-    statSpeed.textContent = task.speed ? `⚡ ${task.speed}` : '';
+    statSpeed.textContent = task.speed ? `⚡ ${task.speed}` : '—';
   }
 
   const statEta = card.querySelector('.stat-eta');
   if (statEta) {
-    statEta.textContent = task.eta ? `⏱️ ${task.eta}` : '';
+    statEta.textContent = task.eta ? `⏱️ ${task.eta}` : '—';
   }
 
   const modeKey = `${task.status}|${task.speedMode || ''}|${task.speedLimitKBps || 0}`;
@@ -832,6 +918,17 @@ async function loadSettings() {
       } else {
         ffmpegEl.innerHTML = '<span style="color:var(--warning)">⚠️ Optional (install for 1080p+ & MP3)</span>';
       }
+    }
+
+    // Status bar: download folder + engine readiness
+    if (sbFolderEl) sbFolderEl.textContent = cfg.downloadDir || '—';
+    if (sbYtdlpEl) {
+      sbYtdlpEl.textContent = cfg.ytDlpAvailable ? 'Ready' : 'Not installed';
+      sbYtdlpEl.className = cfg.ytDlpAvailable ? 'sb-ok' : 'sb-warn';
+    }
+    if (sbFfmpegEl) {
+      sbFfmpegEl.textContent = cfg.ffmpegAvailable ? 'Ready' : 'Not installed';
+      sbFfmpegEl.className = cfg.ffmpegAvailable ? 'sb-ok' : 'sb-warn';
     }
   } catch (err) {
     console.error('Failed to load settings', err);

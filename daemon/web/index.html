@@ -10,6 +10,27 @@
 </head>
 <body>
   <div class="app-container">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-title">Library</div>
+      <nav class="side-nav">
+        <button type="button" class="side-item active" data-status="all" data-category="all"><span class="side-icon">📥</span><span class="side-label">All Downloads</span><span class="side-count" id="count-side-all">0</span></button>
+        <button type="button" class="side-item" data-status="active" data-category="all"><span class="side-icon">⬇️</span><span class="side-label">Active / Queued</span><span class="side-count" id="count-side-active">0</span></button>
+        <button type="button" class="side-item" data-status="all" data-category="video"><span class="side-icon">🎬</span><span class="side-label">Videos</span><span class="side-count" id="count-side-videos">0</span></button>
+        <button type="button" class="side-item" data-status="all" data-category="audio"><span class="side-icon">🎵</span><span class="side-label">Music / Audio</span><span class="side-count" id="count-side-audio">0</span></button>
+        <button type="button" class="side-item" data-status="all" data-category="archive"><span class="side-icon">🗜️</span><span class="side-label">Archives</span><span class="side-count" id="count-side-archives">0</span></button>
+        <button type="button" class="side-item" data-status="all" data-category="program"><span class="side-icon">💻</span><span class="side-label">Programs</span><span class="side-count" id="count-side-programs">0</span></button>
+        <button type="button" class="side-item" data-status="all" data-category="document"><span class="side-icon">📄</span><span class="side-label">Documents</span><span class="side-count" id="count-side-documents">0</span></button>
+        <button type="button" class="side-item" data-status="all" data-category="image"><span class="side-icon">🖼️</span><span class="side-label">Images</span><span class="side-count" id="count-side-images">0</span></button>
+      </nav>
+      <div class="side-divider"></div>
+      <nav class="side-nav">
+        <button type="button" class="side-item" data-status="completed" data-category="all"><span class="side-icon">✅</span><span class="side-label">Completed</span><span class="side-count" id="count-side-completed">0</span></button>
+        <button type="button" class="side-item" data-status="error" data-category="all"><span class="side-icon">❌</span><span class="side-label">Failed / Canceled</span><span class="side-count" id="count-side-failed">0</span></button>
+      </nav>
+    </aside>
+
+    <div class="main-pane">
     <!-- Top Bar -->
     <header class="header">
       <div class="brand">
@@ -71,8 +92,30 @@
         <h3>No downloads yet</h3>
         <p>Use the Brave extension to catch downloads & videos, or click <strong>+ Add URL</strong> above.</p>
       </div>
+      <div id="queue-header" class="queue-header" style="display: none;">
+        <span>File / Video Title</span>
+        <span>Size</span>
+        <span>Progress / Status</span>
+        <span class="qh-speed">Transfer Rate</span>
+        <span class="qh-eta">Time Left</span>
+        <span class="qh-quality">Quality</span>
+        <span></span>
+      </div>
       <div id="queue-list" class="queue-list"></div>
     </main>
+
+    <!-- Status Bar -->
+    <footer class="statusbar">
+      <span>● Active: <strong id="sb-active">0</strong></span>
+      <span>● Queued: <strong id="sb-queued">0</strong></span>
+      <span>✅ Completed: <strong id="sb-completed">0</strong></span>
+      <span>⚡ Speed: <strong id="sb-speed">0 KB/s</strong></span>
+      <span class="statusbar-spacer"></span>
+      <span>Folder: <strong id="sb-folder">—</strong></span>
+      <span>yt-dlp: <strong id="sb-ytdlp">Checking…</strong></span>
+      <span>FFmpeg: <strong id="sb-ffmpeg">Checking…</strong></span>
+    </footer>
+    </div>
 
     <!-- Add Download Modal -->
     <div id="modal-add" class="modal-backdrop hidden">
